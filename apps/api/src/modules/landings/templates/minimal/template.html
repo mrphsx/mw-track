@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{META_TITLE}}</title>
+  <meta name="description" content="{{META_DESCRIPTION}}">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: {{BG_COLOR}};
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: white;
+      border-radius: 24px;
+      padding: 48px 40px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 4px 40px rgba(0,0,0,0.08);
+    }
+    .avatar {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      object-fit: cover;
+      margin: 0 auto 20px;
+      display: block;
+    }
+    .avatar-placeholder {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      background: {{PRIMARY_COLOR}};
+      margin: 0 auto 20px;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 32px; font-weight: bold;
+    }
+    h1 { font-size: 24px; font-weight: 700; color: #1a1a1a; margin-bottom: 12px; }
+    p { font-size: 15px; color: #666; line-height: 1.6; margin-bottom: 8px; }
+    .subscribers {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #f5f5f5; border-radius: 20px;
+      padding: 6px 14px; font-size: 13px; color: #888;
+      margin-bottom: 32px;
+    }
+    .btn {
+      display: block; width: 100%;
+      background: {{PRIMARY_COLOR}};
+      color: white; border: none; border-radius: 14px;
+      padding: 16px 24px;
+      font-size: 16px; font-weight: 600;
+      cursor: pointer; text-decoration: none;
+      transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.9; }
+    .privacy { font-size: 12px; color: #bbb; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {{#if CHANNEL_AVATAR}}
+    <img src="{{CHANNEL_AVATAR}}" alt="{{CHANNEL_TITLE}}" class="avatar">
+    {{else}}
+    <div class="avatar-placeholder">{{CHANNEL_INITIAL}}</div>
+    {{/if}}
+
+    <h1>{{CHANNEL_TITLE}}</h1>
+    <p>{{CHANNEL_DESCRIPTION}}</p>
+
+    {{#if SUBSCRIBERS_COUNT}}
+    <div class="subscribers">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+        <circle cx="9" cy="7" r="4"/>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+      {{SUBSCRIBERS_COUNT}} подписчиков
+    </div>
+    {{/if}}
+
+    <a href="{{TG_LINK}}"
+       class="btn"
+       target="_blank"
+       rel="noopener"
+       data-track="Lead"
+       data-tg-bot="{{BOT_USERNAME}}">
+      {{JOIN_BUTTON_TEXT}}
+    </a>
+
+    <p class="privacy">Нажимая кнопку, вы соглашаетесь с условиями использования</p>
+  </div>
+
+  <!-- TRACKING_PLACEHOLDER -->
+</body>
+</html>

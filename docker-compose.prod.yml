@@ -1,0 +1,92 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: .env.prod
+    # NginxService/DomainsService (apps/api/src/modules/landings/nginx.service.ts,
+    # apps/api/src/modules/domains/domains.service.ts) пишут в /etc/nginx/sites-enabled
+    # и зовут системный certbot/nginx напрямую (см. 14_INFRA_AND_DEPLOY.md, "Реальный
+    # деплой 2026-06-29") — поэтому при таком деплое контейнер api должен видеть хостовый
+    # nginx/certbot, а не свой изолированный (нет смысла в volume/network-изоляции для
+    # этой части). Если деплоите api в Docker на сервере с системным nginx, дайте
+    # контейнеру bind-mount /etc/nginx и /usr/bin/certbot с хоста, либо (проще) запускайте
+    # api как обычный systemd-процесс на хосте, как сейчас сделано на проде.
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Отдельного worker-процесса нет: в реальном коде BullMQ-процессоры
+  # (TrackingProcessor/PushesProcessor/PaymentMonitoringProcessor) зарегистрированы
+  # в тех же модулях, что и HTTP-контроллеры (см. tracking.module.ts/pushes.module.ts),
+  # а не в изолированном WorkerModule — разделение на отдельный контейнер потребовало
+  # бы рефакторинга границ модулей, не оправданного на масштабе одного VPS.
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    env_file: .env.prod
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # Раньше здесь были сервисы nginx/certbot (отдельный контейнер nginx на 80/443 +
+  # контейнер certbot с циклом renew). Убраны 2026-06-29: на реальном проде этот
+  # хост уже держит порты 80/443 системным nginx для других, не относящихся к
+  # TrafficCRM сайтов — поднять второй nginx в Docker на тех же портах невозможно.
+  # Домены клиентов TrafficCRM теперь обслуживаются тем же системным nginx и тем же
+  # системным certbot (`certbot --nginx`), которым этот хост уже выпускает сертификаты
+  # для других проектов — см. NginxService/DomainsService и 14_INFRA_AND_DEPLOY.md.
+  # infra/nginx/{nginx.conf,conf.d} остаются в репозитории только как образец полностью
+  # изолированного Docker-деплоя (выделенный VPS без конкурентов за 80/443).
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

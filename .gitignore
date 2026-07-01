@@ -1,0 +1,22 @@
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+
+.env
+.env.*.local
+.env.prod
+
+# Сгенерированные NginxService (apps/api/src/modules/landings/nginx.service.ts)
+# конфиги клиентских доменов — пишутся во время выполнения, не часть кода
+infra/nginx/sites/*.conf
+
+*.log
+npm-debug.log*
+
+.DS_Store
+
+prisma/migrations/dev.db
+
+coverage/

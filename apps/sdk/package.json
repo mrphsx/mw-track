@@ -1,0 +1,22 @@
+{
+  "name": "@trafficcrm/sdk",
+  "version": "1.0.0",
+  "description": "TrafficCRM tracking SDK — server-side (Node.js) + browser snippet",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "browser": "dist/browser.min.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "node esbuild.config.js && tsc -p tsconfig.json --emitDeclarationOnly --declaration --outDir dist",
+    "publish:cdn": "node scripts/publish-cdn.js",
+    "dev": "tsc -p tsconfig.json --watch --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "dotenv": "^16.4.0",
+    "esbuild": "^0.21.0",
+    "minio": "^8.0.7",
+    "typescript": "^5.3.0"
+  }
+}
