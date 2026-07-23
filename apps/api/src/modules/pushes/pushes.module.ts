@@ -4,6 +4,8 @@ import { ChannelsModule } from '../channels/channels.module';
 import { ClientsModule } from '../clients/clients.module';
 import { ProjectsModule } from '../projects/projects.module';
 import { PushesController } from './pushes.controller';
+import { PushesCalendarController } from './pushes-calendar.controller';
+import { PushMediaController } from './push-media.controller';
 import { PushesService } from './pushes.service';
 import { PushesProcessor } from './pushes.processor';
 import { PushesCron } from './pushes.cron';
@@ -18,7 +20,7 @@ import { PushesCron } from './pushes.cron';
     ClientsModule,
     ChannelsModule,
   ],
-  controllers: [PushesController],
+  controllers: [PushesController, PushesCalendarController, PushMediaController],
   providers: [PushesService, PushesProcessor, PushesCron],
   exports: [PushesService],
 })

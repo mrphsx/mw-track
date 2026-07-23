@@ -3,19 +3,22 @@
 import { useState } from 'react';
 import { format } from 'date-fns';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Trash2 } from 'lucide-react';
+import { Star, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from '@/components/ui/drawer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { ClientAvatar } from '@/components/clients/client-avatar';
+import { formatDuration } from '@/components/clients/clients-table';
 
 interface ClientDetail {
   id: string;
   tgFirstName: string | null;
   tgUsername: string | null;
   tgPhotoUrl: string | null;
+  tgIsPremium: boolean | null;
   channelType: string | null;
   country: string | null;
   city: string | null;
@@ -23,6 +26,9 @@ interface ClientDetail {
   isBotActive: boolean;
   createdAt: string;
   lastActiveAt: string | null;
+  subscribedAt: string | null;
+  firstDialogueAt: string | null;
+  dialogueMessageCount: number;
   fbclid: string | null;
   utmSource: string | null;
   utmCampaign: string | null;
@@ -84,7 +90,16 @@ export function ClientDetailDrawer({ projectId, clientId, onClose }: ClientDetai
         {client && (
           <div className="flex flex-col h-full">
             <DrawerHeader className="border-b">
-              <DrawerTitle>{client.tgFirstName || client.tgUsername || 'Клиент'}</DrawerTitle>
+              <DrawerTitle className="flex items-center gap-2">
+                <ClientAvatar
+                  projectId={projectId}
+                  clientId={client.id}
+                  hasAvatar={!!client.tgPhotoUrl}
+                  fallbackLetter={client.tgFirstName || client.tgUsername || '?'}
+                />
+                {client.tgFirstName || client.tgUsername || 'Клиент'}
+                {client.tgIsPremium && <Star className="w-4 h-4 text-amber-400 fill-amber-400" />}
+              </DrawerTitle>
             </DrawerHeader>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
@@ -99,6 +114,13 @@ export function ClientDetailDrawer({ projectId, clientId, onClose }: ClientDetai
                 <div className="text-xs text-gray-400">Регистрация: {format(new Date(client.createdAt), 'd MMM yyyy')}</div>
                 {client.lastActiveAt && (
                   <div className="text-xs text-gray-400">Активность: {format(new Date(client.lastActiveAt), 'd MMM yyyy')}</div>
+                )}
+                {/* Только для канальных клиентов (есть subscribedAt) — для PERSONAL_DM своего
+                    события подписки нет, см. запрос пользователя 2026-07-04 "если это канал". */}
+                {client.subscribedAt && client.firstDialogueAt && (
+                  <div className="text-xs text-gray-400">
+                    Первый диалог: через {formatDuration(client.subscribedAt, client.firstDialogueAt)} после подписки
+                  </div>
                 )}
                 <div>
                   {!client.isBotActive ? (

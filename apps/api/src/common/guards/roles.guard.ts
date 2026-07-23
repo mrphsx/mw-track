@@ -3,11 +3,19 @@ import { Reflector } from '@nestjs/core';
 import { UserRole } from '@prisma/client';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 
+// ADMIN намеренно на одном уровне с OWNER (запрос пользователя 2026-07-04, Team/роли,
+// Фаза 1) — Admin управляет проектами/командой наравне с Owner, разница только в биллинге/
+// удалении компании, которая НЕ выражается рангом здесь — те места проверяют role напрямую
+// (см. BillingController/TeamController), а не через @Roles()/эту иерархию.
+// BUYER/OPERATOR — оба на низшем уровне, не иерархия друг над другом, а разные наборы
+// доступных ресурсов (различаются explicit-проверкой role в конкретных контроллерах, не
+// рангом) — см. ту же причину в комментарии выше.
 const roleHierarchy: Record<UserRole, number> = {
-  SUPER_ADMIN: 4,
-  OWNER: 3,
-  ADMIN: 2,
-  ADVERTISER: 1,
+  SUPER_ADMIN: 5,
+  OWNER: 4,
+  ADMIN: 4,
+  BUYER: 1,
+  OPERATOR: 1,
 };
 
 @Injectable()

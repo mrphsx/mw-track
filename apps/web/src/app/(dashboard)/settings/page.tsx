@@ -23,7 +23,8 @@ const ROLE_LABELS: Record<string, string> = {
   SUPER_ADMIN: 'Супер-админ',
   OWNER: 'Владелец',
   ADMIN: 'Администратор',
-  ADVERTISER: 'Рекламщик',
+  BUYER: 'Байер',
+  OPERATOR: 'Оператор',
 };
 
 export default function SettingsPage() {
@@ -83,7 +84,7 @@ export default function SettingsPage() {
                       <TableCell>
                         <Badge variant={invoice.status === 'PAID' ? 'default' : 'secondary'}>{invoice.status}</Badge>
                       </TableCell>
-                      <TableCell className="text-xs text-gray-400">
+                      <TableCell className="text-xs text-muted-foreground">
                         {invoice.txHash ? `${invoice.txHash.slice(0, 10)}...` : '—'}
                       </TableCell>
                     </TableRow>
@@ -101,7 +102,7 @@ export default function SettingsPage() {
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between text-sm py-1.5 border-b last:border-0">
-      <span className="text-gray-500">{label}</span>
+      <span className="text-muted-foreground">{label}</span>
       <span>{value}</span>
     </div>
   );

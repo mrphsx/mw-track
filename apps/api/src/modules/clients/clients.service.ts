@@ -1,6 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ChannelType, Client, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TrackingService } from '../tracking/tracking.service';
 import { ClientFiltersDto } from './dto/client-filters.dto';
 import { PushFilterDto } from './dto/push-filter.dto';
 import { ClientsRepository } from './clients.repository';
@@ -13,12 +14,17 @@ export class ClientLimitReachedException extends Error {
 
 export interface FindOrCreateClientInput {
   projectId: string;
+  // Каким лендингом привлечён — см. Client.landingId в schema.prisma. Первое известное
+  // значение побеждает (см. ветку "existing" ниже), как и для fbclid/ttclid.
+  landingId?: string;
   channelType: ChannelType;
   tgUserId?: string;
   tgUsername?: string;
   tgFirstName?: string;
   tgLastName?: string;
   tgLanguage?: string;
+  tgIsPremium?: boolean;
+  tgPhotoUrl?: string;
   waPhone?: string;
   waName?: string;
   igUserId?: string;
@@ -35,6 +41,36 @@ export interface FindOrCreateClientInput {
   fbclid?: string;
   ttclid?: string;
   subscribedAt?: Date;
+  // Вступил в приватный канал не через нашу заявку (запрос пользователя 2026-07-21) — см.
+  // Client.externalSubscribedAt в schema.prisma. Используется вместе с markSubscribed: false —
+  // человек остаётся "внешним контактом" (subscribedAt не ставится), но с реальной датой
+  // вступления вместо пустой.
+  externalSubscribedAt?: Date;
+  // Приблизительная страна из кэша визита на лендинг (см. LandingRendererService/
+  // TelegramProvider.getCachedLandingCountry) — приоритетнее geo-по-IP ниже, если передана явно.
+  country?: string;
+  // Пиксель + рекламные макросы (запрос пользователя 2026-07-04, трекинг-ссылки лендинга) —
+  // персистится тем же путём, что и fbclid/utm выше (start:<code> Redis-блок → updateTracking).
+  pixelId?: string;
+  adId?: string;
+  adName?: string;
+  adsetId?: string;
+  adsetName?: string;
+  campaignId?: string;
+  campaignName?: string;
+  placement?: string;
+  siteSourceName?: string;
+  // Метка баера (Фаза 3.6, Team Analytics) — тот же путь, что и pixelId/adId выше
+  // (start:<code> Redis-блок → сюда), либо landing-visit-buyer:<landingId> для
+  // PRIVATE_CHANNEL_REQUEST (см. TelegramProvider.handleJoinRequest).
+  buyerId?: string;
+  // Ложится в isSubscribed/subscribedAt только когда true (по умолчанию, если не передано —
+  // для обратной совместимости со всеми явными "это реальное событие подписки" вызовами:
+  // handleJoinRequest/handleChatMemberUpdate/WhatsApp/Instagram). false — используется
+  // ТОЛЬКО для холодных контактов, см. recordInboundMessage ниже и баг-репорт пользователя
+  // 2026-07-17 ("написал клиент который перешёл не по нашей ссылке... систем его сразу
+  // добавила в список клиентов и диалоги нашей системы").
+  markSubscribed?: boolean;
 }
 
 @Injectable()
@@ -44,6 +80,7 @@ export class ClientsService {
   constructor(
     private prisma: PrismaService,
     private repository: ClientsRepository,
+    private trackingService: TrackingService,
   ) {}
 
   async findOrCreate(data: FindOrCreateClientInput): Promise<Client> {
@@ -51,20 +88,42 @@ export class ClientsService {
     const existing = await this.prisma.client.findFirst({ where });
 
     if (existing) {
+      // markSubscribed: false (запрос пользователя 2026-07-21, вступление в канал не через
+      // нашу заявку) — раньше эта ветка безусловно ставила isSubscribed:true/subscribedAt
+      // даже для холодных внешних контактов, потому что единственный вызывающий с
+      // markSubscribed:false (recordInboundMessage) никогда не попадал сюда (сначала проверяет
+      // findByTgId). Теперь появился второй вызывающий с markSubscribed:false, который МОЖЕТ
+      // найти existing — не должен превращать внешний контакт в настоящую подписку воронки.
+      const shouldMarkSubscribed = data.markSubscribed !== false;
       return this.prisma.client.update({
         where: { id: existing.id },
         data: {
-          isSubscribed: true,
+          isSubscribed: shouldMarkSubscribed ? true : existing.isSubscribed,
           isBotActive: true,
           lastActiveAt: new Date(),
-          subscribedAt: existing.subscribedAt ?? data.subscribedAt ?? new Date(),
+          subscribedAt: shouldMarkSubscribed ? (existing.subscribedAt ?? data.subscribedAt ?? new Date()) : existing.subscribedAt,
           tgUsername: data.tgUsername ?? existing.tgUsername,
           tgFirstName: data.tgFirstName ?? existing.tgFirstName,
           tgLastName: data.tgLastName ?? existing.tgLastName,
           tgLanguage: data.tgLanguage ?? existing.tgLanguage,
+          tgIsPremium: data.tgIsPremium ?? existing.tgIsPremium,
+          tgPhotoUrl: data.tgPhotoUrl ?? existing.tgPhotoUrl,
+          country: existing.country ?? data.country,
           utmSource: existing.utmSource ?? data.utmSource,
           fbclid: existing.fbclid ?? data.fbclid,
           ttclid: existing.ttclid ?? data.ttclid,
+          landingId: existing.landingId ?? data.landingId,
+          pixelId: existing.pixelId ?? data.pixelId,
+          adId: existing.adId ?? data.adId,
+          adName: existing.adName ?? data.adName,
+          adsetId: existing.adsetId ?? data.adsetId,
+          adsetName: existing.adsetName ?? data.adsetName,
+          campaignId: existing.campaignId ?? data.campaignId,
+          campaignName: existing.campaignName ?? data.campaignName,
+          placement: existing.placement ?? data.placement,
+          siteSourceName: existing.siteSourceName ?? data.siteSourceName,
+          buyerId: existing.buyerId ?? data.buyerId,
+          externalSubscribedAt: existing.externalSubscribedAt ?? data.externalSubscribedAt,
         },
       });
     }
@@ -85,12 +144,15 @@ export class ClientsService {
       data: {
         companyId: project.companyId,
         projectId: data.projectId,
+        landingId: data.landingId,
         channelType: data.channelType,
         tgUserId: data.tgUserId,
         tgUsername: data.tgUsername,
         tgFirstName: data.tgFirstName,
         tgLastName: data.tgLastName,
         tgLanguage: data.tgLanguage,
+        tgIsPremium: data.tgIsPremium,
+        tgPhotoUrl: data.tgPhotoUrl,
         waPhone: data.waPhone,
         waName: data.waName,
         igUserId: data.igUserId,
@@ -106,10 +168,25 @@ export class ClientsService {
         utmTerm: data.utmTerm,
         fbclid: data.fbclid,
         ttclid: data.ttclid,
-        country: geo.country,
+        pixelId: data.pixelId,
+        adId: data.adId,
+        adName: data.adName,
+        adsetId: data.adsetId,
+        adsetName: data.adsetName,
+        campaignId: data.campaignId,
+        campaignName: data.campaignName,
+        placement: data.placement,
+        siteSourceName: data.siteSourceName,
+        buyerId: data.buyerId,
+        country: data.country ?? geo.country,
         city: geo.city,
-        isSubscribed: true,
-        subscribedAt: data.subscribedAt ?? new Date(),
+        externalSubscribedAt: data.externalSubscribedAt,
+        // markSubscribed:false — холодный контакт (написал не через наш лендинг/канал/
+        // трекинг-ссылку): Client всё равно нужен, чтобы вести с ним диалог в CRM, но он не
+        // должен считаться нашим подписчиком/влиять на статистику воронки, пока не появится
+        // реальная атрибуция (join-request по нашей ссылке и т.п.).
+        isSubscribed: data.markSubscribed !== false,
+        subscribedAt: data.markSubscribed !== false ? (data.subscribedAt ?? new Date()) : null,
         lastActiveAt: new Date(),
       },
     });
@@ -125,7 +202,22 @@ export class ClientsService {
   async updateTracking(
     tgUserId: string,
     projectId: string,
-    data: { fbclid?: string; ttclid?: string; utmSource?: string; utmCampaign?: string },
+    data: {
+      fbclid?: string;
+      ttclid?: string;
+      utmSource?: string;
+      utmCampaign?: string;
+      pixelId?: string;
+      adId?: string;
+      adName?: string;
+      adsetId?: string;
+      adsetName?: string;
+      campaignId?: string;
+      campaignName?: string;
+      placement?: string;
+      siteSourceName?: string;
+      buyerId?: string;
+    },
   ) {
     const client = await this.prisma.client.findFirst({ where: { projectId, tgUserId } });
     if (!client) return null;
@@ -137,6 +229,16 @@ export class ClientsService {
         ttclid: data.ttclid ?? client.ttclid,
         utmSource: data.utmSource ?? client.utmSource,
         utmCampaign: data.utmCampaign ?? client.utmCampaign,
+        pixelId: data.pixelId ?? client.pixelId,
+        adId: data.adId ?? client.adId,
+        adName: data.adName ?? client.adName,
+        adsetId: data.adsetId ?? client.adsetId,
+        adsetName: data.adsetName ?? client.adsetName,
+        campaignId: data.campaignId ?? client.campaignId,
+        campaignName: data.campaignName ?? client.campaignName,
+        placement: data.placement ?? client.placement,
+        siteSourceName: data.siteSourceName ?? client.siteSourceName,
+        buyerId: data.buyerId ?? client.buyerId,
       },
     });
   }
@@ -150,11 +252,37 @@ export class ClientsService {
     });
   }
 
-  async markUnsubscribed(tgUserId: string, projectId: string) {
+  // Прямой сигнал разблокировки от Telegram (my_chat_member, chat.type==='private',
+  // new_chat_member.status==='member') — см. TelegramProvider.handleMemberUpdate. Не трогает
+  // botActivatedAt/firstDialogueAt — это не сообщение, просто смена статуса участника, а не
+  // диалог.
+  async markBotUnblocked(tgUserId: string, projectId: string) {
     return this.prisma.client.updateMany({
       where: { projectId, tgUserId },
+      data: { isBotActive: true },
+    });
+  }
+
+  // Баг найден 2026-07-21 (запрос пользователя: "для внешних контактов у всех написано что
+  // отписались, хотя они не отписались") — вызывается из TelegramProvider.handleMemberUpdate
+  // на любое "покинул канал" chat_member-событие, БЕЗ проверки tgMode (в отличие от ветки
+  // подписки чуть выше по коду, которая явно пропускает PRIVATE_CHANNEL_REQUEST). Внешние
+  // холодные контакты (subscribedAt: null, просто написали в личку/боту) могут состоять в
+  // канале другим путём (не через нашу заявку) — их уход из канала раньше безусловно ставил
+  // unsubscribedAt, хотя подписки через нашу воронку у них никогда не было. Теперь трогаем
+  // только тех, у кого subscribedAt реально был задан.
+  async markUnsubscribed(tgUserId: string, projectId: string) {
+    return this.prisma.client.updateMany({
+      where: { projectId, tgUserId, subscribedAt: { not: null } },
       data: { isSubscribed: false, unsubscribedAt: new Date() },
     });
+  }
+
+  // Только для GET /clients/:id/avatar (ClientsController) — не через ChannelsService
+  // (см. комментарий там, ClientsModule/ChannelsModule не связаны напрямую после
+  // circular-DI инцидента), простой прямой prisma-запрос вместо этого.
+  async getChannelBotToken(projectId: string): Promise<{ id: string; tgBotToken: string | null } | null> {
+    return this.prisma.channel.findFirst({ where: { projectId }, select: { id: true, tgBotToken: true } });
   }
 
   async findByUsername(username: string, projectId: string): Promise<Client | null> {
@@ -163,6 +291,138 @@ export class ClientsService {
 
   async findByTgId(tgUserId: string, projectId: string): Promise<Client | null> {
     return this.prisma.client.findFirst({ where: { projectId, tgUserId, deletedAt: null } });
+  }
+
+  // Единая точка учёта диалога (запрос пользователя 2026-07-04) — вызывается и из
+  // TelegramProvider.handleIncomingText (бот-каналы: Client там уже существует с момента
+  // подписки), и из TelegramPersonalService (PERSONAL_DM через MTProto — там Client чаще
+  // всего ещё не существует, отдельного события "подписки" для личных диалогов нет, первое
+  // сообщение и есть первое знакомство). landingId — только для PERSONAL_DM, где атрибуция
+  // разбирается из предзаполненного текста первого сообщения (см. TelegramPersonalService).
+  async recordInboundMessage(
+    projectId: string,
+    data: {
+      tgUserId: string;
+      tgUsername?: string;
+      tgFirstName?: string;
+      tgLastName?: string;
+      landingId?: string;
+      buyerId?: string;
+      // Всегда false для вызовов из TelegramPersonalService (правка 2026-07-21 — у личного
+      // аккаунта, включая PERSONAL_DM, нет реального понятия "подписчик", только диалог, см.
+      // комментарий в telegram-personal.service.ts). Для бот-каналов первое сообщение от
+      // человека, которого ещё нет в базе, значит он написал НЕ через нашу воронку — баг-репорт
+      // пользователя 2026-07-17: такой Client не должен считаться подписчиком/попадать в
+      // нашу статистику.
+      treatAsSubscriber: boolean;
+      // true только когда сообщение реально пришло через БОТА (TelegramProvider), не через
+      // личный MTProto-аккаунт (TelegramPersonalService) — баг-репорт пользователя
+      // 2026-07-17: пуши падали с "chat not found" для клиентов, у которых firstDialogueAt
+      // (общее поле на оба источника) был выставлен исключительно перепиской с личным
+      // аккаунтом — у бота с ними чата никогда не было. См. botActivatedAt в schema.prisma.
+      viaBot: boolean;
+      // Только для tgMode === 'BOT_DIRECT' (запрос пользователя 2026-07-21, продолжение правки
+      // "диалог только с личкой") — у этого режима канала вообще нет, вся переписка и есть
+      // диалог, отдельного личного аккаунта в паре с ним обычно не бывает. Остальные режимы
+      // (PRIVATE_CHANNEL_REQUEST/PUBLIC_CHANNEL_DIRECT) по-прежнему считают диалог только через
+      // личный аккаунт — там бот отвечает за подписку/канал, а личка за настоящий диалог.
+      countBotAsDialogue?: boolean;
+    },
+  ): Promise<void> {
+    let client = await this.findByTgId(data.tgUserId, projectId);
+    if (!client) {
+      client = await this.findOrCreate({
+        projectId,
+        landingId: data.landingId,
+        buyerId: data.buyerId,
+        tgUserId: data.tgUserId,
+        tgUsername: data.tgUsername,
+        tgFirstName: data.tgFirstName,
+        tgLastName: data.tgLastName,
+        channelType: 'TELEGRAM',
+        markSubscribed: data.treatAsSubscriber,
+      });
+    }
+
+    // "Диалог" (запрос пользователя 2026-07-21: "диалог должен считаться именно с личкой, а не
+    // с ботом") — firstDialogueAt/lastDialogueAt/dialogueMessageCount и Dialogue-событие
+    // фиксируются для сообщений с личного MTProto-аккаунта (viaBot: false) ВСЕГДА, а для
+    // сообщений через бота (viaBot: true) — только если countBotAsDialogue (т.е. tgMode ===
+    // 'BOT_DIRECT', см. комментарий у поля выше). Для PRIVATE_CHANNEL_REQUEST/
+    // PUBLIC_CHANNEL_DIRECT сообщение через бота по-прежнему обновляет только
+    // botActivatedAt/isBotActive ниже — отдельный, не отменённый механизм (доказательство, что
+    // бот технически может прислать пуш), не диалог. Пока у такого проекта не подключён личный
+    // аккаунт, "Диалог" будет пустым для всех клиентов — это ожидаемо, подтверждено
+    // пользователем.
+    if (data.viaBot && !data.countBotAsDialogue) {
+      const patch: Prisma.ClientUpdateInput = {};
+      // Тот же смысл, что и раньше: единственное надёжное доказательство "бот технически может
+      // прислать этому клиенту пуш"; сброс isBotActive — тот же баг-репорт 2026-07-17
+      // ("после того как пользователь написал боту и активировал его... бот не пишется как
+      // активированным").
+      if (!client.botActivatedAt) patch.botActivatedAt = new Date();
+      if (client.isBotActive === false) patch.isBotActive = true;
+      if (Object.keys(patch).length) {
+        await this.prisma.client.update({ where: { id: client.id }, data: patch });
+      }
+      return;
+    }
+
+    // BOT_DIRECT (countBotAsDialogue) — сообщение через бота само по себе И диалог, И
+    // доказательство "бот может прислать пуш" одновременно, обновляем оба набора полей.
+    if (data.viaBot && data.countBotAsDialogue) {
+      const patch: Prisma.ClientUpdateInput = {};
+      if (!client.botActivatedAt) patch.botActivatedAt = new Date();
+      if (client.isBotActive === false) patch.isBotActive = true;
+      if (Object.keys(patch).length) {
+        await this.prisma.client.update({ where: { id: client.id }, data: patch });
+      }
+    }
+
+    await this.applyDialogueUpdate(projectId, client, data.landingId);
+  }
+
+  // Общий хвост "зафиксировать диалог" — вынесен из recordInboundMessage (запрос
+  // пользователя 2026-07-21), чтобы им же могли воспользоваться оба ручных пути (см.
+  // recordManualDialogue ниже: подтверждение менеджером через бота И кнопка в списке
+  // клиентов) без дублирования isFirstMessage-логики и условий отправки Dialogue-события.
+  // isFirstMessage — и есть проверка "диалог уже зарегистрирован?" из требования пользователя
+  // "каждый вариант должен сначала проверить... перед тем как посылать его ещё раз": все три
+  // способа (бот/личный аккаунт, менеджер, кнопка в CRM) сходятся сюда, событие в Facebook/
+  // TikTok уходит только один раз, за какой бы способ ни отвечало первое срабатывание.
+  private async applyDialogueUpdate(projectId: string, client: Client, landingId?: string): Promise<void> {
+    const isFirstMessage = !client.firstDialogueAt;
+    const now = new Date();
+    await this.prisma.client.update({
+      where: { id: client.id },
+      data: {
+        firstDialogueAt: client.firstDialogueAt ?? now,
+        lastDialogueAt: now,
+        dialogueMessageCount: { increment: 1 },
+      },
+    });
+
+    if (isFirstMessage) {
+      await this.trackingService.recordEvent(projectId, {
+        eventName: 'Dialogue',
+        clientId: client.id,
+        tgUserId: client.tgUserId ?? undefined,
+        landingId: client.landingId ?? landingId,
+        source: 'SERVER',
+      });
+    }
+  }
+
+  // Ручная фиксация диалога (запрос пользователя 2026-07-21) — два вызывающих: (1)
+  // TelegramProvider, после того как менеджер переслал боту сообщение клиента и подтвердил
+  // ("Да") — для команд, не подключающих личный MTProto-аккаунт; (2) ClientsController, кнопка
+  // "Зарегистрировать диалог" прямо в списке клиентов — для тех же случаев, но без Telegram-
+  // бота вообще (клиент ведётся в другом канале целиком). projectId передан явно и
+  // проверяется — защита от подделанного clientId (чужого проекта/callback_data).
+  async recordManualDialogue(clientId: string, projectId: string): Promise<void> {
+    const client = await this.prisma.client.findFirst({ where: { id: clientId, projectId, deletedAt: null } });
+    if (!client) throw new NotFoundException('Клиент не найден');
+    await this.applyDialogueUpdate(projectId, client);
   }
 
   // companyId передаётся явно (а не доверяется только Prisma-middleware), потому что
@@ -292,11 +552,13 @@ export class ClientsService {
 
     if (filters.channelType?.length) where.channelType = { in: filters.channelType };
     if (typeof filters.hasPurchase === 'boolean') where.hasPurchase = filters.hasPurchase;
+    if (typeof filters.hasDialogue === 'boolean') where.firstDialogueAt = filters.hasDialogue ? { not: null } : null;
     if (typeof filters.isBotActive === 'boolean') where.isBotActive = filters.isBotActive;
     if (typeof filters.isSubscribed === 'boolean') where.isSubscribed = filters.isSubscribed;
     if (filters.country?.length) where.country = { in: filters.country };
     if (filters.utmSource) where.utmSource = filters.utmSource;
     if (filters.utmCampaign) where.utmCampaign = filters.utmCampaign;
+    if (filters.landingId) where.landingId = filters.landingId;
 
     if (filters.minSpent !== undefined || filters.maxSpent !== undefined) {
       where.totalSpent = {
@@ -310,6 +572,15 @@ export class ClientsService {
         ...(filters.subscribedFrom ? { gte: new Date(filters.subscribedFrom) } : {}),
         ...(filters.subscribedTo ? { lte: new Date(filters.subscribedTo) } : {}),
       };
+    } else {
+      // "ours" по умолчанию — список клиентов не должен вперемешку показывать холодные
+      // контакты, которые просто написали в личку/боту мимо нашей ссылки/лендинга (баг-репорт
+      // пользователя 2026-07-17, см. ClientsService.recordInboundMessage/findOrCreate — такие
+      // Client создаются с subscribedAt: null). Они не теряются — origin=external показывает
+      // именно их, отдельно, не влияя на этот дефолтный вид/статистику.
+      const origin = filters.origin ?? 'ours';
+      if (origin === 'ours') where.subscribedAt = { not: null };
+      else if (origin === 'external') where.subscribedAt = null;
     }
 
     if (filters.search) {
@@ -332,9 +603,32 @@ export class ClientsService {
     opts: { reachableOnly?: boolean } = { reachableOnly: true },
   ): Prisma.ClientWhereInput {
     const where: Prisma.ClientWhereInput = { projectId, deletedAt: null };
+    // "Доступен для пуша" — два независимых условия:
+    // 1. isBotActive: true — бот технически может доставить (снимается только на реальный
+    //    403 от Telegram, см. markBotBlocked), а НЕ isSubscribed — отписка от канала
+    //    (markUnsubscribed) не отзывает у бота возможность личных сообщений (баг-репорт
+    //    пользователя 2026-07-17: "mrphsx отписался, но бот у него всё ещё активен" — раньше
+    //    isSubscribed тоже требовался и ошибочно исключал отписавшихся).
+    // 2. subscribedAt: not null ИЛИ botActivatedAt: not null — но isBotActive один
+    //    НЕДОСТАТОЧЕН: он по умолчанию true у вообще любого Client с момента создания (флип
+    //    в false только при 403), в т.ч. у "холодных" контактов, у которых с ботом никогда
+    //    не было чата вообще (попытка отправки упадёт с "chat not found"). subscribedAt
+    //    устанавливается ТОЛЬКО настоящим событием подписки (см.
+    //    feedback_cold_contact_subscribe_bug) и НЕ сбрасывается при отписке — надёжный
+    //    "точно был нашим реальным клиентом" маркер, независимый от isSubscribed: mrphsx
+    //    (subscribedAt задан, isSubscribed:false) проходит.
+    //    botActivatedAt добавлен отдельно (запрос пользователя 2026-07-17: "пользователь
+    //    который не активировал бота пишет что он его заблокировал... показывай доступными
+    //    для пушей, так как другие не могут получить рассылку") — реальный человек, который
+    //    хоть раз написал БОТУ (не личному MTProto-аккаунту — см. ClientsService.
+    //    recordInboundMessage, viaBot), точно может получить сообщение, даже если он никогда
+    //    не был подписан ни на один канал (subscribedAt: null). НЕ используем firstDialogueAt
+    //    здесь — оно общее на бота И личный аккаунт, и второй раунд этого же бага (массовые
+    //    "chat not found") случился именно из-за того, что firstDialogueAt мог прийти
+    //    исключительно от личного аккаунта, с которым у бота никогда не было чата.
     if (opts.reachableOnly !== false) {
-      where.isSubscribed = true;
       where.isBotActive = true;
+      where.OR = [{ subscribedAt: { not: null } }, { botActivatedAt: { not: null } }];
     }
 
     if (filters.channelTypes?.length) where.channelType = { in: filters.channelTypes };

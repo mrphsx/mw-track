@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{META_TITLE}}</title>
+  <meta name="description" content="{{META_DESCRIPTION}}">
+  <style>
+    /* Тёмная тема той же страницы предпросмотра канала Telegram — цвета сверены с
+       html.theme_dark в telegram.org/css/telegram.css: --text-color:#fff,
+       --accent-btn-color:#1c93e3, --body-bg:#000, --box-bg:#1e1e1e,
+       --tme-desc-color:#84888C. Структура идентична telegram-light, см. комментарий там. */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #000;
+      background-image: radial-gradient(circle at 15% 15%, #10202b 0%, transparent 45%),
+                         radial-gradient(circle at 85% 25%, #10221a 0%, transparent 45%),
+                         radial-gradient(circle at 50% 90%, #1c1f10 0%, transparent 50%);
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .tgme_page {
+      position: relative;
+      max-width: 400px;
+      width: 100%;
+      padding: 32px 24px;
+      background: #1e1e1e;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+      border-radius: 16px;
+      text-align: center;
+    }
+    .tgme_page_photo_image {
+      width: 122px; height: 122px;
+      border-radius: 61px;
+      object-fit: cover;
+      display: block;
+      margin: 0 auto;
+    }
+    .avatar-placeholder {
+      width: 122px; height: 122px; border-radius: 61px;
+      background: {{PRIMARY_COLOR}};
+      margin: 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 48px; font-weight: bold;
+    }
+    .tgme_page_title {
+      font-size: 26px; line-height: 32px; font-weight: 700;
+      color: #fff; margin-top: 20px;
+    }
+    .tgme_page_extra {
+      font-size: 15px; line-height: 18px;
+      color: #9a9da0; margin-top: 6px;
+    }
+    .tgme_page_description {
+      font-size: 16px; line-height: 25px;
+      color: #e4e4e4; margin-top: 10px;
+    }
+    .tgme_page_action { margin-top: 24px; }
+    a.tgme_action_button_new {
+      display: inline-block;
+      font-size: 14px; line-height: 17px; font-weight: 700;
+      color: #fff;
+      background-color: {{PRIMARY_COLOR}};
+      background-image: linear-gradient(270deg, rgba(255,255,255,0) 48.44%, rgba(255,255,255,.25) 75.52%, rgba(255,255,255,0) 100%);
+      background-repeat: no-repeat;
+      animation: tgme-shine linear 5s infinite;
+      border-radius: 22px;
+      padding: 13px 32px;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+    a.tgme_action_button_new:hover { opacity: .92; }
+    @keyframes tgme-shine {
+      0%   { background-position: -500px 0; }
+      100% { background-position: 1000px 0; }
+    }
+    .tgme_page_additional {
+      font-size: 14px; line-height: 23px;
+      color: #84888C; margin-top: 28px;
+    }
+    .tgme_page_additional strong { color: #b0b3b6; }
+  </style>
+</head>
+<body>
+  <div class="tgme_page">
+    {{#if CHANNEL_AVATAR}}
+    <img src="{{CHANNEL_AVATAR}}" alt="{{CHANNEL_TITLE}}" class="tgme_page_photo_image">
+    {{else}}
+    <div class="avatar-placeholder">{{CHANNEL_INITIAL}}</div>
+    {{/if}}
+
+    <div class="tgme_page_title">{{CHANNEL_TITLE}}</div>
+
+    {{#if SUBSCRIBERS_COUNT}}
+    <div class="tgme_page_extra">{{SUBSCRIBERS_COUNT}} {{SUBSCRIBERS_LABEL}}</div>
+    {{/if}}
+
+    <div class="tgme_page_description">{{CHANNEL_DESCRIPTION}}</div>
+
+    <div class="tgme_page_action">
+      <a class="tgme_action_button_new" href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">
+        {{JOIN_BUTTON_TEXT}}
+      </a>
+    </div>
+
+    <div class="tgme_page_additional">
+      Если у вас установлен <strong>Telegram</strong>, вы можете открыть канал сразу
+    </div>
+  </div>
+
+  <!-- TRACKING_PLACEHOLDER -->
+</body>
+</html>

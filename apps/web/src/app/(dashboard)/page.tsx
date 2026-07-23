@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { Users, FolderOpen, Send, Bot, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
+import { ChannelAvatar } from '@/components/channel-avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -14,7 +15,7 @@ interface ProjectSummary {
   id: string;
   name: string;
   status: string;
-  channels: { id: string; type: string; isActive: boolean }[];
+  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null } | null;
   _count: { clients: number; pushes: number };
 }
 
@@ -38,7 +39,7 @@ export default function OverviewPage() {
 
   const totalClients = projects?.reduce((sum, p) => sum + p._count.clients, 0) ?? 0;
   const totalPushes = projects?.reduce((sum, p) => sum + p._count.pushes, 0) ?? 0;
-  const activeBots = projects?.reduce((sum, p) => sum + p.channels.filter((c) => c.isActive).length, 0) ?? 0;
+  const activeBots = projects?.reduce((sum, p) => sum + (p.channel?.isActive ? 1 : 0), 0) ?? 0;
 
   return (
     <div className="space-y-6">
@@ -68,10 +69,10 @@ export default function OverviewPage() {
 
       <div>
         <h2 className="text-lg font-semibold mb-3">Последние проекты</h2>
-        {projectsLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+        {projectsLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
         {!projectsLoading && projects?.length === 0 && (
           <Card>
-            <CardContent className="p-8 text-center text-gray-500">
+            <CardContent className="p-8 text-center text-muted-foreground">
               Пока нет ни одного проекта.{' '}
               <Link href="/projects/new" className="text-blue-600 hover:underline">
                 Создать первый проект
@@ -85,10 +86,15 @@ export default function OverviewPage() {
               <Card className="hover:shadow-md transition-shadow">
                 <CardContent className="p-5">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium">{project.name}</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      {project.channel?.type === 'TELEGRAM' && (
+                        <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
+                      )}
+                      <span className="font-medium truncate">{project.name}</span>
+                    </div>
                     <Badge variant={project.status === 'ACTIVE' ? 'default' : 'secondary'}>{project.status}</Badge>
                   </div>
-                  <div className="text-sm text-gray-500">
+                  <div className="text-sm text-muted-foreground">
                     {project._count.clients} клиентов · {project._count.pushes} рассылок
                   </div>
                 </CardContent>

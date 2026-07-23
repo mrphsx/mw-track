@@ -45,6 +45,17 @@ export class StorageService implements OnModuleInit {
     }
   }
 
+  // Загрузка одного файла из буфера (не директории) — для аватарки лендинга
+  // (landing-avatars/, см. LandingsService.uploadAvatar), в отличие от uploadDirectory,
+  // которая распаковывает целый ZIP кастомного лендинга.
+  async uploadBuffer(key: string, buffer: Buffer, contentType: string): Promise<void> {
+    await this.client.putObject(this.bucket, key, buffer, buffer.length, { 'Content-Type': contentType });
+  }
+
+  async removeObject(key: string): Promise<void> {
+    await this.client.removeObject(this.bucket, key).catch(() => {});
+  }
+
   async getObjectStream(key: string): Promise<Readable> {
     return this.client.getObject(this.bucket, key);
   }

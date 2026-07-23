@@ -1,25 +1,29 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as geoip from 'geoip-lite';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { Landing, Project, TelegramMode, TrackingPixel } from '@prisma/client';
+import { Landing, Project, TrackingPixel } from '@prisma/client';
 import { Request, Response } from 'express';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { StorageService } from './storage.service';
 import { matchDomainPath } from '../domains/domain-path.util';
+import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-link.util';
+import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 
 const START_CODE_TTL_SECONDS = 24 * 60 * 60;
 
-type LandingChannel = {
-  tgMode: TelegramMode | null;
-  tgBotUsername: string | null;
-  tgChannelUsername: string | null;
-  tgPersonalUsername: string | null;
-};
+// Клоакинг без явно заданной cloakingRedirectUrl — куда отправлять посетителей из
+// не-разрешённых стран по умолчанию (запрос пользователя 2026-07-03, пример "например
+// википедия").
+const DEFAULT_CLOAK_REDIRECT_URL = 'https://en.wikipedia.org';
 
 type ProjectWithLandingData = Project & {
-  channels: LandingChannel[];
+  // tgAvatarFileId — не часть TelegramLinkChannel (тот только для buildTelegramLink), нужен
+  // отдельно здесь для дефолтной аватарки лендинга ("изначально как в канале", см.
+  // renderTemplate) — лишнее поле не мешает структурной совместимости с TelegramLinkChannel.
+  channel: (TelegramLinkChannel & { tgAvatarFileId: string | null }) | null;
   pixels: TrackingPixel[]; // проект не привязан к платформе — пикселей любых платформ может быть несколько
 };
 
@@ -54,7 +58,41 @@ export class LandingRendererService {
       return;
     }
 
-    await this.renderAndServe(resolved.landingId, resolved.subPath, req, res);
+    // Ровно одно из двух (запрос пользователя 2026-07-17) — путь либо на конкретный лендинг
+    // (рендерится строго он, БЕЗ сплита, даже если он параллельно состоит в группе через
+    // другую ссылку), либо сразу на группу (сплит применяется всегда). Раньше сплит был
+    // неявным свойством самого лендинга — теперь явное свойство конкретной ссылки.
+    const landingId = resolved.landingId ?? (await this.pickAbTestGroupVariant(resolved.abTestGroupId!));
+    if (!landingId) {
+      res.status(404).send('<h1>Page not found</h1>');
+      return;
+    }
+
+    await this.renderAndServe(landingId, resolved.subPath, req, res);
+  }
+
+  // A/B/n-тестирование (Фаза 3.2, запрос пользователя 2026-07-15, расширено с пары до
+  // произвольного числа вариантов с индивидуальными процентами) — случайный взвешенный сплит
+  // на каждый заход, без cookie/стикости (осознанно, согласовано с пользователем: в кодовой
+  // базе нет cookie-инфраструктуры, посетитель может попасть на другой вариант при повторном
+  // визите — принятый компромисс ради простоты v1).
+  private async pickAbTestGroupVariant(groupId: string): Promise<string | null> {
+    const members = await this.prisma.landing.findMany({
+      where: { abTestGroupId: groupId, deletedAt: null },
+      select: { id: true, abTestWeight: true },
+    });
+    // Группа выродилась в 0 живых участников — страница 404, как и при отсутствии пути вообще.
+    if (members.length === 0) return null;
+    // Один живой участник — рендерим его напрямую, без броска монетки.
+    if (members.length === 1) return members[0].id;
+
+    const totalWeight = members.reduce((sum, m) => sum + (m.abTestWeight ?? 0), 0) || members.length;
+    let roll = Math.random() * totalWeight;
+    for (const m of members) {
+      roll -= m.abTestWeight ?? totalWeight / members.length;
+      if (roll <= 0) return m.id;
+    }
+    return members[members.length - 1].id;
   }
 
   // subPath — запрошенный путь внутри лендинга после landingId (см. InternalController):
@@ -66,10 +104,11 @@ export class LandingRendererService {
       include: {
         project: {
           include: {
-            // orderBy:createdAt desc — последний подключённый Telegram-канал должен сразу
-            // стать тем, на который ведёт лендинг (без этого Prisma даёт неопределённый порядок
-            // при take:1, и новый канал мог бы не подхватиться сразу после добавления).
-            channels: { where: { type: 'TELEGRAM', isActive: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+            // 1:1 с 2026-07-02 — канал проекта может быть любого типа (не только Telegram),
+            // buildTelegramLink ниже сам проверяет channel.type перед сборкой deep-link.
+            channel: {
+              select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true, tgAvatarFileId: true },
+            },
             pixels: { where: { isActive: true } },
           },
         },
@@ -78,6 +117,14 @@ export class LandingRendererService {
 
     if (!landing || landing.status !== 'PUBLISHED' || landing.deletedAt) {
       res.status(404).send('<h1>Page not found</h1>');
+      return;
+    }
+
+    // Клоакинг — до любого рендера контента: посетитель не из разрешённой страны никогда
+    // не должен получить реальный HTML лендинга, даже на подресурсы (style.css/картинки —
+    // сюда же попадают через тот же renderAndServe с непустым subPath, см. renderByDomain).
+    if (landing.cloakingEnabled && !this.isCountryAllowed(req, landing.cloakingCountries)) {
+      res.redirect(302, landing.cloakingRedirectUrl || DEFAULT_CLOAK_REDIRECT_URL);
       return;
     }
 
@@ -93,7 +140,7 @@ export class LandingRendererService {
     }
 
     let html = await this.renderTemplate(landing as Landing & { project: ProjectWithLandingData });
-    html = await this.injectTrackingScripts(html, landing.project, req);
+    html = await this.injectTrackingScripts(html, landing.project, req, landing as Landing);
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store');
@@ -124,7 +171,7 @@ export class LandingRendererService {
     try {
       if (isIndex) {
         const buffer = await this.storage.getObjectBuffer(key);
-        const html = await this.injectTrackingScripts(buffer.toString('utf-8'), landing.project, req);
+        const html = await this.injectTrackingScripts(buffer.toString('utf-8'), landing.project, req, landing);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-store');
         this.removeRestrictiveCsp(res);
@@ -150,10 +197,11 @@ export class LandingRendererService {
       include: {
         project: {
           include: {
-            // orderBy:createdAt desc — последний подключённый Telegram-канал должен сразу
-            // стать тем, на который ведёт лендинг (без этого Prisma даёт неопределённый порядок
-            // при take:1, и новый канал мог бы не подхватиться сразу после добавления).
-            channels: { where: { type: 'TELEGRAM', isActive: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+            // 1:1 с 2026-07-02 — канал проекта может быть любого типа (не только Telegram),
+            // buildTelegramLink ниже сам проверяет channel.type перед сборкой deep-link.
+            channel: {
+              select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true, tgAvatarFileId: true },
+            },
             pixels: { where: { isActive: true } },
           },
         },
@@ -172,26 +220,100 @@ export class LandingRendererService {
     return this.renderTemplate(landing as Landing & { project: ProjectWithLandingData });
   }
 
+  // Мини-превью шаблона со статичными демо-данными (запрос пользователя 2026-07-15) — не
+  // привязано ни к какому реальному лендингу/проекту, просто рендерит template.html с
+  // заглушками, чтобы показать карточками "как это будет выглядеть" при выборе шаблона в
+  // диалоге создания. templateId приходит из query/params — валидируем формат явно (только
+  // буквы/цифры/дефис), иначе он подставился бы прямо в fs-путь ниже (path traversal).
+  async renderTemplateGalleryPreview(templateId: string): Promise<string> {
+    if (!/^[a-z0-9-]+$/.test(templateId)) throw new NotFoundException('Шаблон не найден');
+
+    const templatePath = path.join(this.templatesDir, templateId, 'template.html');
+    let html: string;
+    try {
+      html = await fs.readFile(templatePath, 'utf-8');
+    } catch {
+      throw new NotFoundException('Шаблон не найден');
+    }
+
+    const vars: Record<string, string> = {
+      META_TITLE: 'Название канала',
+      META_DESCRIPTION: 'Описание канала',
+      CHANNEL_TITLE: 'Название канала',
+      CHANNEL_DESCRIPTION: 'Присоединяйтесь к нашему каналу — здесь только полезный контент и никакого спама.',
+      CHANNEL_AVATAR: '',
+      CHANNEL_INITIAL: 'К',
+      SUBSCRIBERS_COUNT: '12 480',
+      SUBSCRIBERS_LABEL: 'подписчиков',
+      JOIN_BUTTON_TEXT: 'Вступить в канал',
+      TG_REDIRECT_URL: '#',
+      START_CODE: '',
+      PRIMARY_COLOR: '#2AABEE',
+      BG_COLOR: '#f0f4f8',
+      GRADIENT_FROM: '#667eea',
+      GRADIENT_TO: '#764ba2',
+      CDN_URL: process.env.CDN_URL || '',
+    };
+
+    html = this.processConditionals(html, vars);
+    for (const [key, value] of Object.entries(vars)) {
+      html = html.replaceAll(`{{${key}}}`, value || '');
+    }
+
+    return html;
+  }
+
   private async renderTemplate(landing: Landing & { project: ProjectWithLandingData }): Promise<string> {
     const templatePath = path.join(this.templatesDir, landing.templateId!, 'template.html');
     let html = await fs.readFile(templatePath, 'utf-8');
 
     const data = (landing.templateData as Record<string, string>) || {};
-    const channel = landing.project.channels?.[0];
-    const tgLink = this.buildTelegramLink(channel);
+
+    // Кнопка ведёт не напрямую на tg://, а на собственный редирект-эндпоинт
+    // (TrackingController.tgRedirect), который сам строит tg://-ссылку и отвечает 302.
+    // Так надёжнее внутри ин-апп браузеров рекламных сетей (Facebook/Instagram/TikTok
+    // WebView) — многие из них блокируют переход на кастомную схему прямо из <a href>,
+    // но нормально проходят через https-редирект на нашем домене (запрос пользователя
+    // 2026-07-02). ?code={{START_CODE}} — тот же одноразовый Redis-код с fbclid/ttclid/utm,
+    // что и раньше, просто донесённый до бота через редирект, а не через SDK-перехват клика.
+    const hasTelegramLink = !!buildTelegramLink(landing.project.channel);
+
+    // Аватарка лендинга (запрос пользователя 2026-07-04): своя загруженная (Landing.avatarKey)
+    // либо, если её нет, фото канала ("изначально как в канале") — оба случая отдаёт один и
+    // тот же публичный эндпоинт (LandingsService.streamAvatar сам решает источник на лету).
+    // data.CHANNEL_AVATAR (ручной URL из старого workflow) — фолбэк на случай лендингов,
+    // созданных до этой фичи, где ничего из вышеперечисленного не задано.
+    const hasOwnOrChannelAvatar = !!landing.avatarKey || !!landing.project.channel?.tgAvatarFileId;
+    const channelAvatar = hasOwnOrChannelAvatar
+      ? `${process.env.API_URL}/api/v1/landings/${landing.id}/avatar`
+      : data.CHANNEL_AVATAR || '';
 
     const vars: Record<string, string> = {
       ...data,
+      // Фолбэк для лендингов, созданных до этого поля (запрос пользователя 2026-07-21) —
+      // templateData ещё не содержит SUBSCRIBERS_LABEL.
+      SUBSCRIBERS_LABEL: data.SUBSCRIBERS_LABEL || 'подписчиков',
+      CHANNEL_AVATAR: channelAvatar,
       META_TITLE: landing.metaTitle || data.CHANNEL_TITLE || 'Закрытый канал',
       META_DESCRIPTION: landing.metaDescription || data.CHANNEL_DESCRIPTION || '',
-      // BOT_USERNAME управляет data-tg-bot в шаблоне (см. apps/sdk/src/browser.ts) — SDK
-      // перехватывает клик и пересобирает ссылку со свежим start-кодом ТОЛЬКО если этот
-      // атрибут непустой; для прямых режимов (канал/личка) он пустой намеренно, чтобы
-      // ссылка из TG_LINK сработала как обычный переход без лишнего async-запроса.
-      BOT_USERNAME: tgLink.isBotMediated ? channel?.tgBotUsername || '' : '',
-      TG_LINK: tgLink.url,
+      // landingId — чтобы редирект-эндпоинт мог найти персональную invite-ссылку ИМЕННО
+      // этого лендинга (Landing.tgInviteLink) для точной пер-лендинговой атрибуции, а не
+      // только общую ссылку канала.
+      // TG_REDIRECT_BASE_URL (не API_URL) — отдельный публичный домен специально под этот
+      // редирект (запрос пользователя 2026-07-20, "чтобы рекламные платформы не видели ссылку
+      // к телеграмму") — тот же бэкенд физически, но домен не выдаёт связь с основным
+      // продуктом при автоматическом сканировании ссылки в объявлении Facebook/TikTok.
+      // API_URL по-прежнему используется для всего остального на этой странице (аватар,
+      // data-api-url) — трогать его нельзя, он завязан на вебхуки Telegram/WhatsApp/Heleket.
+      TG_REDIRECT_URL: hasTelegramLink
+        ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${landing.project.publicToken}/tg-redirect?code={{START_CODE}}&landingId=${landing.id}`
+        : '',
       START_CODE: '{{START_CODE}}', // заменяется позже, в injectTrackingScripts
       CHANNEL_INITIAL: (data.CHANNEL_TITLE || 'C').charAt(0).toUpperCase(),
+      // Для шаблонов с собственными статическими ассетами (например tg-invite-dark/bg.svg) —
+      // хостятся на том же публичном CDN-бакете, что и track.js (см.
+      // apps/api/scripts/publish-template-assets.js), не на приватном StorageService-бакете.
+      CDN_URL: process.env.CDN_URL || '',
     };
 
     html = this.processConditionals(html, vars);
@@ -203,27 +325,6 @@ export class LandingRendererService {
     return html;
   }
 
-  // 4 способа, которыми лендинг ведёт в Telegram (TelegramMode, см. prisma/schema.prisma):
-  // BOT_DIRECT/PRIVATE_CHANNEL_REQUEST — деeп-линк на бота (атрибуция полная, у invite-ссылок
-  // каналов нет query-параметров, поэтому приватный режим тоже идёт через бота — дальше сам
-  // бот вручает invite-ссылку, см. TelegramProvider.handleStart); PUBLIC_CHANNEL_DIRECT/
-  // PERSONAL_DM — статичная прямая ссылка на канал/личный аккаунт, без бота, без async.
-  // isBotMediated решает, рисовать ли data-tg-bot в шаблоне (включает SDK-перехват клика).
-  private buildTelegramLink(channel: LandingChannel | undefined): { url: string; isBotMediated: boolean } {
-    if (!channel) return { url: '', isBotMediated: false };
-
-    switch (channel.tgMode) {
-      case 'PUBLIC_CHANNEL_DIRECT':
-        return { url: channel.tgChannelUsername ? `https://t.me/${channel.tgChannelUsername.replace(/^@/, '')}` : '', isBotMediated: false };
-      case 'PERSONAL_DM':
-        return { url: channel.tgPersonalUsername ? `https://t.me/${channel.tgPersonalUsername.replace(/^@/, '')}` : '', isBotMediated: false };
-      case 'PRIVATE_CHANNEL_REQUEST':
-      case 'BOT_DIRECT':
-      default:
-        return { url: channel.tgBotUsername ? `https://t.me/${channel.tgBotUsername}?start={{START_CODE}}` : '', isBotMediated: true };
-    }
-  }
-
   // Дока обрабатывала только if-без-else, но шаблон minimal использует конструкцию с else —
   // без её поддержки фолбэк-ветка либо терялась, либо попадала в HTML как текст.
   private processConditionals(html: string, vars: Record<string, string>): string {
@@ -233,10 +334,21 @@ export class LandingRendererService {
     );
   }
 
-  private async injectTrackingScripts(html: string, project: ProjectWithLandingData, req: Request): Promise<string> {
+  private async injectTrackingScripts(html: string, project: ProjectWithLandingData, req: Request, landing: Landing): Promise<string> {
     const startCode = nanoid(16);
 
     const urlParams = new URLSearchParams(req.query as Record<string, string>);
+
+    // Кастомные имена query-параметров ссылки (запрос пользователя 2026-07-04, "получить
+    // ссылку" с пикселем + рекламными макросами) — читаем входящий URL по карте проекта,
+    // не по дефолтным именам, чтобы переименование в настройках реально работало.
+    const paramMap = resolveParamMap(project.linkParamMap);
+    const paramLookup = invertParamMap(paramMap);
+    const adMacroData: Record<string, string | null> = {};
+    for (const [actualName, semanticKey] of Object.entries(paramLookup)) {
+      adMacroData[semanticKey] = urlParams.get(actualName);
+    }
+
     const trackingData = {
       fbclid: urlParams.get('fbclid'),
       ttclid: urlParams.get('ttclid'),
@@ -244,12 +356,33 @@ export class LandingRendererService {
       utmMedium: urlParams.get('utm_medium'),
       utmCampaign: urlParams.get('utm_campaign'),
       utmContent: urlParams.get('utm_content'),
+      ...adMacroData,
       ip: this.getClientIp(req),
       userAgent: req.headers['user-agent'],
       landingUrl: req.url,
+      // Запрос пользователя 2026-07-04 (диалоги) — для PERSONAL_DM это единственный способ
+      // атрибутировать лендинг: код долетает как обычный текст первого сообщения (см.
+      // buildTelegramLink &text=), TelegramPersonalService читает этот же блок по коду.
+      landingId: landing.id,
     };
 
     await this.redis.set(`start:${startCode}`, JSON.stringify(trackingData), 'EX', START_CODE_TTL_SECONDS);
+
+    // Приблизительная страна для последующего вступления в приватный канал (запрос
+    // пользователя 2026-07-04) — только PRIVATE_CHANNEL_REQUEST не имеет другого способа
+    // привязать geo (вступление идёт напрямую через Telegram, минуя tg-redirect/start-код,
+    // см. TelegramProvider.handleJoinRequest). Ключ по landingId, не по startCode — заявка на
+    // вступление не несёт с собой startCode для этого режима, только invite-ссылку лендинга.
+    // Короткий TTL — осознанно приблизительно (см. комментарий у getCachedLandingCountry).
+    if (project.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
+      const country = this.resolveCountry(req);
+      if (country) await this.redis.set(`landing-visit-country:${landing.id}`, country, 'EX', 300);
+
+      // Метка баера (Фаза 3.6) — тот же приём, что и для country выше: PRIVATE_CHANNEL_REQUEST
+      // не проходит через start:<code> (заявка на вступление не несёт код), поэтому нужен
+      // отдельный кэш по landingId, читается в TelegramProvider.handleJoinRequest.
+      if (adMacroData.buyerRef) await this.redis.set(`landing-visit-buyer:${landing.id}`, adMacroData.buyerRef, 'EX', 300);
+    }
 
     html = html.replaceAll('{{START_CODE}}', startCode);
 
@@ -259,10 +392,27 @@ export class LandingRendererService {
     const fbPixels = project.pixels.filter((p) => p.platform === 'FACEBOOK');
     const ttPixels = project.pixels.filter((p) => p.platform === 'TIKTOK');
 
+    // Авторедирект (запрос пользователя 2026-07-03) — та же /tg-redirect-ссылка, что и у
+    // кнопки (см. TG_REDIRECT_URL в renderTemplate), просто с собственным startCode, т.к.
+    // CUSTOM-лендинги вообще не проходят через renderTemplate/{{TG_REDIRECT_URL}}. Пустая
+    // строка, если у проекта нет Telegram-канала — SDK тогда просто не найдёт атрибут и
+    // ведёт себя как обычно (только PageView, без редиректа).
+    const autoRedirectUrl =
+      landing.autoRedirect && buildTelegramLink(project.channel)
+        ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${project.publicToken}/tg-redirect?code=${startCode}&landingId=${landing.id}`
+        : '';
+
+    // Карта параметров (§ выше) прокидывается браузерному SDK тем же способом, что и
+    // data-landing-id — иначе track.js не будет знать, под каким кастомным именем искать
+    // ad_id/campaign_id/... в window.location.search этого конкретного проекта.
+    const paramMapAttr = JSON.stringify(paramMap).replace(/"/g, '&quot;');
+
     const trackingScripts = `
 <script src="${process.env.CDN_URL}/track.js"
         data-project-id="${project.publicToken}"
         data-api-url="${process.env.API_URL}/api/v1"
+        data-landing-id="${landing.id}"
+        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}
         async></script>
 ${
   fbPixels.length > 0
@@ -324,5 +474,32 @@ ttq.page();}(window,document,'ttq');
       req.socket.remoteAddress ||
       ''
     );
+  }
+
+  // Клиентские домены — self-service (см. 04_BACKEND_PROJECTS_DOMAINS.md): клиент сам
+  // управляет DNS в своём аккаунте (Cloudflare или любой другой), платформа не держит
+  // Cloudflare-токен и не гарантирует, что домен проксируется через Cloudflare. Поэтому
+  // cf-ipcountry — только быстрый путь, когда он есть, а не единственный источник:
+  // офлайн-геобаза geoip-lite по IP работает для любого домена независимо от того, стоит
+  // ли перед ним Cloudflare.
+  private resolveCountry(req: Request): string | null {
+    const cfCountry = req.headers['cf-ipcountry'] as string | undefined;
+    // "XX" — Cloudflare не смог определить страну, "T1" — Tor. Ни то ни другое не считаем
+    // реальным ответом, чтобы не пропустить их через allow-list по ошибке.
+    if (cfCountry && cfCountry !== 'XX' && cfCountry !== 'T1') return cfCountry.toUpperCase();
+
+    const ip = this.getClientIp(req);
+    if (!ip) return null;
+    return geoip.lookup(ip)?.country ?? null;
+  }
+
+  private isCountryAllowed(req: Request, allowedCountries: string[]): boolean {
+    const country = this.resolveCountry(req);
+    // Страна не определилась вообще — считаем посетителя НЕ разрешённым (безопаснее
+    // спрятать лендинг лишний раз, чем случайно показать его тому, от кого клоакинг должен
+    // скрывать — весь смысл опции в том, чтобы не светить лендинг перед не-целевой
+    // аудиторией/модерацией рекламных сетей).
+    if (!country) return false;
+    return allowedCountries.includes(country);
   }
 }

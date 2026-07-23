@@ -53,7 +53,7 @@ const NETWORK_LABEL: Record<PaymentNetwork, string> = {
 
 interface BalanceTransaction {
   id: string;
-  type: 'TOPUP' | 'SUBSCRIPTION_CHARGE' | 'DOWNGRADE';
+  type: 'TOPUP' | 'SUBSCRIPTION_CHARGE' | 'DOWNGRADE' | 'ADMIN_CREDIT';
   amount: string;
   balanceAfter: string;
   plan: string | null;
@@ -63,10 +63,14 @@ interface BalanceTransaction {
 const PURCHASABLE: Array<'STARTER' | 'GROWTH' | 'SCALE'> = ['STARTER', 'GROWTH', 'SCALE'];
 const TOPUP_PRESETS = [50, 100, 200];
 
+// ADMIN_CREDIT — ручное начисление супер-админом через отдельную панель (Фаза 4.3C,
+// запрос пользователя 2026-07-19). Намеренно видно клиенту в его же истории операций
+// (прозрачность), не скрыто — просто с понятной меткой, не как настоящий крипто-платёж.
 const TRANSACTION_LABEL: Record<BalanceTransaction['type'], string> = {
   TOPUP: 'Пополнение',
   SUBSCRIPTION_CHARGE: 'Списание за подписку',
   DOWNGRADE: 'Сброс до TRIAL (не хватило баланса)',
+  ADMIN_CREDIT: 'Начисление администратором',
 };
 
 export default function BillingPage() {
@@ -125,7 +129,7 @@ export default function BillingPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="text-3xl font-bold">${usage?.balance ?? '0.00'}</div>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-muted-foreground">
             Тариф продлевается автоматически списанием с баланса раз в период. Не хватит средств на момент продления —
             тариф будет сброшен до TRIAL.
           </p>
@@ -171,7 +175,7 @@ export default function BillingPage() {
             <CardTitle className="text-base flex items-center gap-2">
               Текущий план: <Badge>{usage.plan}</Badge>
               {usage.planExpiresAt && (
-                <span className="text-sm text-gray-400 font-normal">
+                <span className="text-sm text-muted-foreground font-normal">
                   следующее списание {format(new Date(usage.planExpiresAt), 'd MMM yyyy')}
                 </span>
               )}
@@ -195,7 +199,7 @@ export default function BillingPage() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="text-2xl font-bold">${config?.priceUsdt}/мес</div>
-                <ul className="text-sm text-gray-500 space-y-1">
+                <ul className="text-sm text-muted-foreground space-y-1">
                   <li>{config?.maxProjects} проектов</li>
                   <li>{config?.maxClients.toLocaleString()} клиентов</li>
                   <li>{config?.maxPushesPerMonth} рассылок/мес</li>
@@ -239,13 +243,13 @@ export default function BillingPage() {
                 >
                   <TableCell>{format(new Date(invoice.createdAt), 'd MMM yyyy HH:mm')}</TableCell>
                   <TableCell>{invoice.amount} USDT</TableCell>
-                  <TableCell className="text-xs text-gray-400">{invoice.network ?? '—'}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{invoice.network ?? '—'}</TableCell>
                   <TableCell>
                     <Badge variant={invoice.status === 'PAID' ? 'default' : invoice.status === 'PENDING' ? 'outline' : 'secondary'}>
                       {invoice.status}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-xs text-gray-400">{invoice.txHash ? `${invoice.txHash.slice(0, 10)}...` : '—'}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{invoice.txHash ? `${invoice.txHash.slice(0, 10)}...` : '—'}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -279,7 +283,7 @@ export default function BillingPage() {
                     {Number(tx.amount) > 0 ? '+' : ''}
                     {tx.amount} USDT
                   </TableCell>
-                  <TableCell className="text-gray-500">${tx.balanceAfter}</TableCell>
+                  <TableCell className="text-muted-foreground">${tx.balanceAfter}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -297,7 +301,7 @@ function UsageBar({ label, current, max }: { label: string; current: number; max
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between text-sm">
-        <span className="text-gray-500">{label}</span>
+        <span className="text-muted-foreground">{label}</span>
         <span>
           {current} / {max}
         </span>

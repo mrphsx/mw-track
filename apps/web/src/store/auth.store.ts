@@ -24,9 +24,13 @@ export interface User {
   email: string;
   firstName: string;
   lastName?: string | null;
-  role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'ADVERTISER';
+  role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR';
   avatarUrl?: string | null;
   company?: Company;
+  // Гранулярные права (запрос пользователя 2026-07-17) — [] для elevated ролей
+  // (OWNER/ADMIN/SUPER_ADMIN, см. @/lib/permissions.ts hasPermission — они не проверяются по
+  // списку вообще), реальный список для BUYER/OPERATOR. Приходит из /auth/login|refresh|me.
+  permissions: string[];
 }
 
 interface RegisterPayload {
@@ -36,6 +40,13 @@ interface RegisterPayload {
   firstName: string;
 }
 
+interface AcceptInvitePayload {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName?: string;
+}
+
 interface AuthState {
   accessToken: string | null;
   refreshToken: string | null;
@@ -43,6 +54,7 @@ interface AuthState {
   hydrated: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (payload: RegisterPayload) => Promise<void>;
+  acceptInvite: (token: string, payload: AcceptInvitePayload) => Promise<void>;
   logout: () => void;
   refreshAccessToken: () => Promise<string>;
   setHydrated: () => void;
@@ -63,6 +75,11 @@ export const useAuthStore = create<AuthState>()(
 
       register: async (payload) => {
         const { data } = await api.post('/auth/register', payload);
+        set({ accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user });
+      },
+
+      acceptInvite: async (token, payload) => {
+        const { data } = await api.post(`/team-invites/${token}/accept`, payload);
         set({ accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user });
       },
 

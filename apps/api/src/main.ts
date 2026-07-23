@@ -12,12 +12,21 @@ async function bootstrap() {
   // числовая нормализация и т.п.), и проверка по re-serialized body была бы багом.
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
-  app.use(helmet());
+  // crossOriginResourcePolicy: 'cross-origin' — helmet-дефолт 'same-origin' блокировал
+  // (ERR_BLOCKED_BY_RESPONSE.NotSameOrigin) картинки, которые API намеренно отдаёт на чужие
+  // origin: аватарки лендингов встраиваются на клиентских доменах (jcywkdake.shop и т.п.),
+  // аватар канала — на дашборде (другой поддомен, mw-track.com vs api.mw-track.com).
+  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(compression());
 
+  // origin:true (отражает Origin запроса, без credentials) — фиксированный ALLOWED_ORIGINS
+  // (дашборд) не может покрыть клиентские домены, на которых встроен tracking SDK: это
+  // self-service Domain-ы, добавляемые пользователями динамически (см. DomainsModule), их
+  // набор в принципе не перечислим заранее. credentials:true убран — ни дашборд, ни SDK нигде
+  // не используют cookie/withCredentials (везде Bearer JWT в заголовке, см. apps/web/src/lib/api.ts),
+  // так что открытый origin здесь не открывает доступ к чьей-либо сессии.
   app.enableCors({
-    origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-    credentials: true,
+    origin: true,
   });
 
   app.setGlobalPrefix('api/v1');

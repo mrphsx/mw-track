@@ -3,13 +3,18 @@
 // метод DomainsService, чтобы LandingsModule не тянул DomainsModule (тот уже импортирует
 // LandingsModule за NginxService — взаимный импорт модулей создал бы циклическую зависимость).
 
+// Ровно одно из двух (запрос пользователя 2026-07-17) — путь либо на конкретный лендинг, либо
+// на группу A/B/n-теста напрямую, см. Landing.abTestGroupId в schema.prisma и
+// LandingRendererService.pickAbTestGroupVariant.
 export interface DomainPathLike {
   path: string;
-  landingId: string;
+  landingId: string | null;
+  abTestGroupId: string | null;
 }
 
 export interface ResolvedDomainPath {
-  landingId: string;
+  landingId: string | null;
+  abTestGroupId: string | null;
   subPath: string; // без ведущего слеша, '' для корня — формат, который ждёт renderAndServe
 }
 
@@ -32,12 +37,12 @@ export function matchDomainPath(paths: DomainPathLike[], requestPath: string): R
 
   for (const p of specific) {
     if (requestPath === p.path || requestPath.startsWith(`${p.path}/`)) {
-      return { landingId: p.landingId, subPath: requestPath.slice(p.path.length).replace(/^\//, '') };
+      return { landingId: p.landingId, abTestGroupId: p.abTestGroupId, subPath: requestPath.slice(p.path.length).replace(/^\//, '') };
     }
   }
 
   const root = paths.find((p) => p.path === '/');
-  if (root) return { landingId: root.landingId, subPath: requestPath.replace(/^\//, '') };
+  if (root) return { landingId: root.landingId, abTestGroupId: root.abTestGroupId, subPath: requestPath.replace(/^\//, '') };
 
   return null;
 }

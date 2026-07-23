@@ -17,7 +17,8 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "publish:template-assets": "node scripts/publish-template-assets.js"
   },
   "dependencies": {
     "@nestjs/bull": "^11.0.4",
@@ -40,6 +41,7 @@
     "compression": "^1.8.1",
     "date-fns": "^4.4.0",
     "ethers": "^6.17.0",
+    "geoip-lite": "^1.4.10",
     "grammy": "^1.44.0",
     "helmet": "^8.2.0",
     "ioredis": "^5.11.1",
@@ -51,6 +53,7 @@
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
+    "telegram": "^2.26.22",
     "tiny-secp256k1": "^2.2.4",
     "tronweb": "^6.3.0"
   },
@@ -62,6 +65,7 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.0",
+    "@types/geoip-lite": "^1.4.4",
     "@types/helmet": "^0.0.48",
     "@types/jest": "^29.5.2",
     "@types/multer": "^2.1.0",

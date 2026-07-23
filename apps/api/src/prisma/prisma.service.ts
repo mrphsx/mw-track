@@ -17,7 +17,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit {
     // нет колонки deletedAt — авто-инъекция `deletedAt: null` ниже привела бы к Unknown argument.
     // DomainsService сам явно фильтрует по companyId на каждый запрос.
     this.$use(async (params, next) => {
-      const modelsWithCompany = ['Project', 'Landing', 'Client'];
+      const modelsWithCompany = ['Project', 'Landing', 'Client', 'BotScenario', 'AutomationFlow', 'AbTestGroup', 'StoryPost'];
 
       if (params.model && modelsWithCompany.includes(params.model)) {
         const ctx = companyStorage.getStore();

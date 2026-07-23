@@ -5,6 +5,7 @@ import { Company, SubscriptionPlan, User } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { addDays } from 'date-fns';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PermissionsService } from '../../common/permissions/permissions.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.interface';
@@ -17,6 +18,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwt: JwtService,
     private config: ConfigService,
+    private permissionsService: PermissionsService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -64,6 +66,13 @@ export class AuthService {
       throw new ForbiddenException('Аккаунт заблокирован');
     }
 
+    // Ручная блокировка компании супер-админом (Фаза 4.3D, запрос пользователя 2026-07-19) —
+    // новые логины отсекаются сразу; уже выданные access-токены (15 мин) отрабатывают до
+    // истечения — осознанный компромисс, тот же выбор, что и в checkSubscriptionLimit.
+    if (user.company.isSuspended) {
+      throw new ForbiddenException('Компания заблокирована администратором платформы');
+    }
+
     await this.prisma.user.update({
       where: { id: user.id },
       data: { lastLoginAt: new Date() },
@@ -83,6 +92,12 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { company: true } });
     if (!user || !user.isActive) {
       throw new UnauthorizedException('Пользователь не найден или заблокирован');
+    }
+
+    // Та же проверка, что и в login() — иначе уже вошедший пользователь заблокированной
+    // компании мог бы держать сессию живой рефрешами бесконечно, обходя 15-минутное окно.
+    if (user.company.isSuspended) {
+      throw new ForbiddenException('Компания заблокирована администратором платформы');
     }
 
     // Rotation — старый refresh token инвалидируется
@@ -112,7 +127,8 @@ export class AuthService {
       where: { id: userId },
       include: { company: true },
     });
-    return this.sanitizeUser(user);
+    const permissions = await this.permissionsService.resolvePermissionsForToken(user.id, user.role);
+    return { ...this.sanitizeUser(user), permissions };
   }
 
   // Refresh-токены — уже высокоэнтропийные JWT, а не пользовательские пароли,
@@ -124,11 +140,24 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
+  // Публичный — переиспользуется TeamInvitesService для авто-логина сразу после принятия
+  // инвайт-ссылки (тот же UX, что и после register()), без дублирования подписи JWT/ротации
+  // refresh-токена в другом модуле.
+  async issueTokensForUser(user: User & { company?: Company | null }) {
+    return this.issueTokens(user);
+  }
+
   private async issueTokens(user: User & { company?: Company | null }) {
+    // Гранулярные права (запрос пользователя 2026-07-17) — вычисляются один раз тут, кладутся
+    // и в JWT payload (для PermissionsGuard на бэкенде), и в user.permissions в ответе (для
+    // фронтенд-гейтинга кнопок/навигации) — единая точка вычисления, не расходятся.
+    const permissions = await this.permissionsService.resolvePermissionsForToken(user.id, user.role);
+
     const payload: JwtPayload = {
       sub: user.id,
       companyId: user.companyId,
       role: user.role,
+      permissions,
     };
 
     const accessToken = this.jwt.sign(payload, {
@@ -151,7 +180,7 @@ export class AuthService {
       },
     });
 
-    return { accessToken, refreshToken, user: this.sanitizeUser(user) };
+    return { accessToken, refreshToken, user: { ...this.sanitizeUser(user), permissions } };
   }
 
   private sanitizeUser(user: User & { company?: Company | null }) {

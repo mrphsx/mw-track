@@ -19,14 +19,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // нельзя ни показывать дашборд, ни редиректить: ещё не известно, авторизован ли пользователь.
   if (!hydrated || !accessToken) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="min-h-screen flex items-center justify-center bg-background">
         <Skeleton className="w-32 h-8" />
       </div>
     );
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-50">
+    <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />

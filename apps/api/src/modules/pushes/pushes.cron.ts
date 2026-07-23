@@ -1,7 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { PushStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkSubscriptionLimit } from '../../common/guards/subscription.util';
 import { PushesService } from './pushes.service';
+
+// Порог, после которого просроченный (заблокированный лимитом подписки) SCHEDULED-пуш
+// окончательно помечается FAILED, а не продолжает молча ждать следующего тика — лимит
+// месяца сбрасывается скользящим окном (resetMonthlyPushLimits), просрочка плана продлевается
+// автопродлением (BillingCron, каждые 15 мин) — оба МОГУТ решиться сами, поэтому не глушим
+// пуш первой же неудачной попыткой (запрос пользователя 2026-07-18).
+const SCHEDULED_PUSH_GRACE_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class PushesCron {
@@ -17,6 +26,49 @@ export class PushesCron {
     await this.pushesService.resetMonthlyPushLimits();
   }
 
+  // Срабатывание отложенных рассылок (запрос пользователя 2026-07-18, "программировать
+  // рассылки на потом") — Push.scheduledAt/PushStatus.SCHEDULED существовали в схеме и в DTO
+  // и раньше, но ничего не проверяло наступившие сроки. Раз в минуту — разумная гранулярность
+  // для "на 14:32", не должна заметно опаздывать; процесс одиночный (PM2 без cluster-режима),
+  // гонок между несколькими инстансами крона нет, рестарт между тиками не теряет пуши —
+  // следующий тик подхватит по тому же условию scheduledAt<=now(), как и остальные краны
+  // здесь.
+  @Cron('*/1 * * * *')
+  async fireScheduledPushes() {
+    const due = await this.prisma.push.findMany({
+      where: { status: PushStatus.SCHEDULED, scheduledAt: { lte: new Date() } },
+      include: { project: { select: { id: true, companyId: true } } },
+    });
+    if (due.length === 0) return;
+
+    for (const push of due) {
+      const company = await this.prisma.company.findUnique({ where: { id: push.project.companyId } });
+      if (!company) continue;
+
+      const { blocked, reason } = checkSubscriptionLimit(company, 'pushes');
+      if (blocked) {
+        const overdueMs = Date.now() - push.scheduledAt!.getTime();
+        if (overdueMs >= SCHEDULED_PUSH_GRACE_MS) {
+          this.logger.warn(`Push ${push.id} failed after grace period, still blocked: ${reason}`);
+          await this.prisma.push.update({ where: { id: push.id }, data: { status: PushStatus.FAILED } });
+        } else {
+          this.logger.warn(`Push ${push.id} due but blocked (${reason}), retrying next tick`);
+        }
+        continue;
+      }
+
+      try {
+        // requireDueBy — перепроверяет срок ПРЯМО в момент атомарного захвата внутри send(),
+        // на случай если пользователь успел перенести дату между findMany выше и этим вызовом.
+        await this.pushesService.send(push.id, push.project.id, push.project.companyId, push.scheduledAt!);
+      } catch (error) {
+        // Захват не удался (count===0) — скорее всего кто-то уже отправил пуш вручную
+        // в этом же промежутке, не настоящая ошибка.
+        this.logger.warn(`fireScheduledPushes: send() skipped for push ${push.id}: ${(error as Error).message}`);
+      }
+    }
+  }
+
   // SubscriptionGuard (шаг 1.3) уже блокирует доступ в реальном времени по
   // company.planExpiresAt — этому крону не нужно (и не должно) повторять ту проверку.
   // Его задача — то, чего guard не делает: видимость для опс + отключение каналов,
@@ -26,17 +78,15 @@ export class PushesCron {
   async checkExpiredSubscriptions() {
     const expired = await this.prisma.company.findMany({
       where: { planExpiresAt: { lt: new Date() }, plan: { not: 'TRIAL' } },
-      include: { projects: { include: { channels: true } } },
+      include: { projects: { include: { channel: true } } },
     });
 
     for (const company of expired) {
       this.logger.warn(`Company ${company.id} (${company.name}) subscription expired at ${company.planExpiresAt}`);
 
       for (const project of company.projects) {
-        for (const channel of project.channels) {
-          if (channel.isActive) {
-            await this.prisma.channel.update({ where: { id: channel.id }, data: { isActive: false } });
-          }
+        if (project.channel?.isActive) {
+          await this.prisma.channel.update({ where: { id: project.channel.id }, data: { isActive: false } });
         }
       }
     }

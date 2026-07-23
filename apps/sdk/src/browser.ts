@@ -8,6 +8,35 @@
   const script = document.currentScript as HTMLScriptElement;
   const projectToken = script?.getAttribute('data-project-id');
   const apiBaseUrl = (script?.getAttribute('data-api-url') || '').replace(/\/$/, '');
+  // Привязка события к конкретному лендингу (не проекту в целом) — для статистики по
+  // отдельным лендингам. Специально НЕ идёт через sessionStorage-мердж ниже (в отличие от
+  // fbclid/utm) — landingId привязан к ТЕКУЩЕЙ странице, не должен персистить, если SDK
+  // вдруг загрузится на другом лендинге в той же сессии.
+  const landingId = script?.getAttribute('data-landing-id') || undefined;
+  // Авторедирект (тумблер на лендинге, LandingRendererService.injectTrackingScripts) —
+  // страница сразу уводит в Telegram без клика по кнопке. URL уже собран на сервере
+  // (тот же /tg-redirect, что и у кнопки), SDK просто трекает Lead и уходит по нему.
+  const autoRedirectUrl = script?.getAttribute('data-auto-redirect-url') || undefined;
+
+  // Карта имён query-параметров трекинг-ссылки (пиксель + ad_id/campaign_id/... — запрос
+  // пользователя 2026-07-04, "получить ссылку" с кастомными именами параметров, чтобы
+  // спай-сервисы конкурентов не палили рекламу по одинаковым ?pixel=&ad_id=). Сервер всегда
+  // присылает ПОЛНУЮ разрешённую карту (дефолты + переопределения проекта, см.
+  // LandingRendererService/resolveParamMap) — SDK не хранит собственных дефолтов, чтобы не
+  // держать третью копию одного и того же списка (бэкенд/фронтенд уже дублируют его между
+  // собой за неимением общего пакета в монорепо).
+  let paramMap: Record<string, string> = {};
+  try {
+    paramMap = JSON.parse(script?.getAttribute('data-param-map') || '{}');
+  } catch {
+    // Атрибут отсутствует/битый — просто не читаем кастомные параметры, остальной трекинг
+    // (fbclid/utm/PageView) продолжает работать как обычно.
+  }
+  // Обратный словарь: фактическое имя параметра в URL -> семантический ключ (adId/pixel/...)
+  const paramLookup: Record<string, string> = {};
+  for (const [semanticKey, actualName] of Object.entries(paramMap)) {
+    paramLookup[actualName] = semanticKey;
+  }
 
   if (!projectToken) {
     console.warn('[TrafficCRM] data-project-id attribute is missing');
@@ -28,6 +57,13 @@
     utmSource: urlParams.get('utm_source'),
     utmCampaign: urlParams.get('utm_campaign'),
   };
+  // Пиксель + рекламные макросы — читаем URL по кастомной карте имён проекта (paramLookup),
+  // не по дефолтным именам ad_id/campaign_id/... : значение попадает в sessionData под
+  // СЕМАНТИЧЕСКИМ ключом (adId/campaignId/...), который и ждёт TrackEventDto на бэкенде,
+  // независимо от того, как назывался сам query-параметр в ссылке.
+  for (const [actualName, semanticKey] of Object.entries(paramLookup)) {
+    sessionData[semanticKey] = urlParams.get(actualName);
+  }
 
   const STORAGE_KEY = '_tcrm_session';
   const existing = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '{}');
@@ -43,6 +79,7 @@
     const payload: Record<string, unknown> = {
       eventName,
       pageUrl: window.location.href,
+      landingId,
       ...stored,
       ...extraData,
     };
@@ -61,34 +98,17 @@
     }
   }
 
-  async function generateTelegramStartCode(): Promise<string | null> {
-    const stored = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '{}');
-
-    const cacheKey = '_tcrm_start_' + projectToken;
-    const cached = sessionStorage.getItem(cacheKey);
-    if (cached) return cached;
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/track/${projectToken}/tg-start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(stored),
-      });
-
-      if (!response.ok) return null;
-
-      const data = (await response.json()) as { startCode: string };
-      sessionStorage.setItem(cacheKey, data.startCode);
-      return data.startCode;
-    } catch {
-      return null;
-    }
-  }
-
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => track('PageView'));
   } else {
     track('PageView');
+  }
+
+  // fetch(..., {keepalive:true}) переживает уход со страницы, поэтому не ждём ответа перед
+  // редиректом — "срабатывает сразу", без клика по кнопке.
+  if (autoRedirectUrl) {
+    track('Lead');
+    window.location.href = autoRedirectUrl;
   }
 
   // <button data-track="Lead">Вступить</button>
@@ -108,29 +128,11 @@
     track(eventName, extra);
   });
 
-  // <a data-tg-bot="mybot" href="https://t.me/mybot?start=...">Перейти в Telegram</a>
-  // Только явный непустой data-tg-bot — это режимы лендинга, где переход идёт ЧЕРЕЗ бота
-  // (BOT_DIRECT/PRIVATE_CHANNEL_REQUEST, см. LandingRendererService.buildTelegramLink),
-  // и кнопке нужен свежий start-код для атрибуции на момент клика (sessionStorage может
-  // успеть накопить данные, которых не было при серверном рендере страницы).
-  // Прямые режимы (канал/личка) этот атрибут не рисуют вообще — раньше здесь был
-  // фоллбэк на любой href с "t.me", который ошибочно пытался бы переписать и эти
-  // ссылки тоже, требуя лишний async-запрос там, где он не нужен и не имеет смысла
-  // (у канала/личного аккаунта нет start-параметра).
-  document.addEventListener('click', async function (e: MouseEvent) {
-    const target = (e.target as HTMLElement).closest('[data-tg-bot]') as HTMLElement | null;
-    if (!target) return;
-
-    const botUsername = target.getAttribute('data-tg-bot');
-    if (!botUsername) return;
-
-    e.preventDefault();
-    track('Lead');
-
-    const startCode = await generateTelegramStartCode();
-    const tgUrl = startCode ? `https://t.me/${botUsername}?start=${startCode}` : `https://t.me/${botUsername}`;
-    window.open(tgUrl, '_blank');
-  });
+  // Кнопка Telegram (все 4 режима) ведёт статичным href на собственный редирект-эндпоинт
+  // (TrackingController.tgRedirect, /track/:publicToken/tg-redirect), который сам решает
+  // tg://-ссылку и отвечает 302 — JS-перехват клика здесь больше не нужен (раньше был нужен
+  // для BOT_DIRECT, чтобы подставить свежий start-код через отдельный POST /tg-start, см.
+  // git-историю). data-track="Lead" на кнопке трекается общим обработчиком выше как обычно.
 
   // Публичный API для ручного использования: window.tcrm.track('Purchase', {value: 99})
   (window as unknown as { tcrm: unknown }).tcrm = {

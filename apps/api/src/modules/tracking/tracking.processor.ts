@@ -29,11 +29,18 @@ export class TrackingProcessor {
     const event = await this.prisma.trackingEvent.findUnique({ where: { id: job.data.eventDbId } });
     if (!event) return;
 
-    // Проект не привязан к конкретной платформе — событие уходит на все
-    // активные пиксели проекта разом (любое число, любых платформ).
-    const pixels = await this.prisma.trackingPixel.findMany({
-      where: { projectId: job.data.projectId, isActive: true },
-    });
+    // Если клик пришёл по сгенерированной ссылке с конкретным пикселем (Client/Landing.
+    // "Получить ссылку", запрос пользователя 2026-07-04) — событие роутится ТОЛЬКО туда,
+    // не всем активным пикселям проекта. Осознанно без фоллбэка на broadcast, если этот
+    // пиксель деактивирован/удалён: раз баер явно выбрал пиксель для этой ссылки, молчаливый
+    // откат на "все пиксели" рискует задвоить конверсию в чужой пиксель.
+    const pixels = event.pixelId
+      ? await this.prisma.trackingPixel.findMany({
+          where: { id: event.pixelId, projectId: job.data.projectId, isActive: true },
+        })
+      : await this.prisma.trackingPixel.findMany({
+          where: { projectId: job.data.projectId, isActive: true },
+        });
 
     const results = await Promise.allSettled(
       pixels.map(async (pixel) => {

@@ -6,6 +6,12 @@
    select и т.д.) держатся именно на этих custom-variant'ах — без них, например, Tabs ломал
    layout (data-horizontal:flex-col не применялся, все TabsContent-панели лежали в один ряд).
    Скопировано из node_modules/shadcn/dist/tailwind.css вместо нерезолвящегося @import. */
+/* Тёмная тема (запрос пользователя 2026-07-20) — в Tailwind v4 `dark:` по умолчанию слушает
+   prefers-color-scheme, а не класс. Без этой строки next-themes переключал бы CSS-переменные
+   (bg-background и т.п. уже безусловные), но любой будущий класс вида `dark:text-amber-400`
+   молча реагировал бы на системную тему ОС, а не на переключатель в самом приложении. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @custom-variant data-open {
   &:where([data-state='open']),
   &:where([data-open]:not([data-open='false'])) {

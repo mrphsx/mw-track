@@ -4,7 +4,7 @@ import { Channel } from '@prisma/client';
 import { ClientsService } from '../../clients/clients.service';
 import { TrackingService } from '../../tracking/tracking.service';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { ChannelProvider, SendMessageOptions, UserStatus } from './channel.provider.interface';
+import { ChannelProvider, SendMessageOptions, SendMessageResult, UserStatus } from './channel.provider.interface';
 
 // Instagram Direct через прямой Meta Graph API (Messenger Platform, Page-connected flow) —
 // контракт сверен по developers.facebook.com на 2026-06-28, не по псевдокоду 05_BACKEND_CHANNELS.md
@@ -60,10 +60,10 @@ export class InstagramProvider implements ChannelProvider {
     await this.prisma.channel.update({ where: { id: channel.id }, data: { igBusinessAccountId } });
   }
 
-  async sendMessage(igsid: string, options: SendMessageOptions, channel: Channel): Promise<boolean> {
+  async sendMessage(igsid: string, options: SendMessageOptions, channel: Channel): Promise<SendMessageResult> {
     if (!channel.igAccessToken) {
       this.logger.warn(`sendMessage: no igAccessToken for channel ${channel.id}`);
-      return false;
+      return { success: false, error: 'Канал Instagram не настроен (нет access token)' };
     }
 
     try {
@@ -81,13 +81,15 @@ export class InstagramProvider implements ChannelProvider {
       });
 
       if (!res.ok) {
-        this.logger.error(`Instagram sendMessage failed for channel ${channel.id}: ${res.status} ${await res.text()}`);
-        return false;
+        const body = await res.text();
+        this.logger.error(`Instagram sendMessage failed for channel ${channel.id}: ${res.status} ${body}`);
+        return { success: false, error: `${res.status}: ${body}` };
       }
-      return true;
+      return { success: true };
     } catch (error) {
-      this.logger.error(`Instagram sendMessage error for channel ${channel.id}: ${(error as Error).message}`);
-      return false;
+      const message = (error as Error).message;
+      this.logger.error(`Instagram sendMessage error for channel ${channel.id}: ${message}`);
+      return { success: false, error: message };
     }
   }
 

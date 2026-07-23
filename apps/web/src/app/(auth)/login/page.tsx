@@ -34,7 +34,7 @@ export default function LoginPage() {
   return (
     <div className="w-full max-w-md bg-white rounded-2xl shadow p-8">
       <div className="text-center mb-6">
-        <div className="text-3xl font-bold text-blue-600 mb-1">TrafficCRM</div>
+        <div className="text-3xl font-bold text-blue-600 mb-1">MWTRACK</div>
         <p className="text-gray-500 text-sm">Вход в систему</p>
       </div>
       <form onSubmit={handleSubmit} className="space-y-4">

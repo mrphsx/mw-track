@@ -3,31 +3,33 @@ import {
   Body,
   Controller,
   ForbiddenException,
+  Get,
   Headers,
   NotFoundException,
   Param,
   Post,
+  Query,
   RawBodyRequest,
   Req,
+  Res,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Request } from 'express';
-import { nanoid } from 'nanoid';
+import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
+import { PrismaService } from '../../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
-import { RedisService } from '../../redis/redis.service';
 import { TrackingService } from './tracking.service';
 import { TrackEventDto } from './dto/track-event.dto';
+import { buildTelegramLink } from '../channels/telegram-link.util';
 
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
-const TG_START_TTL_SECONDS = 24 * 60 * 60;
 
 @Controller('track')
 export class TrackingController {
   constructor(
+    private prisma: PrismaService,
     private projectsService: ProjectsService,
     private trackingService: TrackingService,
-    private redis: RedisService,
   ) {}
 
   // Браузерный SDK (track.js на лендинге) — публичный токен в URL, без подписи
@@ -92,29 +94,66 @@ export class TrackingController {
     return this.trackingService.recordEvent(project.id, { ...dto, source: 'SDK' });
   }
 
-  // Вызывается JS-сниппетом перед открытием t.me/<bot>?start=<code> — кладёт
-  // накопленные fbclid/ttclid/utm в Redis на REDIS_BRIDGE-ключ, который читает
-  // TelegramProvider.handleStart() при заходе пользователя в бота (см. шаг 1.5)
+  // Кнопка лендинга ведёт СЮДА (302 на tg://...), а не напрямую на tg:// — многие ин-апп
+  // браузеры рекламных сетей (Facebook/Instagram/TikTok WebView) блокируют переход на
+  // кастомную схему прямо из <a href>, но нормально проходят через https-редирект на нашем
+  // домене (запрос пользователя 2026-07-02). code — тот же одноразовый Redis start:<код>,
+  // который LandingRendererService.injectTrackingScripts кладёт в Redis при рендере страницы
+  // (fbclid/ttclid/utm) и который TelegramProvider.handleStart читает и удаляет при заходе
+  // в бота — просто донесённый сюда через query, а не через отдельный POST + JS-перехват
+  // клика, как раньше.
   @Public()
-  @Post(':publicToken/tg-start')
-  async createTgStartCode(@Param('publicToken') publicToken: string, @Body() body: Record<string, unknown>) {
+  @Get(':publicToken/tg-redirect')
+  async tgRedirect(
+    @Param('publicToken') publicToken: string,
+    @Query('code') code: string | undefined,
+    @Query('landingId') landingId: string | undefined,
+    @Res() res: Response,
+  ) {
+    // code — одноразовый (см. комментарий выше), поэтому ответ никогда не должен оседать в
+    // каком-либо кэше (в частности — на edge у Cloudflare, теперь стоящего перед отдельным
+    // redirect-доменом, запрос пользователя 2026-07-20): закэшированный 302 отдавал бы ВСЕМ
+    // следующим посетителям чужую атрибуцию/устаревший инвайт вместо честного редиректа.
+    res.set('Cache-Control', 'no-store');
+
     const project = await this.projectsService.findByPublicToken(publicToken);
-    if (!project) throw new NotFoundException('Project not found');
 
-    const startCode = nanoid(12);
-    await this.redis.set(
-      `start:${startCode}`,
-      JSON.stringify({
-        fbclid: body.fbclid,
-        ttclid: body.ttclid,
-        utmSource: body.utmSource,
-        utmCampaign: body.utmCampaign,
-      }),
-      'EX',
-      TG_START_TTL_SECONDS,
-    );
+    // Персональная invite-ссылка лендинга (Landing.tgInviteLink) — для точной
+    // пер-лендинговой атрибуции (TelegramProvider.handleJoinRequest). Если лендинг ещё не
+    // публиковался с этой фичи (ссылка не создана), buildTelegramLink сама откатится на
+    // общую ссылку канала.
+    const landing = landingId ? await this.prisma.landing.findUnique({ where: { id: landingId }, select: { tgInviteLink: true } }) : null;
 
-    return { startCode };
+    const tgUrl = buildTelegramLink(project?.channel ?? null, code, landing?.tgInviteLink);
+
+    if (!tgUrl) {
+      res.status(404).send('<h1>Канал не найден</h1>');
+      return;
+    }
+
+    res.redirect(302, tgUrl);
+  }
+
+  // Smart Push Timing (Фаза 3.4, запрос пользователя 2026-07-15) — первый клик-трекинг в
+  // проекте. Кнопки пушей при отправке подменяются на этот редирект (pushes.processor.ts),
+  // url — исходная ссылка, которую баер указал в кнопке. Первый клик на конкретное отправление
+  // засчитывается один раз (PushLog.clickedAt), повторные клики того же получателя CTR не
+  // раздувают. Лог не найден — всё равно редиректим, чтобы не сломать кнопку пользователю,
+  // просто не считаем клик.
+  @Public()
+  @Get('push/:pushLogId')
+  async pushClickRedirect(@Param('pushLogId') pushLogId: string, @Query('url') url: string | undefined, @Res() res: Response) {
+    if (!url || !/^https?:\/\//i.test(url)) {
+      res.status(400).send('Invalid redirect URL');
+      return;
+    }
+
+    const log = await this.prisma.pushLog.findUnique({ where: { id: pushLogId } });
+    if (log && !log.clickedAt) {
+      await this.prisma.pushLog.update({ where: { id: pushLogId }, data: { clickedAt: new Date() } });
+    }
+
+    res.redirect(302, url);
   }
 
   private getClientIp(req: Request): string {

@@ -35,6 +35,17 @@ model Company {
   pushesThisMonth   Int @default(0)
   pushesResetAt     DateTime @default(now())
 
+  // Ручные ограничения супер-админа (Фаза 4.3D, запрос пользователя 2026-07-19) — независимы
+  // от планов/лимитов подписки выше, накладываются вручную через apps/admin. isSuspended
+  // проверяется в checkSubscriptionLimit (блокирует projects/clients/pushes целиком) И в
+  // AuthService.login()/refresh() (новые логины/рефреши блокируются сразу; уже выданный
+  // access-токен, 15 мин, отрабатывает до истечения — осознанный компромисс). pushesBlocked —
+  // только пуши, тоже через checkSubscriptionLimit (единая точка для SubscriptionGuard и
+  // PushesCron.fireScheduledPushes). domainsBlocked — проверяется в DomainsService.create().
+  pushesBlocked  Boolean @default(false)
+  domainsBlocked Boolean @default(false)
+  isSuspended    Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -45,6 +56,54 @@ model Company {
   landings            Landing[]
   invoices            Invoice[]
   balanceTransactions BalanceTransaction[]
+  teamInvites         TeamInvite[]
+  errorLogs           ErrorLog[]
+  adminActionLogs     AdminActionLog[]
+}
+
+// Super Admin панель (Фаза 4.3, запрос пользователя 2026-07-19) — первая по-настоящему
+// кросс-тенантная поверхность в проекте, намеренно НЕ в modelsWithCompany
+// (PrismaService middleware) — платформенному супер-админу нужен доступ ко всем компаниям
+// сразу, не к одной. companyId/userId nullable — публичные роуты (tracking/webhooks) не
+// всегда несут авторизованного пользователя/компанию.
+model ErrorLog {
+  id         String   @id @default(cuid())
+  companyId  String?
+  userId     String?
+  message    String
+  stack      String?
+  route      String?
+  method     String?
+  statusCode Int?
+  createdAt  DateTime @default(now())
+
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@index([createdAt])
+}
+
+// Аудит ручных действий супер-админа (Фаза 4.3) — начинается с ручной активации подписки
+// (action: 'SUBSCRIPTION_CHANGE'), action — строка, а не enum, задел на будущие типы действий
+// без миграции. Затрагивает выручку компании без обычного крипто-инвойса, поэтому пишется в
+// отдельную просматриваемую таблицу, а не только в серверный лог.
+model AdminActionLog {
+  id            String   @id @default(cuid())
+  adminUserId   String
+  companyId     String
+  action        String
+  previousValue Json
+  newValue      Json
+  createdAt     DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  // FK на User (Фаза 4.3A, запрос пользователя 2026-07-19 — задел на несколько будущих
+  // супер-админов) — без неё вкладка "Действия" в apps/admin могла бы показать только сырой
+  // adminUserId, не имя/email. Добавлена сейчас, пока таблица почти пустая, дешевле мигрировать
+  // до накопления реальных данных, чем после.
+  admin User @relation(fields: [adminUserId], references: [id])
+
+  @@index([companyId, createdAt])
 }
 
 // ============================================================
@@ -58,7 +117,7 @@ model User {
   passwordHash String
   firstName    String
   lastName     String?
-  role         UserRole @default(ADVERTISER)
+  role         UserRole @default(BUYER)
   avatarUrl    String?
   isActive     Boolean  @default(true)
   lastLoginAt  DateTime?
@@ -70,6 +129,8 @@ model User {
   company          Company @relation(fields: [companyId], references: [id])
   projectAccess    ProjectAccess[]
   refreshTokens    RefreshToken[]
+  permissions      UserPermission[]
+  adminActions     AdminActionLog[]
 
   @@index([companyId])
 }
@@ -82,6 +143,32 @@ model RefreshToken {
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Инвайт-ссылка в команду (запрос пользователя 2026-07-04) — Owner/Admin создаёт ссылку с
+// преднастроенной ролью (и проектами для BUYER/OPERATOR), приглашённый сам вводит email/пароль
+// на публичной странице по токену. Токен = вся авторизация принятия приглашения, поэтому
+// прочитывается через findUnique (не проходит через tenant-scoping middleware, см.
+// PrismaService.modelsWithCompany — тот же паттерн, что у Domain/Channel).
+// Revoke — хард-делит, не soft-delete: это транзитный токен-креденшл, а не запись данных
+// компании, то же самое соображение, что и у RefreshToken (AuthService.logout — тоже delete()).
+model TeamInvite {
+  id           String    @id @default(cuid())
+  companyId    String
+  token        String    @unique
+  role         UserRole
+  projectIds   Json?     // string[] — только для BUYER/OPERATOR, применяется к ProjectAccess при accept
+  permissions  Json?     // string[] (значения Permission) — тот же паттерн, что projectIds, применяется к UserPermission при accept
+  createdById  String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  usedByUserId String?
+
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId])
 }
 
 // Доступ рекламщика к конкретным проектам
@@ -98,6 +185,24 @@ model ProjectAccess {
   @@unique([userId, projectId])
 }
 
+// Гранулярные права внутри доступных проектов (запрос пользователя 2026-07-17: "кто что
+// может делать, удалять, создавать, менять лэндинги, пиксели, домены, пуши итд") — второе
+// измерение поверх ProjectAccess: то не "к каким проектам есть доступ", а "что внутри
+// доступного проекта разрешено". OWNER/ADMIN/SUPER_ADMIN никогда не получают строк — остаются
+// безусловно полным доступом (см. PermissionsGuard/assertAccess elevated-байпас), проверяются
+// реально только BUYER/OPERATOR.
+model UserPermission {
+  id         String     @id @default(cuid())
+  userId     String
+  permission Permission
+  createdAt  DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permission])
+  @@index([userId])
+}
+
 // ============================================================
 // ПРОЕКТЫ
 // ============================================================
@@ -108,6 +213,18 @@ model Project {
   name        String
   description String?
   status      ProjectStatus @default(ACTIVE)
+
+  // IANA-строка (например "America/Bogota") — проект может целиться в аудиторию на другом
+  // конце света, "сутки" во всех дневных графиках этого проекта (подписки/диалоги/события)
+  // считаются по этой зоне, а не по UTC (запрос пользователя 2026-07-04, диалоги с клиентами).
+  timezone String @default("UTC")
+
+  // Кастомные имена query-параметров для генерируемых трекинг-ссылок лендинга (запрос
+  // пользователя 2026-07-04, "получить ссылку" с пикселем + рекламными макросами Facebook/
+  // TikTok) — { pixel: "px", adId: "zid1", campaignId: "zid2", ... }. null = дефолтные имена
+  // (см. apps/api/src/modules/tracking/link-params.const.ts). Нужно потому что одинаковые
+  // ?pixel=&ad_id= у всех клиентов платформы легко палятся спай-сервисами конкурентов.
+  linkParamMap Json?
 
   // Токены для внешних интеграций
   publicToken  String @unique @default(cuid())  // для JS Snippet
@@ -121,7 +238,11 @@ model Project {
   deletedAt DateTime?
 
   company       Company         @relation(fields: [companyId], references: [id])
-  channels      Channel[]
+  // 1:1 с 2026-07-02 — проект сам "становится" каналом, выбирается один раз при
+  // создании (см. ProjectsService.create()), не добавляется отдельным шагом позже.
+  // FK по-прежнему на Channel.projectId (см. @@unique там) — не сливаем поля Channel
+  // в Project, чтобы не тащить десятки nullable tg*/wa*/ig* колонок на каждый проект.
+  channel       Channel?
   pixels        TrackingPixel[] // проект не привязан к конкретной платформе — пикселей любых платформ может быть несколько одновременно (см. PixelPlatform)
   domains       Domain[]
   landings      Landing[]
@@ -130,6 +251,10 @@ model Project {
   events        TrackingEvent[]
   purchases     Purchase[]
   projectAccess ProjectAccess[]
+  automationFlows       AutomationFlow[]
+  automationEnrollments AutomationEnrollment[]
+  abTestGroups          AbTestGroup[]
+  storyPosts            StoryPost[]
 
   @@index([companyId])
   @@index([publicToken])
@@ -153,9 +278,46 @@ model Channel {
   tgChannelUsername String? // @username — публичный канал, для PUBLIC_CHANNEL_DIRECT (ссылка на лендинге)
   tgBotUsername  String?
   tgWelcomeMessage String?
+  // Приветственное сообщение бота при одобрении заявки (PRIVATE_CHANNEL_REQUEST) — запрос
+  // пользователя 2026-07-03. Медиа хранится в MinIO (ChannelMediaService, тот же бакет, что
+  // и лендинги, префикс welcome-media/) и раздаётся Telegram-у публичным HTTP(S)-URL через
+  // GET /channels/:id/welcome-media — тот же принцип, что и sendPhoto(url) уже используется
+  // для Push-рассылок (ChannelsService.sendMessage), просто URL указывает на нас самих, а не
+  // на внешний хостинг. tgWelcomeMediaKey хранит только ключ объекта в MinIO, не сам URL —
+  // сам публичный URL строится на лету из API_URL + channel.id при отправке.
+  tgWelcomeMediaType String? // 'PHOTO' | 'VIDEO' | 'VIDEO_NOTE' | 'VOICE' | 'DOCUMENT', null — без медиа
+  tgWelcomeMediaKey  String? // ключ объекта в MinIO (trafficcrm-landings, welcome-media/<channelId>/<file>)
+  tgWelcomeButtons   Json?   // [{ text, url }] — та же форма, что и Push.buttons
+  // Задержка одобрения заявки на вступление (PRIVATE_CHANNEL_REQUEST), секунды — запрос
+  // пользователя 2026-07-03, обсуждено перед разработкой. null/0 — без задержки (текущее
+  // поведение, approveChatJoinRequest вызывается синхронно внутри вебхука). Client/Subscribe-
+  // событие/пиксели пишутся МГНОВЕННО, в момент заявки, не задержкой — только сам вызов
+  // approveChatJoinRequest и последующее приветственное сообщение откладываются через BullMQ
+  // (queue join-request-approval, см. TelegramProvider.handleJoinRequest /
+  // JoinRequestApprovalProcessor) — решение согласовано с пользователем: атрибуция для
+  // рекламных площадок не должна плыть вместе с искусственной задержкой одобрения.
+  tgJoinDelaySeconds Int?
   tgMode             TelegramMode? @default(BOT_DIRECT) // см. enum TelegramMode выше
   tgInviteLink       String?  // кэш invite-ссылки (creates_join_request:true) для PRIVATE_CHANNEL_REQUEST, создаётся в initialize()
   tgPersonalUsername String?  // личный @username для PERSONAL_DM — общение от своего лица, без бота и вебхука
+
+  // Список @username менеджеров (запрос пользователя 2026-07-21: "если команда не захочет
+  // подключать личный аккаунт, у них должна быть возможность регистрировать диалоги по-
+  // другому, через приветственного бота"). Сообщения от этих username перехватываются ДО
+  // обычной обработки клиента (TelegramProvider) — менеджер никогда не становится Client,
+  // значит не попадает под пуши/воронки/автоворонки этого бота. Менеджер пересылает боту
+  // сообщение клиента, бот ищет клиента по tgUserId настоящего отправителя пересылки и
+  // предлагает подтвердить запись диалога. Без @, регистронезависимое сравнение.
+  tgManagerUsernames String[] @default([])
+
+  // MTProto-подключение личного аккаунта (PERSONAL_DM, запрос пользователя 2026-07-04) — не
+  // Bot API, реальный вход в личный Telegram-аккаунт через GramJS, чтобы видеть входящие
+  // диалоги (Bot API вообще не может ничего узнать про переписку личного аккаунта).
+  // tgSessionEncrypted непустой = аккаунт подключён. Отключение просто обнуляет все три поля —
+  // сессию нельзя "отозвать" так же просто, как бот-токен (см. EncryptionService).
+  tgPersonalPhone    String?  // номер, использованный при входе
+  tgPersonalUserId   String?  // свой Telegram user id — чтобы отличать свои исходящие от входящих в live-слушателе
+  tgSessionEncrypted String?  // GramJS StringSession, AES-256-GCM (apps/api/src/common/encryption.service.ts)
 
   // Метаданные, подтянутые из Telegram в initialize() (getMe/getChat/getChatMemberCount) —
   // только для отображения в карточке канала в UI, не используются в бизнес-логике.
@@ -197,8 +359,55 @@ model Channel {
   updatedAt DateTime @updatedAt
 
   project Project @relation(fields: [projectId], references: [id])
+  botScenarios BotScenario[]
+  storyPosts   StoryPost[]
 
+  // Enforcing 1:1 — см. Project.channel выше.
+  @@unique([projectId])
   @@index([projectId])
+}
+
+// Сценарии бота (запрос пользователя 2026-07-03) — команды + реакции на события (депозит/
+// повторный депозит/отписка) + дефолтное сообщение на нераспознанный текст. Работает для
+// любого Telegram-режима с реальным ботом (не PERSONAL_DM) — шире, чем приветственное
+// сообщение (то только для PRIVATE_CHANNEL_REQUEST). См. TelegramProvider.triggerScenario.
+enum BotScenarioTrigger {
+  COMMAND
+  FIRST_DEPOSIT   // "FD" — терминология запланированного модуля депозитов, см. память агента
+  REPEAT_DEPOSIT  // "RD" (redeposit)
+  UNSUBSCRIBE
+  DEFAULT
+}
+
+model BotScenario {
+  id        String @id @default(cuid())
+  channelId String
+  companyId String // тенант-скоуп, как у Landing/Client
+
+  triggerType BotScenarioTrigger
+  // Только для COMMAND (без слэша, например "price"). Для остальных типов — '' (пустая
+  // строка, НЕ null): Postgres unique-индекс считает каждый NULL уникальным сам по себе,
+  // только '' реально гарантирует "одна запись на (channel, triggerType)" для
+  // синглтон-триггеров на уровне БД, а не только в коде.
+  command String @default("")
+
+  isActive     Boolean @default(true)
+  delaySeconds Int     @default(0)
+
+  // Та же форма контента, что и у Channel.tgWelcomeMessage/Media/Buttons.
+  messageText String?
+  mediaType   String? // 'PHOTO' | 'VIDEO' | 'VIDEO_NOTE' | 'VOICE' | 'DOCUMENT'
+  mediaKey    String? // ключ в MinIO (ChannelMediaService, префикс scenario-media/)
+  buttons     Json?   // [{ text, url }]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  channel Channel @relation(fields: [channelId], references: [id])
+
+  @@unique([channelId, triggerType, command])
+  @@index([companyId, channelId])
 }
 
 // ============================================================
@@ -238,16 +447,25 @@ model DomainPath {
   id        String   @id @default(cuid())
   domainId  String
   path      String   // нормализован: начинается с "/", без конечного слеша, кроме "/" самого
-  landingId String
+  // Ровно одно из двух (запрос пользователя 2026-07-17: "лить и на группу теста, и на каждый
+  // лендинг отдельно") — путь либо на один конкретный лендинг (рендерится строго он, БЕЗ
+  // сплита, даже если этот лендинг параллельно состоит в какой-то группе через другую ссылку),
+  // либо сразу на AbTestGroup (тогда взвешенный сплит применяется всегда). Раньше сплит был
+  // неявным свойством лендинга — теперь явное свойство конкретной ссылки. Проверяется
+  // CHECK-констрейнтом на уровне БД (см. миграцию) + валидацией в DomainsService.upsertPath.
+  landingId     String?
+  abTestGroupId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  domain  Domain  @relation(fields: [domainId], references: [id], onDelete: Cascade)
-  landing Landing @relation(fields: [landingId], references: [id])
+  domain      Domain       @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  landing     Landing?     @relation(fields: [landingId], references: [id])
+  abTestGroup AbTestGroup? @relation(fields: [abTestGroupId], references: [id])
 
   @@unique([domainId, path])
   @@index([domainId])
+  @@index([abTestGroupId])
 }
 
 // ============================================================
@@ -278,6 +496,48 @@ model Landing {
   metaDescription String?
   faviconUrl      String?
 
+  // Персональная invite-ссылка (creates_join_request:true) для PRIVATE_CHANNEL_REQUEST —
+  // отдельная от Channel.tgInviteLink (тот — общий fallback для захода в бота напрямую,
+  // минуя лендинг). Создаётся один раз при публикации (LandingsService.publish()), не при
+  // каждом рендере — рендер не должен дёргать внешний Telegram API. Позволяет точно
+  // определить, с какого именно лендинга пришла заявка на вступление (TelegramProvider.
+  // handleJoinRequest сверяет ctx.chatJoinRequest.invite_link с этим полем) — запрос
+  // пользователя 2026-07-02, "подписчики отдельно на каждый лэнд".
+  tgInviteLink String?
+
+  // Авторедирект (запрос пользователя 2026-07-03): редирект в Telegram срабатывает сразу при
+  // заходе на лендинг, без нажатия кнопки — LandingRendererService передаёт SDK URL редиректа
+  // через data-атрибут, сам SDK шлёт Lead и делает window.location вместо ожидания клика.
+  autoRedirect Boolean @default(false)
+
+  // Клоакинг (тот же запрос): лендинг показывается только посетителям из разрешённых стран
+  // (ISO 3166-1 alpha-2, верхний регистр), для всех остальных — редирект на cloakingRedirectUrl
+  // (например, Wikipedia) вместо реального контента. Страна определяется в
+  // LandingRendererService: сперва заголовок cf-ipcountry (когда домен клиента проксируется
+  // через Cloudflare — не гарантировано, см. 04_BACKEND_PROJECTS_DOMAINS.md про self-service
+  // домены без обязательного Cloudflare), иначе офлайн-геобаза geoip-lite по IP.
+  cloakingEnabled     Boolean  @default(false)
+  cloakingCountries   String[] @default([])
+  cloakingRedirectUrl String?
+
+  // Своя аватарка лендинга (запрос пользователя 2026-07-04) — ключ объекта в MinIO
+  // (StorageService, префикс landing-avatars/), НЕ хранится в templateData.CHANNEL_AVATAR:
+  // тот вычисляется на лету при рендере (LandingRendererService.renderTemplate) — если
+  // avatarKey не задан, используется фото канала (Channel.tgAvatarFileId) как дефолт "изначально
+  // как в канале", подставить которое можно только зная на момент рендера реальное состояние
+  // канала, а не то, что было при создании лендинга.
+  avatarKey String?
+
+  // A/B/n-тестирование (Фаза 3.2, запрос пользователя 2026-07-15, расширено тем же днём с
+  // пары до произвольного числа вариантов) — лендинг может состоять в одной AbTestGroup,
+  // abTestWeight — его доля трафика внутри группы (сумма весов участников группы = 100).
+  // Оба/все лендинги создаются баером заранее, независимо, со своим контентом — не
+  // клонирование одного в другие, см. LandingRendererService.resolveAbTestVariant (сплит
+  // трафика) и LandingsService/AbTestGroupsController (CRUD группы).
+  abTestGroupId String?
+  abTestWeight  Int?
+  abTestGroup   AbTestGroup? @relation(fields: [abTestGroupId], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -285,8 +545,41 @@ model Landing {
   company Company  @relation(fields: [companyId], references: [id])
   project Project  @relation(fields: [projectId], references: [id])
   domainPaths DomainPath[]
+  clients     Client[]
 
   @@index([companyId, projectId])
+}
+
+// A/B/n-группа лендингов (Фаза 3.2) — companyId плоской колонкой для скоупинга, без
+// @relation на Company, тот же приём, что и в AutomationFlow (не всем моделям, требующим
+// company-скоупинга, нужна обратная ссылка с той стороны). "Остановить тест" — soft-delete
+// этой строки + Landing.abTestGroupId/abTestWeight = null у всех участников (см.
+// LandingsService.stopAbTestGroup) — не заводим 4-е исключение из "no hard deletes".
+model AbTestGroup {
+  id        String    @id @default(cuid())
+  projectId String
+  companyId String
+  // Необязательное человекочитаемое название (запрос пользователя 2026-07-17) — если не
+  // задано, фронтенд показывает автосгенерированную подпись из имён участников (см.
+  // LandingCard.abTestGroupLabel).
+  name      String?
+  // Завершение теста (запрос пользователя 2026-07-17) — раньше остановка теста сразу ставила
+  // deletedAt, статистика нигде не сохранялась. Теперь это два разных состояния: endedAt
+  // задан + deletedAt пуст = завершён, виден в истории с застывшими цифрами; deletedAt задан =
+  // запись удалена из истории насовсем (обычный soft-delete). resultsSnapshot считается один
+  // раз при остановке (LandingsService.stopAbTestGroup), с начала теста (createdAt) до момента
+  // остановки — НЕ то же самое, что live-статистика лендинга (та за всё время жизни лендинга).
+  endedAt         DateTime?
+  resultsSnapshot Json?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  project     Project      @relation(fields: [projectId], references: [id])
+  landings    Landing[]
+  domainPaths DomainPath[]
+
+  @@index([projectId])
 }
 
 // ============================================================
@@ -297,14 +590,24 @@ model Client {
   id          String  @id @default(cuid())
   companyId   String
   projectId   String
+  // Каким лендингом привлечён — заполняется только когда источник надёжно определим
+  // (сейчас: PRIVATE_CHANNEL_REQUEST через персональную invite-ссылку лендинга, см.
+  // Landing.tgInviteLink). Для PUBLIC_CHANNEL_DIRECT остаётся null навсегда — Telegram
+  // не даёт боту знать, с какой страницы пришёл вступивший в публичный канал.
+  landingId   String?
 
   // Telegram данные
-  tgUserId   String?
-  tgUsername String?
+  tgUserId    String?
+  tgUsername  String?
   tgFirstName String?
   tgLastName  String?
   tgLanguage  String?
+  // Telegram file_id профильного фото клиента (не URL, несмотря на имя поля — как и у
+  // Channel.tgAvatarFileId, байты стримятся отдельным авторизованным эндпоинтом, см.
+  // ClientsController, потому что file_id сам по себе не является рабочей ссылкой).
   tgPhotoUrl  String?
+  // Telegram User.is_premium — приходит бесплатно на каждом апдейте от Telegram, раньше не читалось.
+  tgIsPremium Boolean?
 
   // WhatsApp данные
   waPhone    String?
@@ -327,6 +630,28 @@ model Client {
   utmContent  String?
   utmTerm     String?
 
+  // Рекламные макросы Facebook/TikTok (ad_id/campaign_id/...) + пиксель, к которому привязан
+  // клик (запрос пользователя 2026-07-04, трекинг-ссылки лендинга) — заполняются из того же
+  // start:<code> Redis-блока, что уже несёт fbclid/utm через границу браузер→Telegram (см.
+  // LandingRendererService.injectTrackingScripts). pixelId — если клик пришёл по ссылке с
+  // конкретным пикселем, все последующие события этого клиента роутятся только туда
+  // (см. TrackingProcessor.sendToPlatforms), а не всем активным пикселям проекта.
+  pixelId        String?
+  adId           String?
+  adName         String?
+  adsetId        String?
+  adsetName      String?
+  campaignId     String?
+  campaignName   String?
+  placement      String?
+  siteSourceName String?
+
+  // Метка баера (Фаза 3.6, Team Analytics, запрос пользователя 2026-07-15) — id User, который
+  // сгенерировал трекинг-ссылку (скрытый query-параметр, см. GetLinkDialog/link-params.ts), не
+  // управленческий аккаунт (Owner/Admin/SuperAdmin — те ссылку без метки, клиент "БЕЗ БАЕРА").
+  // Без @relation — та же мягкая ссылка, что и у pixelId выше, не формальный FK.
+  buyerId String?
+
   // Технические данные
   ipAddress   String?
   userAgent   String?
@@ -343,23 +668,51 @@ model Client {
   totalSpent     Decimal @default(0) @db.Decimal(10,2)
   purchasesCount Int     @default(0)
 
+  // Диалог (запрос пользователя 2026-07-04) — общий концепт для бот-каналов (ChannelsService.
+  // recordInboundMessage, вызывается из TelegramProvider.handleIncomingText) и личного
+  // MTProto-аккаунта (TelegramPersonalService) — единая точка учёта независимо от типа канала.
+  // firstDialogueAt = первое входящее сообщение от клиента (через БОТА ИЛИ личный аккаунт),
+  // не наше исходящее.
+  firstDialogueAt      DateTime?
+  lastDialogueAt       DateTime?
+  dialogueMessageCount Int @default(0)
+  // botActivatedAt — отдельно от firstDialogueAt (баг-репорт пользователя 2026-07-17: пуши
+  // падали с "chat not found" для клиентов, чей firstDialogueAt пришёл от личного MTProto-
+  // аккаунта, а не от бота — у бота с ними никогда не было чата). Ставится ТОЛЬКО когда
+  // сообщение реально пришло через бота (TelegramProvider), а не через личный аккаунт
+  // (TelegramPersonalService) — единственный надёжный сигнал "бот технически может прислать
+  // этому клиенту пуш", используется в ClientsService.buildPushFilterWhere и метрике
+  // "активировали бота" вместо firstDialogueAt.
+  botActivatedAt DateTime?
+
   // Временные метки
   firstSeenAt    DateTime  @default(now())
   subscribedAt   DateTime?
   lastActiveAt   DateTime?
   unsubscribedAt DateTime?
 
+  // Вступил в приватный канал (PRIVATE_CHANNEL_REQUEST), но НЕ через нашу заявку/лендинг —
+  // запрос пользователя 2026-07-21 ("внешние контакты... те кто подписался недавно, не по
+  // нашей воронке"). Намеренно ОТДЕЛЬНО от subscribedAt — subscribedAt зарезервирован только
+  // за настоящей атрибуцией воронки (используется в статистике/рекламной атрибуции по всему
+  // проекту, см. choke points в CLAUDE.md); эти люди остаются во "Внешних контактах", просто
+  // с реальной датой вступления вместо пустой, а не переезжают в "наших клиентов".
+  externalSubscribedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
 
   project   Project    @relation(fields: [projectId], references: [id])
+  landing   Landing?   @relation(fields: [landingId], references: [id])
   purchases Purchase[]
   pushLogs  PushLog[]
   events    TrackingEvent[]
+  automationEnrollments AutomationEnrollment[]
 
   @@index([companyId, projectId])
   @@index([tgUserId, projectId])
+  @@index([landingId])
   @@index([fbclid])
 }
 
@@ -382,6 +735,21 @@ model TrackingEvent {
   // Источник события
   source      EventSource @default(SERVER)  // browser, server, sdk
 
+  // Роутинг + разбивка по рекламе (запрос пользователя 2026-07-04, трекинг-ссылки лендинга) —
+  // реальные колонки (не только внутри payload), чтобы разбивка по кампании/объявлению была
+  // индексируемой, тот же принцип, что eventName/source уже вынесены из JSON. pixelId задан —
+  // если событие пришло по ссылке с конкретным привязанным пикселем (см. TrackingProcessor);
+  // если null — рассылается всем активным пикселям проекта, как и раньше.
+  pixelId        String?
+  adId           String?
+  adName         String?
+  adsetId        String?
+  adsetName      String?
+  campaignId     String?
+  campaignName   String?
+  placement      String?
+  siteSourceName String?
+
   createdAt DateTime @default(now())
 
   project    Project                 @relation(fields: [projectId], references: [id])
@@ -390,6 +758,8 @@ model TrackingEvent {
 
   @@index([projectId, eventName])
   @@index([projectId, createdAt])
+  @@index([projectId, campaignId])
+  @@index([projectId, adId])
 }
 
 // ============================================================
@@ -508,6 +878,9 @@ model Push {
   logs    PushLog[]
 
   @@index([projectId])
+  // Скан крона отложенных рассылок (status='SCHEDULED' AND scheduledAt<=now(), запрос
+  // пользователя 2026-07-18) — без индекса на реальном объёме был бы full scan таблицы.
+  @@index([status, scheduledAt])
 }
 
 // Лог отправки пуша каждому клиенту
@@ -518,12 +891,168 @@ model PushLog {
   status   String     // pending, sent, delivered, failed
   error    String?
   sentAt   DateTime?
+  // Первый клик по любой кнопке этого отправления (Фаза 3.4, Smart Push Timing) — первая
+  // клик-трекинг функция в проекте, см. TrackingController.pushClickRedirect и
+  // pushes.processor.ts (переписывает Push.buttons[].url на трекинг-редирект перед отправкой).
+  // Засчитывается один раз (повторные клики того же получателя не раздувают CTR).
+  clickedAt DateTime?
 
   push   Push   @relation(fields: [pushId], references: [id])
   client Client @relation(fields: [clientId], references: [id])
 
   @@index([pushId])
   @@index([pushId, status])
+}
+
+// ============================================================
+// МОДУЛЬ "ИСТОРИИ" (Telegram Stories из личных MTProto-аккаунтов, запрос
+// пользователя 2026-07-21) — публикация Stories напрямую из CRM в уже подключённый
+// личный Telegram-аккаунт (см. Channel.tgSessionEncrypted/TelegramPersonalService).
+// Доступно для канала ЛЮБОГО TelegramMode — режим не ограничивает, важен только
+// сам факт channel.type === TELEGRAM и наличие подключённого личного аккаунта.
+// ============================================================
+
+enum StoryPostStatus {
+  PENDING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
+enum StoryMediaType {
+  PHOTO
+  VIDEO
+}
+
+model StoryPost {
+  id        String @id @default(cuid())
+  companyId String
+  projectId String
+  channelId String
+
+  // Ключ в MinIO (ChannelMediaService, тот же бакет, что и медиа пушей) — байты скачиваются
+  // из хранилища в момент публикации и передаются в GramJS напрямую (в отличие от медиа пушей,
+  // которое Bot API само фетчит по публичной ссылке — MTProto так не умеет), поэтому этот
+  // эндпоинт раздачи НЕ публичный, см. StoriesController.
+  mediaKey  String
+  mediaType StoryMediaType
+  caption   String?
+
+  // null = опубликовать как можно скорее (следующий тик крона, см. StoriesCron) — намеренно
+  // тот же тик, что и у "запланировано на конкретное время", один код-путь вместо двух.
+  scheduledAt DateTime?
+
+  status      StoryPostStatus @default(PENDING)
+  publishedAt DateTime?
+  error       String?
+
+  createdByUserId String
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  project Project @relation(fields: [projectId], references: [id])
+  channel Channel @relation(fields: [channelId], references: [id])
+
+  @@index([status, scheduledAt])
+  @@index([companyId, projectId])
+}
+
+// ============================================================
+// АВТОВОРОНКИ (Drip Campaigns, Фаза 3.1, запрос пользователя 2026-07-15)
+// ============================================================
+
+enum AutomationStepType {
+  DELAY
+  SEND_PUSH
+  CONDITION
+}
+
+enum AutomationEnrollmentStatus {
+  ACTIVE
+  COMPLETED // дошёл до конца цепочки шагов
+  EXITED    // условие-шлюз не выполнилось
+  FAILED    // непредвиденная ошибка выполнения шага (например, зацикливание графа)
+}
+
+model AutomationFlow {
+  id        String  @id @default(cuid())
+  projectId String
+  companyId String
+  name      String
+  // 'Subscribe' | 'Purchase' | 'Dialogue' — те же строки, что TrackingEvent.eventName,
+  // отдельный enum не заводим, чтобы не рассинхронизировать с KNOWN_EVENT_NAMES
+  // (apps/api/src/modules/tracking/dto/track-event.dto.ts).
+  triggerEvent String
+  isActive     Boolean @default(true)
+  firstStepId  String? // точка входа в цепочку шагов (см. AutomationStep)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  project     Project                 @relation(fields: [projectId], references: [id])
+  steps       AutomationStep[]
+  enrollments AutomationEnrollment[]
+
+  @@index([projectId, triggerEvent, isActive])
+}
+
+// Один шаг = один узел графа. onSuccessStepId/onFailureStepId — указатель "куда дальше", не
+// порядковый номер (у DELAY/SEND_PUSH используется только onSuccessStepId, onFailureStepId
+// всегда null). Это уже граф, не плоский список — в v1 UI onFailureStepId никогда не ведёт
+// никуда, кроме null (= "выйти из воронки"), поэтому будущее ветвление (разные шаги для да/нет
+// после CONDITION) не потребует миграции схемы — только смены UI/движка.
+model AutomationStep {
+  id     String             @id @default(cuid())
+  flowId String
+  type   AutomationStepType
+
+  // DELAY
+  delaySeconds Int?
+
+  // SEND_PUSH — та же форма контента, что у BotScenario (переиспользует ScenarioMessageEditor
+  // на фронтенде)
+  messageText String?
+  mediaType   String?
+  mediaKey    String?
+  buttons     Json?
+
+  // CONDITION — v1: минимальное подмножество (только hasPurchase), формат заложен на вырост
+  // под остальные поля наподобие PushFilterDto (country/minSpent/inactiveDaysMin...)
+  conditionFilter Json?
+
+  onSuccessStepId String?
+  onFailureStepId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  flow AutomationFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@index([flowId])
+}
+
+model AutomationEnrollment {
+  id            String                     @id @default(cuid())
+  flowId        String
+  projectId     String
+  clientId      String
+  status        AutomationEnrollmentStatus @default(ACTIVE)
+  currentStepId String? // null = уже завершён (COMPLETED/EXITED/FAILED)
+  enrolledAt    DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+  completedAt   DateTime?
+
+  flow    AutomationFlow @relation(fields: [flowId], references: [id])
+  project Project        @relation(fields: [projectId], references: [id])
+  client  Client         @relation(fields: [clientId], references: [id])
+
+  // Клиент проходит через конкретную воронку не больше одного раза (упрощение v1) — повторный
+  // триггер того же события для уже когда-то enrolled клиента не создаёт вторую запись.
+  @@unique([flowId, clientId])
+  @@index([projectId])
 }
 
 // ============================================================
@@ -596,17 +1125,65 @@ enum BalanceTransactionType {
   TOPUP
   SUBSCRIPTION_CHARGE
   DOWNGRADE
+  // Ручное начисление супер-админом (Фаза 4.3C, запрос пользователя 2026-07-19) — намеренно
+  // отдельное значение, не переиспользует TOPUP с invoiceId: null, чтобы отчёты, фильтрующие
+  // по TOPUP, не путали ручные начисления с реальными крипто-платежами.
+  ADMIN_CREDIT
 }
 
 // ============================================================
 // ENUMS
 // ============================================================
 
+// Команда/роли (запрос пользователя 2026-07-04, Фаза 1) — BUYER заменяет ADVERTISER (то же
+// самое, "медиабайер", просто более точное имя), OPERATOR новый — под клиентов/депозиты.
+// SUPER_ADMIN — платформенная роль, вне иерархии компании, не участвует в Team-функционале.
 enum UserRole {
   SUPER_ADMIN
   OWNER
   ADMIN
-  ADVERTISER
+  BUYER
+  OPERATOR
+}
+
+// Гранулярные права по типам ресурсов (запрос пользователя 2026-07-17) — см. UserPermission.
+// Группировка по ресурсу с суффиксами VIEW/CREATE/EDIT/DELETE (кроме PUSHES — SEND вместо
+// EDIT, и CHANNEL — только VIEW/MANAGE, т.к. настройки канала/бота не разбиваются на
+// create/edit/delete отдельно).
+enum Permission {
+  LANDINGS_VIEW
+  LANDINGS_CREATE
+  LANDINGS_EDIT
+  LANDINGS_DELETE
+  PIXELS_VIEW
+  PIXELS_CREATE
+  PIXELS_EDIT
+  PIXELS_DELETE
+  DOMAINS_VIEW
+  DOMAINS_CREATE
+  DOMAINS_EDIT
+  DOMAINS_DELETE
+  PUSHES_VIEW
+  PUSHES_CREATE
+  PUSHES_SEND
+  PUSHES_DELETE
+  AUTOMATIONS_VIEW
+  AUTOMATIONS_CREATE
+  AUTOMATIONS_EDIT
+  AUTOMATIONS_DELETE
+  AB_TESTS_VIEW
+  AB_TESTS_CREATE
+  AB_TESTS_EDIT
+  AB_TESTS_DELETE
+  CHANNEL_VIEW
+  CHANNEL_MANAGE
+  CLIENTS_VIEW
+  CLIENTS_EDIT
+  CLIENTS_DELETE
+  CLIENTS_EXPORT
+  STATS_VIEW
+  STATS_VIEW_REVENUE
+  STATS_VIEW_TEAM_LEADERBOARDS
 }
 
 enum ChannelType {

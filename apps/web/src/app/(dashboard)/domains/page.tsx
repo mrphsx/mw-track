@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { Check, Copy, ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { copyToClipboard } from '@/lib/utils';
+import { copyToClipboard, buildAutoPath } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,6 +14,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { useAuthStore } from '@/store/auth.store';
+import { hasPermission } from '@/lib/permissions';
 
 type DomainStatus = 'PENDING' | 'VERIFYING' | 'ACTIVE' | 'ERROR';
 
@@ -28,10 +30,27 @@ interface LandingApiItem {
   status: string;
 }
 
+// Ровно одно из двух (запрос пользователя 2026-07-17) — путь либо на конкретный лендинг, либо
+// на группу A/B-теста напрямую (см. AbTestGroupDialog в components/landing-card.tsx). Эта
+// страница пока создаёт только лендинг-привязки (группа привязывается из диалога A/B-теста),
+// но должна корректно ПОКАЗЫВАТЬ уже существующие групповые привязки, а не падать на них.
 interface DomainPathItem {
   id: string;
   path: string;
-  landing: { id: string; name: string; project: { id: string; name: string } };
+  landing: { id: string; name: string; project: { id: string; name: string } } | null;
+  abTestGroup: { id: string; name: string | null; landings: { name: string }[] } | null;
+}
+
+function pathTargetLabel(p: DomainPathItem): string {
+  if (p.landing) return p.landing.name;
+  if (p.abTestGroup) return p.abTestGroup.name || `Тест: ${p.abTestGroup.landings.map((l) => l.name).join(', ')}`;
+  return '—';
+}
+
+function pathTargetSubtitle(p: DomainPathItem): string {
+  if (p.landing) return p.landing.project.name;
+  if (p.abTestGroup) return 'Группа A/B-теста';
+  return '';
 }
 
 interface DomainItem {
@@ -68,6 +87,7 @@ function pathUrl(domain: string, path: string): string {
 
 export default function DomainsPage() {
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newDomain, setNewDomain] = useState('');
   const [error, setError] = useState('');
@@ -105,9 +125,11 @@ export default function DomainsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Домены</h1>
-        <Button onClick={() => setShowAddModal(true)}>
-          <Plus className="w-4 h-4 mr-1.5" /> Добавить домен
-        </Button>
+        {hasPermission(user, 'DOMAINS_CREATE') && (
+          <Button onClick={() => setShowAddModal(true)}>
+            <Plus className="w-4 h-4 mr-1.5" /> Добавить домен
+          </Button>
+        )}
       </div>
 
       <p className="text-sm text-gray-500">
@@ -174,7 +196,7 @@ export default function DomainsPage() {
                                 rel="noopener"
                                 className="text-xs font-mono text-gray-600 hover:underline truncate max-w-[220px]"
                               >
-                                {p.path} → {p.landing.name}
+                                {p.path} → {pathTargetLabel(p)}
                               </a>
                             ))}
                             {d.paths.length > 2 && (
@@ -195,9 +217,11 @@ export default function DomainsPage() {
                           <Button size="sm" variant="outline" onClick={() => setPathsDomainId(d.id)}>
                             Пути
                           </Button>
-                          <Button size="sm" variant="ghost" onClick={() => removeDomain.mutate(d.id)}>
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
+                          {hasPermission(user, 'DOMAINS_DELETE') && (
+                            <Button size="sm" variant="ghost" onClick={() => removeDomain.mutate(d.id)}>
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -332,21 +356,22 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
             )}
             {domain.paths.map((p) => (
               <div key={p.id} className="flex items-center justify-between gap-2 border rounded-md px-3 py-2">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <a
                     href={pathUrl(domain.domain, p.path)}
                     target="_blank"
                     rel="noopener"
-                    className="text-sm font-mono hover:underline flex items-center gap-1 truncate"
+                    title={pathUrl(domain.domain, p.path)}
+                    className="text-sm font-mono hover:underline flex items-center gap-1 min-w-0"
                   >
-                    {pathUrl(domain.domain, p.path)}
+                    <span className="truncate min-w-0">{pathUrl(domain.domain, p.path)}</span>
                     <ExternalLink className="w-3 h-3 shrink-0" />
                   </a>
                   <p className="text-xs text-gray-500 truncate">
-                    {p.landing.project.name} — {p.landing.name}
+                    {pathTargetSubtitle(p)} — {pathTargetLabel(p)}
                   </p>
                 </div>
-                <Button size="icon" variant="ghost" onClick={() => removePath.mutate(p.id)} disabled={removePath.isPending}>
+                <Button size="icon" variant="ghost" className="shrink-0" onClick={() => removePath.mutate(p.id)} disabled={removePath.isPending}>
                   <Trash2 className="w-3.5 h-3.5" />
                 </Button>
               </div>
@@ -355,6 +380,10 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
 
           <div className="space-y-2 border-t pt-3">
             <Label>Добавить путь</Label>
+            <p className="text-xs text-gray-500">
+              Путь подставляется автоматически по id проекта и лендинга — при необходимости его
+              можно поправить вручную.
+            </p>
             <div className="flex gap-2">
               <Input
                 value={path}
@@ -368,9 +397,10 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                   if (!v) return;
                   setProjectId(v);
                   setLandingId('');
+                  setPath('/');
                 }}
               >
-                <SelectTrigger className="flex-1">
+                <SelectTrigger className="flex-1 min-w-0">
                   <SelectValue placeholder="Проект" />
                 </SelectTrigger>
                 <SelectContent>
@@ -381,8 +411,16 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={landingId} onValueChange={(v) => v && setLandingId(v)} disabled={!projectId}>
-                <SelectTrigger className="flex-1">
+              <Select
+                value={landingId}
+                onValueChange={(v) => {
+                  if (!v) return;
+                  setLandingId(v);
+                  setPath(buildAutoPath(projectId, v, domain.paths.map((p) => p.path)));
+                }}
+                disabled={!projectId}
+              >
+                <SelectTrigger className="flex-1 min-w-0">
                   <SelectValue placeholder="Лендинг" />
                 </SelectTrigger>
                 <SelectContent>

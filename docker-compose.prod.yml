@@ -58,6 +58,12 @@ services:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+    # 127.0.0.1-only: api/web в реальном деплое (см. "Реальный деплой 2026-06-29" выше)
+    # запущены на хосте через PM2, а не в этой сети Docker, поэтому им нужен путь к
+    # postgres через опубликованный порт — но публиковать его на 0.0.0.0 означало бы
+    # выставить БД напрямую в интернет мимо nginx/файрвола.
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -72,6 +78,8 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -83,6 +91,29 @@ services:
       timeout: 5s
       retries: 3
 
+  # Отсутствовал в этом файле, хотя реальный деплой держит его в контейнере
+  # (см. "Реальный деплой 2026-06-29" выше) — StorageService/publish-cdn.js (SDK)
+  # подключаются к нему по MINIO_ENDPOINT с хоста.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   internal:
     driver: bridge
@@ -90,3 +121,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  minio_data:

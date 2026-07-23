@@ -5,7 +5,7 @@ import { Channel } from '@prisma/client';
 import { ClientsService } from '../../clients/clients.service';
 import { TrackingService } from '../../tracking/tracking.service';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { ChannelProvider, SendMessageOptions, UserStatus } from './channel.provider.interface';
+import { ChannelProvider, SendMessageOptions, SendMessageResult, UserStatus } from './channel.provider.interface';
 
 // WhatsApp Business API через 360dialog (BSP) — см. 00_MASTER_OVERVIEW.md "Provider: WhatsApp
 // Cloud API (Meta) через 360dialog". Эндпоинты/заголовки/формат вебхука сверены по
@@ -55,10 +55,10 @@ export class WhatsAppProvider implements ChannelProvider {
     }
   }
 
-  async sendMessage(channelUserId: string, options: SendMessageOptions, channel: Channel): Promise<boolean> {
+  async sendMessage(channelUserId: string, options: SendMessageOptions, channel: Channel): Promise<SendMessageResult> {
     if (!channel.wa360Token) {
       this.logger.warn(`sendMessage: no wa360Token for channel ${channel.id}`);
-      return false;
+      return { success: false, error: 'Канал WhatsApp не настроен (нет токена)' };
     }
 
     try {
@@ -71,14 +71,16 @@ export class WhatsAppProvider implements ChannelProvider {
       });
 
       if (!res.ok) {
-        this.logger.error(`WhatsApp sendMessage failed for channel ${channel.id}: ${res.status} ${await res.text()}`);
-        return false;
+        const body = await res.text();
+        this.logger.error(`WhatsApp sendMessage failed for channel ${channel.id}: ${res.status} ${body}`);
+        return { success: false, error: `${res.status}: ${body}` };
       }
 
-      return true;
+      return { success: true };
     } catch (error) {
-      this.logger.error(`WhatsApp sendMessage error for channel ${channel.id}: ${(error as Error).message}`);
-      return false;
+      const message = (error as Error).message;
+      this.logger.error(`WhatsApp sendMessage error for channel ${channel.id}: ${message}`);
+      return { success: false, error: message };
     }
   }
 

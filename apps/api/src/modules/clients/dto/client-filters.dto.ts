@@ -21,6 +21,18 @@ const toArray = ({ value }: { value: unknown }) => {
   return Array.isArray(value) ? value : [value];
 };
 
+// Баг найден и исправлен 2026-07-21 (запрос пользователя: "фильтр не работает по диалогам,
+// показывает тех же пользователей"): @Type(() => Boolean) вызывает нативный JS Boolean(value),
+// а Boolean("false") === true — ЛЮБАЯ непустая строка из query (?hasDialogue=false) даёт true.
+// Ломало все 4 boolean-фильтра ниже одинаково (hasPurchase/hasDialogue/isBotActive/
+// isSubscribed), не только новый — проверено на реальных данных: ?hasPurchase=false отдавал
+// тех же клиентов, что и ?hasPurchase=true.
+const toBoolean = ({ value }: { value: unknown }) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'boolean') return value;
+  return value === 'true' || value === '1';
+};
+
 export class ClientFiltersDto {
   @IsOptional()
   @Transform(toArray)
@@ -29,19 +41,35 @@ export class ClientFiltersDto {
   channelType?: ChannelType[];
 
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(toBoolean)
   @IsBoolean()
   hasPurchase?: boolean;
 
+  // Есть ли диалог с клиентом (Client.firstDialogueAt задан) — запрос пользователя
+  // 2026-07-21, тот же признак, что уже показывается колонкой "Диалог" в списке.
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(toBoolean)
+  @IsBoolean()
+  hasDialogue?: boolean;
+
+  @IsOptional()
+  @Transform(toBoolean)
   @IsBoolean()
   isBotActive?: boolean;
 
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(toBoolean)
   @IsBoolean()
   isSubscribed?: boolean;
+
+  // "ours" (по умолчанию) — только реальные клиенты воронки (subscribedAt задан). "external" —
+  // холодные контакты, которые просто написали в личку/боту мимо нашей ссылки/лендинга
+  // (subscribedAt: null, см. ClientsService.recordInboundMessage) — Client всё равно нужен,
+  // чтобы вести с ними диалог, но не показывать вперемешку с "нашими" по умолчанию (баг-репорт
+  // пользователя 2026-07-17). "all" — без этого фильтра вообще.
+  @IsOptional()
+  @IsIn(['ours', 'external', 'all'])
+  origin?: 'ours' | 'external' | 'all';
 
   @IsOptional()
   @Transform(toArray)
@@ -74,6 +102,12 @@ export class ClientFiltersDto {
   @IsOptional()
   @IsString()
   utmCampaign?: string;
+
+  // Точная пер-лендинговая атрибуция — заполнен только для клиентов, пришедших через
+  // PRIVATE_CHANNEL_REQUEST с известной invite-ссылкой лендинга (см. Client.landingId).
+  @IsOptional()
+  @IsString()
+  landingId?: string;
 
   @IsOptional()
   @IsString()

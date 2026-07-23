@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
+import { format } from 'date-fns';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { PushContentStep, PushContent } from '@/components/pushes/push-content-step';
 import { PushAudienceStep, PushAudienceFilter } from '@/components/pushes/push-audience-step';
+import { ScheduleCalendar } from '@/components/pushes/schedule-calendar';
+import { renderTelegramHtml } from '@/lib/telegram-html';
 
 const STEPS = ['Контент', 'Аудитория', 'Подтверждение'];
 
@@ -26,7 +29,7 @@ function buildContentPayload(content: PushContent, filter: PushAudienceFilter) {
   return {
     name: content.name,
     messageText: content.messageText,
-    messageMedia: content.mediaUrl ? { type: content.mediaType, url: content.mediaUrl } : undefined,
+    messageMedia: content.media.length ? content.media : undefined,
     buttons: content.buttons.filter((b) => b.text && b.url).length ? content.buttons.filter((b) => b.text && b.url) : undefined,
     filter: buildFilterPayload(filter),
   };
@@ -39,7 +42,7 @@ export default function NewPushPage() {
   const [pushId, setPushId] = useState<string | null>(null);
   const [error, setError] = useState('');
 
-  const [content, setContent] = useState<PushContent>({ name: '', messageText: '', mediaUrl: '', mediaType: 'photo', buttons: [] });
+  const [content, setContent] = useState<PushContent>({ name: '', messageText: '', media: [], buttons: [] });
   const [filter, setFilter] = useState<PushAudienceFilter>({
     channelTypes: [],
     hasPurchase: undefined,
@@ -49,6 +52,16 @@ export default function NewPushPage() {
   });
   const [audience, setAudience] = useState<{ total: number | null; reachable: number | null }>({ total: null, reachable: null });
   const [calculating, setCalculating] = useState(false);
+  // Раньше "Далее" можно было нажать сразу после выбора файла, не дожидаясь конца асинхронной
+  // загрузки — черновик пуша создавался без media вообще (баг-репорт пользователя 2026-07-18).
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+
+  // Запрос пользователя 2026-07-18 "программировать рассылки на потом" — переключатель на
+  // финальном шаге. dateStr/timeStr раздельно, потому что нативный <input type="time">
+  // возвращает строку HH:mm, а не Date; собираем в единый момент времени только при отправке.
+  const [sendMode, setSendMode] = useState<'now' | 'scheduled'>('now');
+  const [dateStr, setDateStr] = useState('');
+  const [timeStr, setTimeStr] = useState('12:00');
 
   const createPush = useMutation({
     mutationFn: async () => (await api.post(`/projects/${projectId}/pushes`, buildContentPayload(content, filter))).data,
@@ -69,6 +82,18 @@ export default function NewPushPage() {
     mutationFn: async () => api.post(`/projects/${projectId}/pushes/${pushId}/send`),
     onSuccess: () => router.push(`/projects/${projectId}/pushes`),
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось отправить рассылку'),
+  });
+
+  const schedulePush = useMutation({
+    mutationFn: async () => {
+      // Локальное время браузера — сервер группирует календарь по таймзоне ПРОЕКТА, но
+      // итоговый момент времени (ISO с UTC-смещением) один и тот же независимо от того, в
+      // каком часовом поясе его выбрали, конфликта нет.
+      const scheduledAt = new Date(`${dateStr}T${timeStr}`).toISOString();
+      return api.patch(`/projects/${projectId}/pushes/${pushId}`, { scheduledAt });
+    },
+    onSuccess: () => router.push(`/projects/${projectId}/pushes`),
+    onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось запланировать рассылку'),
   });
 
   // Дебаунс пересчёта аудитории при изменении фильтра на шаге 2 —
@@ -118,7 +143,9 @@ export default function NewPushPage() {
 
       <Card>
         <CardContent className="p-6">
-          {step === 0 && <PushContentStep value={content} onChange={setContent} />}
+          {step === 0 && (
+            <PushContentStep projectId={projectId} value={content} onChange={setContent} onUploadingChange={setIsUploadingMedia} />
+          )}
           {step === 1 && (
             <PushAudienceStep
               value={filter}
@@ -131,7 +158,31 @@ export default function NewPushPage() {
           {step === 2 && (
             <div className="space-y-4">
               <h3 className="font-semibold">{content.name}</h3>
-              <p className="text-sm whitespace-pre-wrap">{content.messageText}</p>
+              {content.media.length === 1 && content.media[0].type === 'photo' && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={content.media[0].url} alt="" className="max-h-48 rounded-md object-cover" />
+              )}
+              {content.media.length === 1 && (content.media[0].type === 'video' || content.media[0].type === 'video_note') && (
+                // eslint-disable-next-line jsx-a11y/media-has-caption
+                <video src={content.media[0].url} controls className="max-h-48 rounded-md" />
+              )}
+              {content.media.length > 1 && (
+                <div className="grid grid-cols-4 gap-1 max-w-md">
+                  {content.media.map((item, i) =>
+                    item.type === 'photo' ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img key={i} src={item.url} alt="" className="aspect-square rounded-md object-cover" />
+                    ) : (
+                      // eslint-disable-next-line jsx-a11y/media-has-caption
+                      <video key={i} src={item.url} className="aspect-square rounded-md object-cover" />
+                    ),
+                  )}
+                </div>
+              )}
+              <p
+                className="text-sm whitespace-pre-wrap"
+                dangerouslySetInnerHTML={{ __html: renderTelegramHtml(content.messageText) }}
+              />
               <div className="flex gap-6 text-sm">
                 <span>
                   По фильтру: <b>{audience.total}</b>
@@ -139,6 +190,55 @@ export default function NewPushPage() {
                 <span>
                   Доступны: <b>{audience.reachable}</b>
                 </span>
+              </div>
+
+              <div className="pt-4 border-t space-y-3">
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" variant={sendMode === 'now' ? 'default' : 'outline'} onClick={() => setSendMode('now')}>
+                    Отправить сейчас
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={sendMode === 'scheduled' ? 'default' : 'outline'}
+                    onClick={() => {
+                      setSendMode('scheduled');
+                      if (!dateStr) setDateStr(format(new Date(), 'yyyy-MM-dd'));
+                    }}
+                  >
+                    Запланировать
+                  </Button>
+                </div>
+
+                {sendMode === 'scheduled' && (
+                  <div className="flex flex-wrap gap-4 items-start">
+                    <ScheduleCalendar
+                      projectId={projectId}
+                      selectedDate={dateStr ? new Date(`${dateStr}T00:00`) : null}
+                      onSelectDate={(date) => setDateStr(format(date, 'yyyy-MM-dd'))}
+                    />
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs text-gray-500">
+                        Дата
+                        <input
+                          type="date"
+                          value={dateStr}
+                          onChange={(e) => setDateStr(e.target.value)}
+                          className="block mt-1 border rounded-md px-2 py-1.5 text-sm"
+                        />
+                      </label>
+                      <label className="text-xs text-gray-500">
+                        Время
+                        <input
+                          type="time"
+                          value={timeStr}
+                          onChange={(e) => setTimeStr(e.target.value)}
+                          className="block mt-1 border rounded-md px-2 py-1.5 text-sm"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -152,12 +252,16 @@ export default function NewPushPage() {
           Назад
         </Button>
         {step < 2 ? (
-          <Button onClick={goNext} disabled={(step === 0 && !content.name) || createPush.isPending}>
-            {createPush.isPending ? 'Создаём...' : 'Далее'}
+          <Button onClick={goNext} disabled={(step === 0 && (!content.name || isUploadingMedia)) || createPush.isPending}>
+            {isUploadingMedia ? 'Ждём загрузку файла...' : createPush.isPending ? 'Создаём...' : 'Далее'}
           </Button>
-        ) : (
+        ) : sendMode === 'now' ? (
           <Button onClick={() => sendPush.mutate()} disabled={sendPush.isPending}>
             {sendPush.isPending ? 'Отправляем...' : 'Отправить'}
+          </Button>
+        ) : (
+          <Button onClick={() => schedulePush.mutate()} disabled={schedulePush.isPending || !dateStr || !timeStr}>
+            {schedulePush.isPending ? 'Планируем...' : `Запланировать на ${dateStr} ${timeStr}`}
           </Button>
         )}
       </div>

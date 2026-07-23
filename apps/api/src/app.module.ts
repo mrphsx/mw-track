@@ -6,8 +6,13 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { PermissionsGuard } from './common/permissions/permissions.guard';
+import { PermissionsModule } from './common/permissions/permissions.module';
 import { CompanyContextInterceptor } from './common/interceptors/company-context.interceptor';
+import { AdminModule } from './modules/admin/admin.module';
+import { AudienceModule } from './modules/audience/audience.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { AutomationsModule } from './modules/automations/automations.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { ChannelsModule } from './modules/channels/channels.module';
 import { ClientsModule } from './modules/clients/clients.module';
@@ -17,6 +22,8 @@ import { LandingsModule } from './modules/landings/landings.module';
 import { PixelsModule } from './modules/pixels/pixels.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { PushesModule } from './modules/pushes/pushes.module';
+import { StoriesModule } from './modules/stories/stories.module';
+import { TeamModule } from './modules/team/team.module';
 import { TrackingModule } from './modules/tracking/tracking.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -35,6 +42,7 @@ import { RedisModule } from './redis/redis.module';
       }),
     }),
     PrismaModule,
+    PermissionsModule,
     RedisModule,
     HealthModule,
     AuthModule,
@@ -43,15 +51,21 @@ import { RedisModule } from './redis/redis.module';
     ChannelsModule,
     PixelsModule,
     TrackingModule,
+    AutomationsModule,
     PushesModule,
+    StoriesModule,
     LandingsModule,
     DomainsModule,
     BillingModule,
     WebhooksModule,
+    TeamModule,
+    AudienceModule,
+    AdminModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_INTERCEPTOR, useClass: CompanyContextInterceptor },
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
   ],

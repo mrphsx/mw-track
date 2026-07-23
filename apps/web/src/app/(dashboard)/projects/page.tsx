@@ -2,8 +2,10 @@
 
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Send, Users } from 'lucide-react';
+import { Plus, Send, Users, UserCheck } from 'lucide-react';
 import { api } from '@/lib/api';
+import { ChannelAvatar } from '@/components/channel-avatar';
+import { CityTime } from '@/components/city-time';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -12,8 +14,18 @@ interface ProjectSummary {
   id: string;
   name: string;
   status: string;
-  channels: { id: string; type: string; isActive: boolean }[];
+  timezone: string;
+  channel: {
+    id: string;
+    type: string;
+    isActive: boolean;
+    tgAvatarFileId: string | null;
+    // Есть только у Telegram-канала — MTProto-подключение личного аккаунта, отдельное от
+    // самого бота (запрос пользователя 2026-07-21: "значок если добавлен личный аккаунт").
+    tgPersonalConnected?: boolean;
+  } | null;
   _count: { clients: number; pushes: number };
+  activeClientsCount: number;
 }
 
 const STATUS_LABELS: Record<string, string> = { ACTIVE: 'Активен', PAUSED: 'На паузе', ARCHIVED: 'Архив' };
@@ -38,11 +50,11 @@ export default function ProjectsPage() {
         />
       </div>
 
-      {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!isLoading && projects?.length === 0 && (
         <Card>
-          <CardContent className="p-8 text-center text-gray-500">Пока нет ни одного проекта.</CardContent>
+          <CardContent className="p-8 text-center text-muted-foreground">Пока нет ни одного проекта.</CardContent>
         </Card>
       )}
 
@@ -52,25 +64,39 @@ export default function ProjectsPage() {
             <Card className="hover:shadow-md transition-shadow h-full">
               <CardContent className="p-5 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium">{project.name}</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    {project.channel?.type === 'TELEGRAM' && (
+                      <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
+                    )}
+                    <span className="font-medium truncate">{project.name}</span>
+                    {project.channel?.tgPersonalConnected && (
+                      <span title="Личный аккаунт Telegram подключён">
+                        <UserCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                      </span>
+                    )}
+                  </div>
                   <Badge variant={project.status === 'ACTIVE' ? 'default' : 'secondary'}>
                     {STATUS_LABELS[project.status] || project.status}
                   </Badge>
                 </div>
-                <div className="flex gap-3 text-sm text-gray-500">
-                  <span className="flex items-center gap-1">
+                <div className="flex gap-3 text-sm text-muted-foreground">
+                  <span className="flex items-center gap-1" title="Клиентов / из них активных (бот не заблокирован)">
                     <Users className="w-3.5 h-3.5" /> {project._count.clients}
+                    <span className="text-muted-foreground">/ {project.activeClientsCount}</span>
                   </span>
                   <span className="flex items-center gap-1">
                     <Send className="w-3.5 h-3.5" /> {project._count.pushes}
                   </span>
                 </div>
-                <div className="flex gap-1.5">
-                  {project.channels.map((c) => (
-                    <Badge key={c.id} variant={c.isActive ? 'outline' : 'destructive'} className="text-xs">
-                      {c.type}
-                    </Badge>
-                  ))}
+                <div className="flex items-center justify-between gap-2">
+                  {project.channel && (
+                    <div className="flex gap-1.5">
+                      <Badge variant={project.channel.isActive ? 'outline' : 'destructive'} className="text-xs">
+                        {project.channel.type}
+                      </Badge>
+                    </div>
+                  )}
+                  <CityTime timezone={project.timezone} />
                 </div>
               </CardContent>
             </Card>
