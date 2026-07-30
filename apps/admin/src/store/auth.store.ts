@@ -10,7 +10,7 @@ export interface User {
   firstName: string;
   lastName?: string | null;
   role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR';
-  permissions: string[];
+  permissionsByProject: Record<string, string[]>;
 }
 
 interface AuthState {

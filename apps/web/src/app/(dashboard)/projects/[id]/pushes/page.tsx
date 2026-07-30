@@ -53,7 +53,7 @@ function BestTimeCard({ projectId }: { projectId: string }) {
           <CardTitle className="text-base">Оптимальное время отправки</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Пока нет данных — статистика появится, когда рассылки с кнопками начнут набирать клики.
           </p>
         </CardContent>
@@ -75,7 +75,7 @@ function BestTimeCard({ projectId }: { projectId: string }) {
               Лучшее время: <span className="font-medium">{stats.recommendedHour}:00</span>
             </>
           ) : (
-            <span className="text-gray-500">Пока недостаточно данных для рекомендации.</span>
+            <span className="text-muted-foreground">Пока недостаточно данных для рекомендации.</span>
           )}
         </p>
         <ResponsiveContainer width="100%" height={200}>
@@ -156,7 +156,7 @@ function PushLogsDialog({ projectId, pushId, onClose }: { projectId: string; pus
             ))}
             {data && data.items.length === 0 && (
               <TableRow>
-                <TableCell colSpan={3} className="text-center text-gray-400">
+                <TableCell colSpan={3} className="text-center text-muted-foreground">
                   Логов пока нет
                 </TableCell>
               </TableRow>
@@ -188,7 +188,7 @@ export default function PushesPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Рассылки</h1>
-        {hasPermission(user, 'PUSHES_CREATE') && (
+        {hasPermission(user, projectId, 'PUSHES_CREATE') && (
           <Button
             nativeButton={false}
             render={
@@ -202,7 +202,7 @@ export default function PushesPage() {
 
       <BestTimeCard projectId={projectId} />
 
-      <div className="border rounded-lg bg-white">
+      <div className="border rounded-lg bg-card">
         <Table>
           <TableHeader>
             <TableRow>
@@ -217,12 +217,12 @@ export default function PushesPage() {
           </TableHeader>
           <TableBody>
             {pushes?.map((push) => (
-              <TableRow key={push.id} className="cursor-pointer hover:bg-gray-50" onClick={() => setOpenLogsFor(push.id)}>
+              <TableRow key={push.id} className="cursor-pointer hover:bg-muted" onClick={() => setOpenLogsFor(push.id)}>
                 <TableCell>
                   <Badge variant={STATUS_VARIANT[push.status] || 'secondary'}>{push.status}</Badge>
                 </TableCell>
                 <TableCell className="font-medium">{push.name}</TableCell>
-                <TableCell className="text-gray-500">
+                <TableCell className="text-muted-foreground">
                   {push.sentAt
                     ? format(new Date(push.sentAt), 'd MMM HH:mm')
                     : push.scheduledAt
@@ -233,7 +233,7 @@ export default function PushesPage() {
                 <TableCell>{push.sentCount}</TableCell>
                 <TableCell className={push.failedCount > 0 ? 'text-red-500 font-medium' : undefined}>{push.failedCount}</TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, 'PUSHES_DELETE') && (
+                  {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, projectId, 'PUSHES_DELETE') && (
                     <Button size="sm" variant="ghost" onClick={() => cancelPush.mutate(push.id)}>
                       Отменить
                     </Button>

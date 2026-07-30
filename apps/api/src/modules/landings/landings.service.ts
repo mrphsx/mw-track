@@ -17,6 +17,23 @@ import { AbTestMemberDto, UpsertAbTestGroupDto } from './dto/ab-test-group.dto';
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
 
+// Суммирует несколько дневных рядов ({date, count}[], уже сгруппированных по дню в часовом
+// поясе проекта — см. dailyBucketSql) в один общий ряд по группе A/B-теста (LandingsService.
+// getGroupStats) — date у $queryRaw приходит как Date-объект, приводим к ISO-дате, чтобы разные
+// участники с одной и той же датой сложились в одну точку графика, а не легли рядом.
+function mergeDailySeries(series: { date: Date; count: number }[][]): { date: string; count: number }[] {
+  const totals = new Map<string, number>();
+  for (const s of series) {
+    for (const point of s) {
+      const key = new Date(point.date).toISOString().slice(0, 10);
+      totals.set(key, (totals.get(key) ?? 0) + point.count);
+    }
+  }
+  return Array.from(totals.entries())
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export interface TemplateInfo {
   id: string;
   name: string;
@@ -188,14 +205,22 @@ export class LandingsService {
 
   // Для отдельной страницы "все лендинги" (не через конкретный проект) — та же форма
   // ответа, что и findAll выше, просто без фильтра по projectId.
+  // Багфикс 2026-07-28 (per-project разрешения): раньше фильтровал только по членству в
+  // проекте (ProjectAccess) — Buyer с LANDINGS_VIEW только на Проекте A всё равно видел
+  // лендинги Проекта B в общем списке, если у него там просто было ProjectAccess. Теперь
+  // фильтруем по конкретным projectId, где выдано именно LANDINGS_VIEW.
   async findAllForCompany(companyId: string, userId: string, role: UserRole): Promise<LandingWithContext[]> {
     const elevatedRoles: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN];
+    let projectFilter = {};
+    if (!elevatedRoles.includes(role)) {
+      const grants = await this.prisma.userPermission.findMany({
+        where: { userId, permission: 'LANDINGS_VIEW' },
+        select: { projectId: true },
+      });
+      projectFilter = { project: { id: { in: grants.map((g) => g.projectId) } } };
+    }
     return this.prisma.landing.findMany({
-      where: {
-        companyId,
-        deletedAt: null,
-        ...(elevatedRoles.includes(role) ? {} : { project: { projectAccess: { some: { userId } } } }),
-      },
+      where: { companyId, deletedAt: null, ...projectFilter },
       orderBy: { createdAt: 'desc' },
       include: LANDING_WITH_CONTEXT_INCLUDE,
     });
@@ -277,6 +302,65 @@ export class LandingsService {
     );
 
     return { ...stats, abTestGroup: { groupId: landing.abTestGroupId, members: memberStats } };
+  }
+
+  // Статистика A/B/n-группы САМОЙ ПО СЕБЕ (запрос пользователя 2026-07-23: "для груп лэндингов
+  // тоже нужна статистика как для обычных лэндингов, сейчас просто есть группа без статистики
+  // на которую можно зайти как в обычный лэндинг") — раньше per-variant цифры (getStats выше)
+  // были видны, только если открыть СТРАНИЦУ ОДНОГО ИЗ УЧАСТНИКОВ; у самой группы (карточка в
+  // /landings) не было вообще никакого экрана статистики. Работает для обеих стадий теста:
+  // активный — считает live (та же computeLandingStats, что и обычный лендинг), завершённый —
+  // берёт застывший resultsSnapshot (stopAbTestGroup), тот же принцип, что уже показывает
+  // страница /landings/history, просто с суммой по всем вариантам добавленной сверху.
+  async getGroupStats(groupId: string, companyId: string) {
+    const group = await this.prisma.abTestGroup.findFirst({ where: { id: groupId, companyId, deletedAt: null } });
+    if (!group) throw new NotFoundException('Группа A/B-теста не найдена');
+
+    if (group.endedAt) {
+      const snapshot = (group.resultsSnapshot as unknown as
+        | { landingId: string; name: string; weight: number | null; pageViews: number; leads: number; subscribes: number; dialogues: number }[]
+        | null) ?? [];
+      const totals = snapshot.reduce(
+        (acc, m) => ({
+          pageViews: acc.pageViews + m.pageViews,
+          leads: acc.leads + m.leads,
+          subscribes: acc.subscribes + m.subscribes,
+          dialogues: acc.dialogues + m.dialogues,
+        }),
+        { pageViews: 0, leads: 0, subscribes: 0, dialogues: 0 },
+      );
+      return { groupId: group.id, name: group.name, endedAt: group.endedAt, members: snapshot, totals };
+    }
+
+    const members = await this.prisma.landing.findMany({ where: { abTestGroupId: groupId, deletedAt: null } });
+    if (!members.length) throw new NotFoundException('В группе не осталось лендингов');
+
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: group.projectId }, select: { timezone: true } });
+    const memberStats = await Promise.all(
+      members.map(async (m) => ({ weight: m.abTestWeight ?? 0, ...(await this.computeLandingStats(m, project.timezone)) })),
+    );
+
+    const totals = memberStats.reduce(
+      (acc, m) => ({
+        pageViews: acc.pageViews + m.funnel.pageViews,
+        leads: acc.leads + m.funnel.leads,
+        subscribes: acc.subscribes + m.funnel.subscribes,
+        subscribersActive: acc.subscribersActive + m.subscribers.active,
+        subscribersUnsubscribed: acc.subscribersUnsubscribed + m.subscribers.unsubscribed,
+        dialogues: acc.dialogues + m.dialogues.total,
+      }),
+      { pageViews: 0, leads: 0, subscribes: 0, subscribersActive: 0, subscribersUnsubscribed: 0, dialogues: 0 },
+    );
+
+    return {
+      groupId: group.id,
+      name: group.name,
+      endedAt: null,
+      members: memberStats,
+      totals,
+      dailySubscribers: mergeDailySeries(memberStats.map((m) => m.dailySubscribers)),
+      dailyDialogues: mergeDailySeries(memberStats.map((m) => m.dialogues.dailyDialogues)),
+    };
   }
 
   async update(id: string, companyId: string, dto: UpdateLandingDto): Promise<Landing> {

@@ -30,6 +30,7 @@ export class ClientsRepository {
       activeClients,
       botActivatedClients,
       newClients,
+      unsubscribedClients,
       clientsWithPurchase,
       totalRevenue,
       avgRevenue,
@@ -44,28 +45,56 @@ export class ClientsRepository {
       dailyPageViews,
       dailyLeads,
       dailyDeposits,
+      avgSubscribeToDialogueRow,
     ] = await Promise.all([
+      // totalClients/activeClients намеренно БЕЗ окна дат (баг-репорт пользователя 2026-07-24
+      // поднял вопрос — оставлены как есть по явному решению пользователя) — карточка
+      // "Клиентов" на странице проекта использует period-scoped newClients ниже, а не эти два;
+      // totalClients/activeClients держат синхронность с карточкой проекта в общем списке
+      // /projects (ProjectsService.getClientMetricsByProject — тот же фильтр OURS_ONLY, тоже
+      // всегда за всё время, там вообще нет PeriodSelector), см. баг-репорт 2026-07-17
+      // "в карточке проекта пишет другие цифры клиентов, не как внутри страницы проекта".
       this.prisma.client.count({ where: { projectId, deletedAt: null, ...OURS_ONLY } }),
       this.prisma.client.count({ where: { projectId, deletedAt: null, isBotActive: true, ...OURS_ONLY } }),
-      // "Активировавшие бота" (запрос пользователя 2026-07-17/18) — те, кому уже МОЖНО
-      // отправить пуш прямо сейчас: та же формула, что ClientsService.buildPushFilterWhere
-      // использует для реальной аудитории рассылок (isBotActive: true И (subscribedAt задан
-      // ИЛИ botActivatedAt задан)). Пользователь явно поправил: "активировавшие бота должны
-      // быть те, кому можно уже кидать рассылки" — просто botActivatedAt один давал 0, даже
-      // когда push-аудитория показывала 1 (mrphsx попадает через subscribedAt, у него
-      // botActivatedAt пока пуст — исторические диалоги не бэкфилятся, см.
-      // feedback_client_bot_activated_status).
+      // "Активировавшие бота" — буквально те, кто реально написал/нажал Start боту в этом
+      // периоде (botActivatedAt задан внутри окна), НЕ "кому можно отправить пуш прямо сейчас".
+      // Раньше (2026-07-17/18, см. feedback_client_bot_activated_status) формула была
+      // isBotActive:true И (subscribedAt ИЛИ botActivatedAt в периоде) — по явной просьбе
+      // пользователя тогда, чтобы карточка совпадала с push-аудиторией. Баг-репорт пользователя
+      // 2026-07-30 ("вижу 2 активировали бота, но в клиентах эти же 2 новых подписчика не
+      // отмечены активированными") вскрыл, что это вводило в заблуждение: subscribedAt-ветка
+      // засчитывала любого свежего подписчика, даже если он ни разу не писал боту (isBotActive
+      // по умолчанию true у каждого нового Client — см. schema.prisma), т.е. карточка и колонка
+      // "Статус бота" в таблице клиентов отвечали на РАЗНЫЕ вопросы под одинаковой подписью.
+      // Проверено на реальных данных проекта cms3h8xkv004nje3l7neyyfv7: оба "активировавших"
+      // сегодня клиента (Cam./Angel) имели botActivatedAt: null — попали в счётчик только через
+      // subscribedAt. Пользователь явно попросил вариант 3 из предложенных: оставить формулу
+      // push-аудитории (buildPushFilterWhere) как есть, а эту карточку считать строго по
+      // botActivatedAt — теперь это единственный критерий, isBotActive не проверяется (сам факт
+      // активации в периоде не должен исчезать из статистики, если бота потом заблокировали).
       this.prisma.client.count({
-        where: {
-          projectId,
-          deletedAt: null,
-          isBotActive: true,
-          OR: [{ subscribedAt: { not: null } }, { botActivatedAt: { not: null } }],
-        },
+        where: { projectId, deletedAt: null, botActivatedAt: { gte: since, lt: until } },
       }),
       this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { gte: since, lt: until } } }),
-      this.prisma.client.count({ where: { projectId, deletedAt: null, hasPurchase: true, ...OURS_ONLY } }),
-      this.prisma.purchase.aggregate({ where: { projectId }, _sum: { amount: true } }),
+      // Отписавшиеся за период (запрос пользователя 2026-07-24, в довесок к фиксу карточки
+      // "Клиентов": "даже если человек отписался показывай его в числе подписчиков, но добавь
+      // ещё одну метрику: отписались") — newClients выше намеренно не вычитает их, это просто
+      // отдельная параллельная цифра для той же карточки.
+      this.prisma.client.count({ where: { projectId, deletedAt: null, unsubscribedAt: { gte: since, lt: until } } }),
+      // clientsWithPurchase — тоже не реагировал на период (баг-репорт 2026-07-24) — заменили
+      // "когда-либо был нашим" (OURS_ONLY, без дат) на "подписался именно в этом периоде" —
+      // тот же критерий, что и у newClients выше (общий знаменатель для conversionRate ниже).
+      this.prisma.client.count({
+        where: { projectId, deletedAt: null, hasPurchase: true, subscribedAt: { gte: since, lt: until } },
+      }),
+      // Баг-репорт пользователя 2026-07-25: "доход неправильно считается по периоду, стоит
+      // одна и та же сумма на любой период" — раньше здесь не было окна дат вообще (только
+      // projectId), тот же класс бага, что уже чинили 2026-07-24 у totalClients/
+      // clientsWithPurchase выше, просто это конкретное поле тогда пропустили (комментарий,
+      // ссылавшийся на "осознанное решение", был неверным — реальной ссылки на согласование
+      // с пользователем не было, просто дальше по коду avgRevenue уже смотрело на период, а
+      // totalRevenue рядом — нет). Теперь оба смотрят на одно и то же окно.
+      this.prisma.purchase.aggregate({ where: { projectId, createdAt: { gte: since, lt: until } }, _sum: { amount: true } }),
       this.prisma.purchase.aggregate({ where: { projectId, createdAt: { gte: since, lt: until } }, _avg: { amount: true } }),
       // Просмотры/клики за окно (запрос пользователя 2026-07-17, "больше метрик на странице
       // проекта") — те же события, что уже считает getConversionFunnel, но здесь как
@@ -194,6 +223,23 @@ export class ClientsRepository {
         GROUP BY date
         ORDER BY date ASC
       `,
+      // Среднее время от подписки до первого диалога (запрос пользователя 2026-07-30: "нужна
+      // еще одна статистика, среднее время которое проходит от подписки до диалога за разные
+      // периоды") — тот же фильтр, что и у dailyCrmDialogues выше (subscribedAt задан И не
+      // позже firstDialogueAt, чтобы не считать "холодные" диалоги от людей, подписавшихся уже
+      // ПОСЛЕ того, как написали боту, — такое бывает у PERSONAL_DM/менеджерских сценариев), окно
+      // — по дате самого диалога (firstDialogueAt в периоде), реагирует на PeriodSelector как и
+      // остальные карточки. AVG(EXTRACT(EPOCH FROM ...)) — секунды, дробные, агрегируются в JS.
+      this.prisma.$queryRaw<{ avg_seconds: number | null }[]>`
+        SELECT AVG(EXTRACT(EPOCH FROM ("firstDialogueAt" - "subscribedAt")))::float as avg_seconds
+        FROM "Client"
+        WHERE "projectId" = ${projectId}
+          AND "deletedAt" IS NULL
+          AND "firstDialogueAt" >= ${since}
+          AND "firstDialogueAt" < ${until}
+          AND "subscribedAt" IS NOT NULL
+          AND "subscribedAt" <= "firstDialogueAt"
+      `,
     ]);
 
     // totalFd/totalRd/totalDialogues/totalCrmDialogues — суммы по тому же выбранному периоду,
@@ -212,8 +258,11 @@ export class ClientsRepository {
       activeClients,
       botActivatedClients,
       newClients,
+      unsubscribedClients,
       clientsWithPurchase,
-      conversionRate: totalClients > 0 ? Math.round((clientsWithPurchase / totalClients) * 100 * 10) / 10 : 0,
+      // Знаменатель — newClients (подписались в периоде), не totalClients (за всё время) —
+      // баг-репорт пользователя 2026-07-24, конверсия тоже не реагировала на период раньше.
+      conversionRate: newClients > 0 ? Math.round((clientsWithPurchase / newClients) * 100 * 10) / 10 : 0,
       totalRevenue: Number(totalRevenue._sum.amount || 0),
       avgOrderValue: Number(avgRevenue._avg.amount || 0),
       totalPageViews,
@@ -222,6 +271,9 @@ export class ClientsRepository {
       totalRd,
       totalDialogues,
       totalCrmDialogues,
+      // null, если в периоде нет ни одного CRM-диалога с известной датой подписки — честное
+      // "нет данных", а не 0 (0 секунд читалось бы как "мгновенно", что неверно).
+      avgSubscribeToDialogueSeconds: avgSubscribeToDialogueRow[0]?.avg_seconds ?? null,
       channelBreakdown: channelBreakdown.map((c) => ({ channel: c.channelType, count: c._count._all })),
       countryBreakdown: countryBreakdown.map((c) => ({ country: c.country, count: Number(c.count) })),
       dailySubscribers: dailySubscribers.map((d) => ({ date: d.date, count: Number(d.count) })),

@@ -24,7 +24,7 @@ export function StoryMediaThumb({
     retry: false,
   });
 
-  if (!url) return <div className="w-12 h-12 rounded bg-gray-100 border shrink-0 animate-pulse" />;
+  if (!url) return <div className="w-12 h-12 rounded bg-muted border shrink-0 animate-pulse" />;
 
   return isVideo ? (
     <video src={url} className="w-12 h-12 rounded object-cover border shrink-0" muted />

@@ -62,7 +62,7 @@ export default function StoriesHistoryPage() {
   return (
     <div className="space-y-4">
       <div>
-        <Link href="/stories" className="text-sm text-gray-500 hover:underline inline-flex items-center gap-1 mb-2">
+        <Link href="/stories" className="text-sm text-muted-foreground hover:underline inline-flex items-center gap-1 mb-2">
           <ArrowLeft className="w-3.5 h-3.5" /> Истории
         </Link>
         <h1 className="text-2xl font-bold flex items-center gap-2">
@@ -70,7 +70,7 @@ export default function StoriesHistoryPage() {
         </h1>
       </div>
 
-      {overviewLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {overviewLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!overviewLoading && overview && overview.connectedProjects.length > 0 && (
         <>
@@ -85,7 +85,7 @@ export default function StoriesHistoryPage() {
 
       {!overviewLoading && overview && overview.connectedProjects.length === 0 && (
         <Card>
-          <CardContent className="p-8 text-center text-gray-500">
+          <CardContent className="p-8 text-center text-muted-foreground">
             Нет подключённых личных аккаунтов — публиковать пока некуда.
           </CardContent>
         </Card>
@@ -121,16 +121,16 @@ function StoriesList({ projectId }: { projectId: string }) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-base">Публикации</CardTitle>
-        {data && <p className="text-sm text-gray-500">Всего: {data.total}</p>}
+        {data && <p className="text-sm text-muted-foreground">Всего: {data.total}</p>}
       </CardHeader>
       <CardContent className="space-y-2">
-        {data?.items.length === 0 && <p className="text-sm text-gray-500">Пока нет ни одной истории.</p>}
+        {data?.items.length === 0 && <p className="text-sm text-muted-foreground">Пока нет ни одной истории.</p>}
         {data?.items.map((story) => (
           <div key={story.id} className="flex items-center gap-3 p-2 border rounded-lg">
             <StoryMediaThumb projectId={projectId} storyId={story.id} isVideo={story.mediaType === 'VIDEO'} />
             <div className="flex-1 min-w-0">
-              <p className="text-sm truncate">{story.caption || <span className="text-gray-400">Без подписи</span>}</p>
-              <p className="text-xs text-gray-500">
+              <p className="text-sm truncate">{story.caption || <span className="text-muted-foreground">Без подписи</span>}</p>
+              <p className="text-xs text-muted-foreground">
                 {story.publishedAt
                   ? `Опубликовано ${format(new Date(story.publishedAt), 'd MMM yyyy, HH:mm')}`
                   : story.scheduledAt
@@ -160,7 +160,7 @@ function StoriesList({ projectId }: { projectId: string }) {
             <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
               Назад
             </Button>
-            <span className="text-sm text-gray-500">
+            <span className="text-sm text-muted-foreground">
               {page} / {data.totalPages}
             </span>
             <Button variant="outline" size="sm" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)}>

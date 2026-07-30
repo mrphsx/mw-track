@@ -20,6 +20,14 @@ export interface RecordEventDto extends TrackEventDto {
   // Landing.tgInviteLink). Не часть публичного TrackEventDto — браузерный SDK не знает
   // свой landingId, только project publicToken.
   landingId?: string;
+  // Запрос пользователя 2026-07-27 (уточнение того же дня): Project.disabledTrackingEvents
+  // гасит только АВТОМАТИЧЕСКОЕ срабатывание Subscribe/Dialogue/Purchase — ручные действия
+  // сотрудника (кнопка "Зарегистрировать диалог", форма "Добавить покупку" в списке клиентов)
+  // должны продолжать уходить в Facebook/TikTok, даже если свитч выключен. Проставляется ТОЛЬКО
+  // вызывающими, которые точно знают, что это ручное действие (см. ClientsService.
+  // applyDialogueUpdate/PurchasesService.create) — по умолчанию false, все остальные (в т.ч.
+  // автоматические Subscribe/Dialogue) подчиняются свитчу как обычно.
+  forceSend?: boolean;
 }
 
 @Injectable()
@@ -68,10 +76,24 @@ export class TrackingService {
           payload: {
             fbclid: attribution.fbclid,
             ttclid: attribution.ttclid,
+            // fbp/countryCode (запрос пользователя 2026-07-29) — для FacebookCAPIService's
+            // user_data.fbp/country. tgUserId — для user_data.subscription_id (тот же запрос,
+            // сверка с реальным примером конкурента: у них subscription_id — реальный численный
+            // ID подписки, для Telegram-канала естественный эквивалент — сам Telegram user id).
+            fbp: attribution.fbp,
+            countryCode: attribution.countryCode,
+            tgUserId: dto.tgUserId,
+            // fbclidCapturedAt (запрос пользователя 2026-07-28, сверка с ответом конкурента) —
+            // честный момент первого наблюдения fbclid, для fbc-таймстампа в
+            // FacebookCAPIService (см. комментарий там же), не момент отправки события.
+            fbclidCapturedAt: attribution.fbclidCapturedAt?.toISOString(),
             email: dto.email,
             phone: dto.phone,
-            ipAddress: dto.ipAddress,
-            userAgent: dto.userAgent,
+            // ipAddress/userAgent — теперь из resolveAttribution (дотягиваются из Client для
+            // отложенных Telegram-событий, не только из dto), см. комментарий в
+            // resolveAttribution выше.
+            ipAddress: attribution.ipAddress,
+            userAgent: attribution.userAgent,
             pageUrl: dto.pageUrl,
             value: dto.value,
             currency: dto.currency,
@@ -108,7 +130,15 @@ export class TrackingService {
     // не было контакта. Сама запись в CRM (строка выше) и автоворонки (ниже) от этого не
     // зависят — только фактическая отправка на рекламные платформы.
     const hasAdAttribution = !!(attribution.pixelId || attribution.fbclid || attribution.ttclid || attribution.adId);
-    if (hasAdAttribution) {
+
+    // Запрос пользователя 2026-07-27: свитчи включения/выключения пересылки по типу события
+    // (Project.disabledTrackingEvents) — та же граница, что и hasAdAttribution выше: сама
+    // запись в TrackingEvent уже сделана, выключается только пересылка на рекламные платформы.
+    // dto.forceSend (уточнение того же дня) — свитч гасит только автоматическое срабатывание,
+    // ручные действия сотрудника (dto.forceSend: true) его обходят.
+    const isEventTypeDisabled = !dto.forceSend && (await this.isTrackingEventDisabled(projectId, dto.eventName));
+
+    if (hasAdAttribution && !isEventTypeDisabled) {
       await this.trackingQueue.add(
         'send-to-platforms',
         { eventDbId: event.id, projectId },
@@ -138,6 +168,14 @@ export class TrackingService {
     return { eventId };
   }
 
+  private async isTrackingEventDisabled(projectId: string, eventName: string): Promise<boolean> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { disabledTrackingEvents: true },
+    });
+    return !!project?.disabledTrackingEvents.includes(eventName);
+  }
+
   private async resolveClient(projectId: string, dto: RecordEventDto) {
     if (dto.tgUserId) {
       return this.prisma.client.findFirst({ where: { projectId, tgUserId: dto.tgUserId } });
@@ -150,6 +188,16 @@ export class TrackingService {
 
   // Приоритет — явным полям dto (SDK/трекинг-ссылка знает точнее в моменте события), недостающие
   // подтягиваются из Client, если он уже известен. См. комментарий в recordEvent выше.
+  //
+  // Правки 2026-07-28 (сверка с реальным запросом конкурента, у которого события реально
+  // доходят до Facebook): (1) ipAddress/userAgent теперь тоже подтягиваются из Client, не
+  // только из dto — у отложенных Subscribe/Dialogue (пришли через Telegram, не браузер)
+  // dto.ipAddress/dto.userAgent всегда пусты, хотя у Client они обычно уже есть с момента
+  // первого визита на лендинг (ClientsService.findOrCreate/getGeoByIp) — то же самое
+  // "дотягивание" уже применялось к pixelId/adId и т.п., просто не было распространено на эти
+  // два поля; (2) fbclidCapturedAt — момент, когда fbclid РЕАЛЬНО был впервые увиден (для
+  // честного fbc-таймстампа в FacebookCAPIService, см. баг там же), а не момент отправки
+  // события, который может отличаться на часы для отложенных конверсий.
   private async resolveAttribution(clientId: string | undefined, dto: RecordEventDto) {
     const explicit = {
       pixelId: dto.pixelId,
@@ -163,8 +211,20 @@ export class TrackingService {
       siteSourceName: dto.siteSourceName,
       fbclid: dto.fbclid,
       ttclid: dto.ttclid,
+      ipAddress: dto.ipAddress,
+      userAgent: dto.userAgent,
+      // fbp/countryCode (запрос пользователя 2026-07-29, сверка с реальным примером конкурента) —
+      // тот же принцип, что и у ipAddress/userAgent выше: у отложенных Telegram-событий берём из
+      // Client, если сейчас явно не пришли. dto.countryCode не существует (браузер сам не знает
+      // свой ISO-код) — только через Client, поэтому explicit.countryCode всегда undefined тут.
+      fbp: dto.fbp,
+      countryCode: undefined as string | undefined,
     };
-    if (!clientId || Object.values(explicit).every((v) => v !== undefined)) return explicit;
+    const fbclidCapturedAt: Date | undefined = dto.fbclid ? new Date() : undefined;
+
+    if (!clientId || Object.values(explicit).every((v) => v !== undefined)) {
+      return { ...explicit, fbclidCapturedAt };
+    }
 
     const client = await this.prisma.client.findUnique({
       where: { id: clientId },
@@ -180,9 +240,14 @@ export class TrackingService {
         siteSourceName: true,
         fbclid: true,
         ttclid: true,
+        ipAddress: true,
+        userAgent: true,
+        fbp: true,
+        countryCode: true,
+        firstSeenAt: true,
       },
     });
-    if (!client) return explicit;
+    if (!client) return { ...explicit, fbclidCapturedAt };
 
     return {
       pixelId: explicit.pixelId ?? client.pixelId ?? undefined,
@@ -196,6 +261,13 @@ export class TrackingService {
       siteSourceName: explicit.siteSourceName ?? client.siteSourceName ?? undefined,
       fbclid: explicit.fbclid ?? client.fbclid ?? undefined,
       ttclid: explicit.ttclid ?? client.ttclid ?? undefined,
+      ipAddress: explicit.ipAddress ?? client.ipAddress ?? undefined,
+      userAgent: explicit.userAgent ?? client.userAgent ?? undefined,
+      fbp: explicit.fbp ?? client.fbp ?? undefined,
+      countryCode: client.countryCode ?? undefined,
+      // Если fbclid не пришёл прямо сейчас, а подтянут из Client — значит его реально впервые
+      // увидели при первом визите этого клиента, не сейчас.
+      fbclidCapturedAt: fbclidCapturedAt ?? ((explicit.fbclid ?? client.fbclid) ? client.firstSeenAt : undefined),
     };
   }
 }

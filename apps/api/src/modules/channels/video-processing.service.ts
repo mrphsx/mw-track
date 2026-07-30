@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { randomUUID } from 'crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 
 const execFileAsync = promisify(execFile);
 
@@ -22,44 +22,56 @@ export class VideoProcessingService {
   // квадратное (1:1) — Bot API это никак не проверяет и не сообщает, а просто показывает
   // видео как обычное, без круглой рамки (баг, репорт пользователя 2026-07-17, видео было
   // 1920x1080). Центрируем обрезку по меньшей стороне и заодно обрезаем до 60 сек — второе
-  // ограничение самого формата video_note в Telegram.
+  // ограничение самого формата video_note в Telegram. Собственные видео-кружки Telegram
+  // всегда записаны в 384x384 (ограничение самого формата "video message") — даунскейлим до
+  // этого размера (не апскейлим — если сторона меньше, оставляем как есть, апскейл только
+  // портит качество без пользы). baseline-профиль H.264 — самый широко поддерживаемый на всех
+  // клиентах/версиях Telegram именно для этого формата сообщений (high, дефолт libx264,
+  // поддерживается не везде одинаково для video_note конкретно).
   //
-  // ВАЖНО (правка 2026-07-18, багрепорт "кружок всё ещё квадратный, хотя уже обрезан
-  // 1:1"): честно квадратного 1:1 оказалось недостаточно — предыдущая версия сохраняла
-  // ИСХОДНОЕ разрешение после обрезки (например, 1080x1080), а собственные видео-кружки
-  // Telegram всегда записываются в 384x384 (это ограничение самого формата "video message",
-  // конкуренты, судя по всему, тоже приводят видео к этому разрешению перед отправкой, а не
-  // просто обрезают в квадрат любого размера). Даунскейлим до 384x384 (не апскейлим — если
-  // сторона меньше, оставляем как есть, апскейл только портит качество без пользы).
-  // baseline-профиль H.264 — самый широко поддерживаемый на всех клиентах/версиях Telegram
-  // для этого конкретного формата сообщений, high (дефолт libx264) поддерживается не везде
-  // одинаково для video_note конкретно (хотя как обычное видео воспроизводится где угодно).
-  //
-  // Если ffprobe/ffmpeg не смогли обработать файл (повреждён, экзотический кодек и т.п.) —
-  // отдаём исходный буфер как есть, чтобы не блокировать отправку из-за проблемы обработки.
+  // ПЕРЕПИСАНО 2026-07-25 (баг-репорт пользователя: "кружки редко срабатывают и имеют
+  // проблемы, пусть поддерживается любой формат видео и любого разрешения"). Два реальных
+  // источника ненадёжности в прежней версии:
+  // 1) "Быстрый путь" пропускал перекодирование целиком, если видео УЖЕ было честно квадратным
+  //    и короче 60 сек — но "квадратное" не значит "совместимое": видео в HEVC/VP9/AV1/другом
+  //    пиксельном формате проходило мимо перекодирования и уходило в Telegram как есть, а
+  //    video_note жёстко требует H.264 baseline. Теперь перекодируем ВСЕГДА, без исключений —
+  //    единственный способ гарантировать совместимый результат для любого входного формата.
+  // 2) Обрезка считалась в Node из "сырых" width/height ffprobe — но эти числа не учитывают
+  //    поворот из метаданных (rotate/displaymatrix), которым телефоны маркируют портретные
+  //    видео, снятые в приложении с зафиксированной альбомной матрицей сенсора. ffmpeg (начиная
+  //    с версии, установленной на этом сервере) сам применяет этот поворот ДО фильтров —
+  //    поэтому кадр, который реально видит `-vf`, уже в правильной (дисплейной) ориентации, а
+  //    JS-вычисленные из сырых чисел width/height могли не совпадать с ней и обрезать не то.
+  //    Фикс — считать обрезку/масштаб выражениями САМОГО ffmpeg (`iw`/`ih`, ширина/высота кадра
+  //    В МОМЕНТ фильтра), а не заранее в Node: работает одинаково для любой ориентации и
+  //    разрешения без отдельной логики поворота.
+  // Если по-настоящему не получилось обработать файл (не видео вообще, битый поток) — кидаем
+  // понятную ошибку вместо того, чтобы молча отправить необработанные байты дальше: несовместимый
+  // необработанный файл всё равно не отправился бы кружком, только без объяснения причины.
   private static readonly VIDEO_NOTE_SIZE = 384;
+  private static readonly VIDEO_NOTE_MAX_DURATION_SECONDS = 60;
 
   async ensureSquareVideoNote(buffer: Buffer): Promise<Buffer> {
     const tmpDir = os.tmpdir();
-    const inputPath = path.join(tmpDir, `video-note-in-${randomUUID()}.mp4`);
+    const inputPath = path.join(tmpDir, `video-note-in-${randomUUID()}.input`);
     const outputPath = path.join(tmpDir, `video-note-out-${randomUUID()}.mp4`);
 
     try {
       await fs.writeFile(inputPath, buffer);
-      const probe = await this.probe(inputPath);
-      if (!probe.width || !probe.height) return buffer;
 
-      const side = Math.min(probe.width, probe.height);
-      const targetSize = Math.min(side, VideoProcessingService.VIDEO_NOTE_SIZE);
-      const alreadyRightShape = probe.width === probe.height && side <= VideoProcessingService.VIDEO_NOTE_SIZE;
-      const withinDuration = probe.durationSeconds <= 60;
-      if (alreadyRightShape && withinDuration) return buffer;
+      const probe = await this.probe(inputPath).catch(() => null);
+      if (!probe?.width || !probe.height) {
+        throw new BadRequestException('Не удалось распознать видео в этом файле — убедитесь, что это видео и файл не повреждён');
+      }
 
+      const size = VideoProcessingService.VIDEO_NOTE_SIZE;
       await execFileAsync('ffmpeg', [
         '-y',
         '-i', inputPath,
-        '-vf', `crop=${side}:${side},scale=${targetSize}:${targetSize}`,
-        '-t', '60',
+        '-vf', `crop='min(iw\\,ih)':'min(iw\\,ih)',scale='min(iw\\,${size})':'min(ih\\,${size})',setsar=1`,
+        '-t', String(VideoProcessingService.VIDEO_NOTE_MAX_DURATION_SECONDS),
+        '-r', '30',
         '-c:v', 'libx264',
         '-profile:v', 'baseline',
         '-level', '3.0',
@@ -67,14 +79,22 @@ export class VideoProcessingService {
         '-preset', 'veryfast',
         '-c:a', 'aac',
         '-b:a', '64k',
+        '-ac', '1',
+        '-ar', '44100',
         '-movflags', '+faststart',
+        '-max_muxing_queue_size', '9999',
         outputPath,
       ]);
 
-      return await fs.readFile(outputPath);
+      const result = await fs.readFile(outputPath);
+      if (!result.length) throw new Error('ffmpeg произвёл пустой файл');
+      return result;
     } catch (error) {
-      this.logger.warn(`video_note crop failed, sending original file as-is: ${(error as Error).message}`);
-      return buffer;
+      if (error instanceof BadRequestException) throw error;
+      this.logger.error(`video_note processing failed: ${(error as Error).message}`);
+      throw new BadRequestException(
+        'Не удалось обработать видео для кружка — попробуйте другой файл (другой формат или короче по длительности)',
+      );
     } finally {
       await Promise.all([fs.unlink(inputPath).catch(() => {}), fs.unlink(outputPath).catch(() => {})]);
     }

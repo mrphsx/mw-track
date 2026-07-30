@@ -127,16 +127,16 @@ export default function NewPushPage() {
 
       <div className="flex items-center gap-2">
         {STEPS.map((label, i) => (
-          <div key={label} className={`flex items-center gap-2 text-sm ${i === step ? 'font-semibold text-blue-600' : 'text-gray-400'}`}>
+          <div key={label} className={`flex items-center gap-2 text-sm ${i === step ? 'font-semibold text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`}>
             <div
               className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${
-                i === step ? 'bg-blue-600 text-white' : i < step ? 'bg-blue-100 text-blue-600' : 'bg-gray-100'
+                i === step ? 'bg-blue-600 text-white' : i < step ? 'bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400' : 'bg-muted'
               }`}
             >
               {i + 1}
             </div>
             {label}
-            {i < STEPS.length - 1 && <div className="w-8 h-px bg-gray-200 mx-1" />}
+            {i < STEPS.length - 1 && <div className="w-8 h-px bg-border mx-1" />}
           </div>
         ))}
       </div>
@@ -218,7 +218,7 @@ export default function NewPushPage() {
                       onSelectDate={(date) => setDateStr(format(date, 'yyyy-MM-dd'))}
                     />
                     <div className="flex flex-col gap-2">
-                      <label className="text-xs text-gray-500">
+                      <label className="text-xs text-muted-foreground">
                         Дата
                         <input
                           type="date"
@@ -227,7 +227,7 @@ export default function NewPushPage() {
                           className="block mt-1 border rounded-md px-2 py-1.5 text-sm"
                         />
                       </label>
-                      <label className="text-xs text-gray-500">
+                      <label className="text-xs text-muted-foreground">
                         Время
                         <input
                           type="time"

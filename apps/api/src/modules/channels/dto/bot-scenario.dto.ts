@@ -1,21 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
-import { Type } from 'class-transformer';
-import {
-  ArrayMaxSize,
-  IsArray,
-  IsBoolean,
-  IsEnum,
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsString,
-  Matches,
-  Max,
-  Min,
-  ValidateNested,
-} from 'class-validator';
+import { IsBoolean, IsEnum, IsOptional, Matches } from 'class-validator';
 import { BotScenarioTrigger } from '@prisma/client';
-import { WelcomeButtonDto } from './create-channel.dto';
 
 // Зарезервированные имена команд — уже жёстко обрабатываются grammy bot.command() в
 // TelegramProvider.initialize() (см. handleStart/handlePurchaseCommand) и перехватывают
@@ -24,6 +9,12 @@ import { WelcomeButtonDto } from './create-channel.dto';
 // молча нерабочую запись.
 const RESERVED_COMMANDS = ['start', 'purchase'];
 
+// Поля одиночного сообщения (delaySeconds/messageText/mediaType/mediaKey/buttons) убраны
+// отсюда 2026-07-22 — содержимое сценария теперь живёт в BotScenarioStep (см.
+// bot-scenario-element.dto.ts), сам BotScenario создаётся пустым (только триггер), затем
+// наполняется шагами на отдельной странице редактора — тот же паттерн, что уже был у
+// AutomationFlow. Медиа для шагов грузится через отдельный ScenarioStepMediaController
+// (не привязано к конкретному сценарию/шагу на момент загрузки).
 export class CreateBotScenarioDto {
   @IsEnum(BotScenarioTrigger)
   triggerType: BotScenarioTrigger;
@@ -38,51 +29,12 @@ export class CreateBotScenarioDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(3600)
-  delaySeconds?: number;
-
-  @IsOptional()
-  @IsString()
-  messageText?: string;
-
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(3)
-  @ValidateNested({ each: true })
-  @Type(() => WelcomeButtonDto)
-  buttons?: WelcomeButtonDto[];
 }
 
 export class UpdateBotScenarioDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(3600)
-  delaySeconds?: number;
-
-  @IsOptional()
-  @IsString()
-  messageText?: string;
-
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(3)
-  @ValidateNested({ each: true })
-  @Type(() => WelcomeButtonDto)
-  buttons?: WelcomeButtonDto[];
-}
-
-export class UploadScenarioMediaDto {
-  @IsIn(['PHOTO', 'VIDEO', 'VIDEO_NOTE', 'VOICE', 'DOCUMENT'])
-  mediaType: string;
 }
 
 export function assertValidCommand(triggerType: BotScenarioTrigger, command: string | undefined): string {
@@ -91,6 +43,12 @@ export function assertValidCommand(triggerType: BotScenarioTrigger, command: str
   if (!normalized) throw new BadRequestException('Для команды нужно указать её имя');
   if (RESERVED_COMMANDS.includes(normalized)) {
     throw new BadRequestException(`"${normalized}" — зарезервированная команда бота, выберите другое имя`);
+  }
+  // Служебный префикс для A/B-вариантов (см. BotScenariosService.addAbTestVariant) — не
+  // реальная зарезервированная команда бота, но занятая нами схема именования, коллизия с
+  // которой сломает фильтрацию "основной сценарий vs вариант" в списке.
+  if (normalized.startsWith('__ab_')) {
+    throw new BadRequestException('Команды с префиксом "__ab_" зарезервированы под A/B-тесты — выберите другое имя');
   }
   return normalized;
 }

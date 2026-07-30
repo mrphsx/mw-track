@@ -1,18 +1,21 @@
 'use client';
 
-// Вкладка "Бот" в настройках проекта — токен бота (открыто, без скрытия) и приветственное
-// сообщение, которое бот отправляет при одобрении заявки на вступление (только режим
-// "Приватный канал (заявка)" — только там Telegram вообще присылает боту момент "заявка
-// одобрена", на который можно повесить отправку). Запрос пользователя 2026-07-03.
+// Вкладка "Бот" в настройках проекта — токен бота (открыто, без скрытия) и задержка одобрения
+// заявки (только режим "Приватный канал (заявка)" — только там Telegram вообще присылает боту
+// момент "заявка одобрена"). Приветственное сообщение само по себе с 2026-07-25 настраивается
+// в сценариях (триггер "Подписка"), не здесь — см. SubscribeScenarioCard ниже, запрос
+// пользователя: "убери с настроек бота приветственное сообщение при подписке и добавь его в
+// сценарии". Запрос пользователя 2026-07-03 (исходная фича).
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { Check, Copy } from 'lucide-react';
+import { Check, CheckCircle2, Copy, XCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
 import { TgMode } from '@/components/channel-fields-editor';
-import { MediaType, MessageButton, MessageContent, EMPTY_MESSAGE_CONTENT, ScenarioMessageEditor } from '@/components/scenario-message-editor';
+import { BotScenarioListItem } from '@/lib/scenarios';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -22,9 +25,6 @@ interface ChannelBotSettings {
   id: string;
   tgBotToken: string | null;
   tgMode: TgMode | null;
-  tgWelcomeMessage: string | null;
-  tgWelcomeMediaType: MediaType | null;
-  tgWelcomeButtons: MessageButton[] | null;
   tgJoinDelaySeconds: number | null;
   tgManagerUsernames: string[] | null;
 }
@@ -38,12 +38,12 @@ export function BotSettingsTab({ projectId, channelId, channelType }: { projectI
   if (channelType !== 'TELEGRAM') {
     return (
       <Card>
-        <CardContent className="p-5 text-sm text-gray-500">Настройки бота доступны только для Telegram-канала.</CardContent>
+        <CardContent className="p-5 text-sm text-muted-foreground">Настройки бота доступны только для Telegram-канала.</CardContent>
       </Card>
     );
   }
 
-  if (!full) return <p className="text-sm text-gray-500">Загрузка...</p>;
+  if (!full) return <p className="text-sm text-muted-foreground">Загрузка...</p>;
 
   return (
     <div className="space-y-4">
@@ -58,7 +58,7 @@ export function BotSettingsTab({ projectId, channelId, channelType }: { projectI
 
       {full.tgMode !== 'PRIVATE_CHANNEL_REQUEST' ? (
         <Card>
-          <CardContent className="p-5 text-sm text-gray-500">
+          <CardContent className="p-5 text-sm text-muted-foreground">
             Приветственное сообщение отправляется только в режиме «Приватный канал (заявка)» — это единственный
             режим, в котором Telegram сообщает боту момент одобрения заявки. Для личных сообщений и публичного
             канала бот не участвует в подключении пользователя, и отправить приветствие некому.
@@ -67,7 +67,7 @@ export function BotSettingsTab({ projectId, channelId, channelType }: { projectI
       ) : (
         <>
           <JoinDelayCard channelId={channelId} projectId={projectId} full={full} />
-          <WelcomeMessageCard channelId={channelId} projectId={projectId} full={full} />
+          <SubscribeScenarioCard channelId={channelId} projectId={projectId} />
         </>
       )}
 
@@ -115,7 +115,7 @@ function ManagersCard({ channelId, projectId, full }: { channelId: string; proje
         <CardTitle className="text-base">Менеджеры</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           По одному Telegram-username на строку, без @. Эти люди смогут переслать боту сообщение клиента и
           подтвердить запись диалога — без подключения личного аккаунта. Сами менеджеры клиентами не считаются:
           пуши, воронки и сценарии этого бота им не приходят.
@@ -165,7 +165,7 @@ function JoinDelayCard({ channelId, projectId, full }: { channelId: string; proj
         <CardTitle className="text-base">Задержка одобрения заявки</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-muted-foreground">
           Заявка одобряется не сразу, а через указанное число секунд. Подписчик и событие для рекламных
           площадок фиксируются в момент заявки, задержку получает только сам вход в канал.
         </p>
@@ -178,7 +178,7 @@ function JoinDelayCard({ channelId, projectId, full }: { channelId: string; proj
             onChange={(e) => setSeconds(e.target.value)}
             className="max-w-32"
           />
-          <span className="text-sm text-gray-500">секунд (0 — без задержки, максимум 3600)</span>
+          <span className="text-sm text-muted-foreground">секунд (0 — без задержки, максимум 3600)</span>
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
         <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending}>
@@ -209,78 +209,43 @@ function BotTokenField({ token }: { token: string | null }) {
   );
 }
 
-function WelcomeMessageCard({ channelId, projectId, full }: { channelId: string; projectId: string; full: ChannelBotSettings }) {
-  const queryClient = useQueryClient();
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['channel', channelId, 'bot-settings'] });
-
-  const [content, setContent] = useState<MessageContent>(EMPTY_MESSAGE_CONTENT);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    setContent({
-      text: full.tgWelcomeMessage || '',
-      buttons: full.tgWelcomeButtons || [],
-      mediaType: full.tgWelcomeMediaType || 'NONE',
-    });
-  }, [full]);
-
-  const saveText = useMutation({
-    mutationFn: () =>
-      api.patch(`/channels/${channelId}`, {
-        tgWelcomeMessage: content.text || '',
-        tgWelcomeButtons: content.buttons.filter((b) => b.text && b.url),
-      }),
-    onSuccess: () => {
-      invalidate();
-      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
-      setError('');
-    },
-    onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось сохранить сообщение'),
+// Индикатор + переход в сценарии (запрос пользователя 2026-07-25) — само приветственное
+// сообщение теперь настраивается как обычный сценарий с триггером "Подписка" (BotScenarioTrigger.
+// SUBSCRIBE), эта карточка лишь показывает, настроено ли оно, и ведёт на страницу сценариев.
+// "Настроено" — есть активный SUBSCRIBE-сценарий хотя бы с одним шагом (пустой, только что
+// созданный сценарий без шагов ничего не отправит, так же как выключенный).
+function SubscribeScenarioCard({ channelId, projectId }: { channelId: string; projectId: string }) {
+  const { data: scenarios } = useQuery({
+    queryKey: ['channel', channelId, 'scenarios'],
+    queryFn: async () => (await api.get<BotScenarioListItem[]>(`/channels/${channelId}/scenarios`)).data,
   });
 
-  const uploadMedia = useMutation({
-    mutationFn: async ({ file, mediaType }: { file: File; mediaType: MediaType }) => {
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('mediaType', mediaType);
-      await api.post(`/channels/${channelId}/welcome-media`, formData);
-    },
-    onSuccess: () => {
-      invalidate();
-      setError('');
-    },
-    onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось загрузить файл'),
-  });
-
-  const removeMedia = useMutation({
-    mutationFn: () => api.delete(`/channels/${channelId}/welcome-media`),
-    onSuccess: () => {
-      invalidate();
-      setContent((c) => ({ ...c, mediaType: 'NONE' }));
-    },
-  });
+  const subscribeScenario = scenarios?.find((s) => s.triggerType === 'SUBSCRIBE');
+  const configured = !!subscribeScenario && subscribeScenario.isActive && subscribeScenario.stepCount > 0;
+  const href = subscribeScenario
+    ? `/projects/${projectId}/scenarios/${subscribeScenario.id}`
+    : `/projects/${projectId}/scenarios`;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">Приветственное сообщение</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <ScenarioMessageEditor
-          idPrefix="welcome"
-          content={content}
-          onChange={(patch) => setContent((c) => ({ ...c, ...patch }))}
-          existingMediaType={full.tgWelcomeMediaType}
-          onUploadMedia={(file, mediaType) => uploadMedia.mutate({ file, mediaType })}
-          onRemoveMedia={() => removeMedia.mutate()}
-          uploadPending={uploadMedia.isPending}
-          removePending={removeMedia.isPending}
-        />
-
-        {error && <p className="text-sm text-red-500">{error}</p>}
-        <Button onClick={() => saveText.mutate()} disabled={saveText.isPending}>
-          {saveText.isPending ? 'Сохраняем...' : 'Сохранить'}
-        </Button>
+      <CardContent className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 text-sm">
+          {configured ? (
+            <>
+              <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
+              <span>Настроено — отправится при одобрении заявки на вступление</span>
+            </>
+          ) : (
+            <>
+              <XCircle className="w-4 h-4 text-muted-foreground shrink-0" />
+              <span className="text-muted-foreground">Не настроено — новые подписчики ничего не получат</span>
+            </>
+          )}
+        </div>
+        <Button size="sm" variant="outline" nativeButton={false} render={<Link href={href}>Настроить в сценариях</Link>} />
       </CardContent>
     </Card>
   );

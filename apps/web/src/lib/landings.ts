@@ -81,6 +81,12 @@ export interface LandingItem {
   // Название группы (Фаза 3.2, доп. запрос 2026-07-17) — null, если группа без имени
   // (тогда бейдж в списке лендингов собирает подпись из имён участников) или лендинг не в тесте.
   abTestGroup: { name: string | null } | null;
+  // Авторедирект/клоакинг (запрос пользователя 2026-07-30: "укажи в карточке лэндинга если ли
+  // там редирект и клоакинг") — поля уже приходят с бэкенда (LandingsService.findAll не
+  // применяет select, только include, так что все скалярные поля Landing и так были в ответе),
+  // просто не были описаны в этом типе и не отображались нигде в карточке до сих пор.
+  autoRedirect: boolean;
+  cloakingEnabled: boolean;
 }
 
 export function primaryChannel(landing: LandingItem): PrimaryChannel | null {

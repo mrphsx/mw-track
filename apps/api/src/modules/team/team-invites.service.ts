@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Permission, TeamInvite, UserRole } from '@prisma/client';
+import { Permission, Prisma, TeamInvite, UserRole } from '@prisma/client';
 import { addDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -8,11 +8,19 @@ import { isElevatedRole } from '../../common/permissions/permission.constants';
 import { AuthService } from '../auth/auth.service';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { CreateInviteDto } from './dto/create-invite.dto';
+import { ProjectPermissionsDto } from './dto/create-team-member.dto';
 import { assertCanAssignRole, assertProjectsBelongToCompany } from './team-role.util';
 
 const bcrypt = require('bcryptjs');
 
 const INVITE_TTL_DAYS = 7;
+
+// Per-project права (запрос пользователя 2026-07-28) в один JSON-блоб вместо плоского массива
+// — TeamInvite.permissions остаётся Json? без миграции схемы, просто меняем трактовку формы.
+interface InvitePermissionsPayload {
+  projectPermissions?: ProjectPermissionsDto[];
+  domainsPermissions?: Permission[];
+}
 
 @Injectable()
 export class TeamInvitesService {
@@ -39,13 +47,18 @@ export class TeamInvitesService {
       await assertProjectsBelongToCompany(this.prisma, companyId, dto.projectIds);
     }
 
+    const permissionsPayload: InvitePermissionsPayload = {
+      projectPermissions: dto.projectPermissions,
+      domainsPermissions: dto.domainsPermissions,
+    };
+
     return this.prisma.teamInvite.create({
       data: {
         companyId,
         token: nanoid(32),
         role: dto.role,
         projectIds: dto.role === 'ADMIN' ? undefined : dto.projectIds,
-        permissions: dto.role === 'ADMIN' ? undefined : dto.permissions,
+        permissions: dto.role === 'ADMIN' ? undefined : (permissionsPayload as unknown as Prisma.InputJsonValue),
         createdById: requesterId,
         expiresAt: addDays(new Date(), INVITE_TTL_DAYS),
       },
@@ -101,15 +114,25 @@ export class TeamInvitesService {
       return created;
     });
 
-    // Гранулярные права — если приглашение несло явный список (даже пустой), используем его;
-    // иначе (включая старые TeamInvite, созданные до этого поля) засеиваем дефолт по роли.
-    if (!isElevatedRole(user.role)) {
-      const permissions = invite.permissions as Permission[] | null;
-      if (permissions !== null && permissions !== undefined) {
-        await this.permissionsService.replacePermissions(user.id, permissions);
-      } else {
-        await this.permissionsService.seedDefaultsIfEmpty(user.id, user.role);
-      }
+    // Гранулярные права — новая per-project форма (запрос пользователя 2026-07-28): если
+    // приглашение несло явный projectPermissions/domainsPermissions, используем их через тот
+    // же общий applyProjectPermissions, что и TeamService (иначе на проектах без явного
+    // элемента засеется дефолт по роли — тот же принцип, что раньше). Обратная совместимость
+    // со СТАРОЙ формой (плоский Permission[], созданный до этого редизайна) — если сохранённое
+    // значение оказалось голым массивом, а не объектом, трактуем как явный список, применяемый
+    // одинаково на каждый выданный проект (эквивалент старого поведения).
+    if (!isElevatedRole(user.role) && projectIds.length > 0) {
+      const raw = invite.permissions as unknown;
+      const legacyFlatList = Array.isArray(raw) ? (raw as Permission[]) : null;
+      const payload = !legacyFlatList && raw && typeof raw === 'object' ? (raw as InvitePermissionsPayload) : null;
+
+      await this.permissionsService.applyProjectPermissions(
+        user.id,
+        user.role,
+        projectIds,
+        legacyFlatList ? projectIds.map((projectId) => ({ projectId, permissions: legacyFlatList })) : payload?.projectPermissions,
+        payload?.domainsPermissions,
+      );
     }
 
     return this.authService.issueTokensForUser(user);

@@ -32,10 +32,10 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="w-full max-w-md bg-white rounded-2xl shadow p-8">
+    <div className="w-full max-w-md bg-card rounded-2xl shadow p-8">
       <div className="text-center mb-6">
-        <div className="text-3xl font-bold text-blue-600 mb-1">MWTRACK</div>
-        <p className="text-gray-500 text-sm">Вход в систему</p>
+        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-1">MWTRACK</div>
+        <p className="text-muted-foreground text-sm">Вход в систему</p>
       </div>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-1.5">
@@ -50,9 +50,9 @@ export default function LoginPage() {
         <Button type="submit" disabled={loading} className="w-full">
           {loading ? 'Входим...' : 'Войти'}
         </Button>
-        <p className="text-center text-sm text-gray-500">
+        <p className="text-center text-sm text-muted-foreground">
           Нет аккаунта?{' '}
-          <Link href="/register" className="text-blue-600 hover:underline">
+          <Link href="/register" className="text-blue-600 dark:text-blue-400 hover:underline">
             Зарегистрироваться
           </Link>
         </p>

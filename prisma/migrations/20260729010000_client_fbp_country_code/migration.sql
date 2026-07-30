@@ -1,0 +1,2 @@
+ALTER TABLE "Client" ADD COLUMN "countryCode" TEXT;
+ALTER TABLE "Client" ADD COLUMN "fbp" TEXT;

@@ -9,7 +9,7 @@ import { ArrowLeft, Eye, Globe, Link2, MessageCircle, MousePointerClick, SplitSq
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
-import { STATUS_LABEL, TYPE_LABEL, LandingType, LandingStatus, DomainOption } from '@/lib/landings';
+import { STATUS_LABEL, TYPE_LABEL, DomainOption } from '@/lib/landings';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,26 +24,14 @@ import {
 import { LandingContentCard } from '@/components/landing-content-card';
 import { GetLinkDialog } from '@/components/get-link-dialog';
 import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog, LandingDomainRef } from '@/components/landing-card';
+import { AbTestComparisonCard, AbTestMemberStats, LandingVariantStats } from '@/components/landings/ab-test-comparison-card';
 
 interface ProjectChannelInfo {
   channel: { tgChannelMembersCount: number | null } | null;
 }
 
-interface LandingVariantStats {
-  landing: { id: string; name: string; type: LandingType; status: LandingStatus };
-  subscribers: { total: number; active: number; unsubscribed: number };
-  funnel: { pageViews: number; leads: number; subscribes: number };
-  dialogues: { total: number; dailyDialogues: { date: string; count: number }[] };
-  dailySubscribers: { date: string; count: number }[];
-  attachment: { domain: string; path: string } | null;
-}
-
 // A/B/n-тестирование (Фаза 3.2) — присутствует, только если лендинг состоит в группе
 // (см. LandingsService.getStats: computeLandingStats зовётся по разу на каждого участника).
-interface AbTestMemberStats extends LandingVariantStats {
-  weight: number;
-}
-
 interface LandingStats extends LandingVariantStats {
   abTestGroup?: { groupId: string; members: AbTestMemberStats[] };
 }
@@ -160,7 +148,7 @@ export default function LandingStatsPage() {
     window.open(URL.createObjectURL(blob), '_blank');
   };
 
-  if (!stats) return <p className="text-sm text-gray-500">Загрузка...</p>;
+  if (!stats) return <p className="text-sm text-muted-foreground">Загрузка...</p>;
 
   const landingRef: LandingDomainRef = { id: landingId, name: stats.landing.name, project: { id: projectId } };
   const abTestTarget: AbTestDialogTarget = {
@@ -174,7 +162,7 @@ export default function LandingStatsPage() {
       <div>
         <Link
           href={`/projects/${projectId}/landings`}
-          className="text-sm text-gray-500 hover:underline inline-flex items-center gap-1 mb-2"
+          className="text-sm text-muted-foreground hover:underline inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Все лендинги
         </Link>
@@ -191,7 +179,7 @@ export default function LandingStatsPage() {
                   href={`https://${stats.attachment.domain}${stats.attachment.path === '/' ? '' : stats.attachment.path}`}
                   target="_blank"
                   rel="noopener"
-                  className="text-xs font-mono text-gray-500 hover:underline"
+                  className="text-xs font-mono text-muted-foreground hover:underline"
                 >
                   {stats.attachment.domain}
                   {stats.attachment.path === '/' ? '' : stats.attachment.path}
@@ -259,7 +247,7 @@ export default function LandingStatsPage() {
           </CardHeader>
           <CardContent>
             {stats.dailySubscribers.length === 0 ? (
-              <p className="text-sm text-gray-500">Пока нет данных.</p>
+              <p className="text-sm text-muted-foreground">Пока нет данных.</p>
             ) : (
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={stats.dailySubscribers}>
@@ -280,7 +268,7 @@ export default function LandingStatsPage() {
           </CardHeader>
           <CardContent>
             {stats.dialogues.dailyDialogues.length === 0 ? (
-              <p className="text-sm text-gray-500">Пока нет данных.</p>
+              <p className="text-sm text-muted-foreground">Пока нет данных.</p>
             ) : (
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={stats.dialogues.dailyDialogues}>
@@ -300,12 +288,12 @@ export default function LandingStatsPage() {
         <h2 className="text-lg font-semibold mb-3">Подписчики этого лендинга</h2>
         {!clients?.items.length ? (
           <Card>
-            <CardContent className="p-8 text-center text-gray-500">
+            <CardContent className="p-8 text-center text-muted-foreground">
               Пока нет подписчиков, привязанных именно к этому лендингу.
             </CardContent>
           </Card>
         ) : (
-          <div className="border rounded-lg bg-white">
+          <div className="border rounded-lg bg-card">
             <ClientsTable projectId={projectId} clients={clients.items} onSelect={() => {}} />
           </div>
         )}
@@ -325,53 +313,5 @@ export default function LandingStatsPage() {
         onSaved={() => queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'stats'] })}
       />
     </div>
-  );
-}
-
-// Сравнительный блок A/B/n (Фаза 3.2, расширено с пары до произвольного числа вариантов) —
-// та же форма конверсии, что и обычные StatsCard выше (клики/просмотры, подписки/клики),
-// просто рядом для всех участников группы сразу — по одной строке на каждого.
-function AbTestComparisonCard({ members }: { members: AbTestMemberStats[] }) {
-  const row = (label: string, member: AbTestMemberStats) => {
-    const leadRate = member.funnel.pageViews > 0 ? Math.round((member.funnel.leads / member.funnel.pageViews) * 100) : null;
-    const subscribeRate = member.funnel.leads > 0 ? Math.round((member.funnel.subscribes / member.funnel.leads) * 100) : null;
-    return (
-      <div key={member.landing.id} className="border rounded-md p-3 space-y-2">
-        <p className="font-medium truncate">
-          {label} ({member.weight}%): {member.landing.name}
-        </p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-          <div>
-            <p className="text-gray-500">Просмотров</p>
-            <p className="font-medium">{member.funnel.pageViews}</p>
-          </div>
-          <div>
-            <p className="text-gray-500">Кликов</p>
-            <p className="font-medium">
-              {member.funnel.leads} {leadRate !== null && <span className="text-gray-400">({leadRate}%)</span>}
-            </p>
-          </div>
-          <div>
-            <p className="text-gray-500">Подписчиков</p>
-            <p className="font-medium">
-              {member.subscribers.total} {subscribeRate !== null && <span className="text-gray-400">({subscribeRate}%)</span>}
-            </p>
-          </div>
-          <div>
-            <p className="text-gray-500">Диалогов</p>
-            <p className="font-medium">{member.dialogues.total}</p>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">A/B/n-тест ({members.length} вариантов)</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">{members.map((m, i) => row(String.fromCharCode(65 + i), m))}</CardContent>
-    </Card>
   );
 }

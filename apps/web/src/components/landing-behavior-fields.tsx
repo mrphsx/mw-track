@@ -61,7 +61,7 @@ export function LandingBehaviorFields({
       <div className="flex items-center justify-between gap-4">
         <div>
           <Label htmlFor={`${idPrefix}-auto-redirect`}>Авторедирект</Label>
-          <p className="text-xs text-gray-500 mt-0.5">Переход в Telegram сразу при заходе на лендинг, без нажатия кнопки.</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Переход в Telegram сразу при заходе на лендинг, без нажатия кнопки.</p>
         </div>
         <Switch
           id={`${idPrefix}-auto-redirect`}
@@ -73,7 +73,7 @@ export function LandingBehaviorFields({
       <div className="flex items-center justify-between gap-4">
         <div>
           <Label htmlFor={`${idPrefix}-cloaking`}>Клоакинг по странам</Label>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <p className="text-xs text-muted-foreground mt-0.5">
             Реальный лендинг видят только посетители из разрешённых стран, остальные уходят по резервной ссылке.
           </p>
         </div>
@@ -85,7 +85,7 @@ export function LandingBehaviorFields({
       </div>
 
       {state.cloakingEnabled && (
-        <div className="space-y-3 border-l-2 border-gray-100 pl-4 ml-1">
+        <div className="space-y-3 border-l-2 border-border pl-4 ml-1">
           <div className="space-y-1.5">
             <Label htmlFor={`${idPrefix}-cloaking-countries`}>Разрешённые страны (коды ISO 3166-1, через запятую)</Label>
             <Input
@@ -103,7 +103,7 @@ export function LandingBehaviorFields({
               value={state.redirectUrl}
               onChange={(e) => onChange({ redirectUrl: e.target.value })}
             />
-            <p className="text-xs text-gray-400">Если оставить пустым — используется Wikipedia по умолчанию.</p>
+            <p className="text-xs text-muted-foreground">Если оставить пустым — используется Wikipedia по умолчанию.</p>
           </div>
         </div>
       )}

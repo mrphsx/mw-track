@@ -42,7 +42,7 @@ export function TemplatePicker({ value, onChange }: { value: string; onChange: (
     staleTime: 5 * 60 * 1000,
   });
 
-  if (!templates) return <p className="text-sm text-gray-500">Загрузка шаблонов...</p>;
+  if (!templates) return <p className="text-sm text-muted-foreground">Загрузка шаблонов...</p>;
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5">
@@ -64,7 +64,7 @@ export function TemplatePicker({ value, onChange }: { value: string; onChange: (
             )}
           >
             <div
-              className="w-full overflow-hidden bg-gray-100 flex items-center justify-center"
+              className="w-full overflow-hidden bg-muted flex items-center justify-center"
               style={{ height: PREVIEW_HEIGHT * PREVIEW_SCALE }}
             >
               {html ? (
@@ -83,12 +83,12 @@ export function TemplatePicker({ value, onChange }: { value: string; onChange: (
                   }}
                 />
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">...</div>
+                <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">...</div>
               )}
             </div>
-            <div className="px-2 py-1.5 border-t bg-white min-h-[2.75rem] flex flex-col justify-center">
+            <div className="px-2 py-1.5 border-t bg-card min-h-[2.75rem] flex flex-col justify-center">
               <p className="text-xs font-medium leading-snug">{t.name}</p>
-              {!isAvailable && <p className="text-[10px] text-gray-400">Скоро</p>}
+              {!isAvailable && <p className="text-[10px] text-muted-foreground">Скоро</p>}
             </div>
           </button>
         );

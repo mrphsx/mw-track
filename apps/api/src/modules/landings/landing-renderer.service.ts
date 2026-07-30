@@ -13,6 +13,51 @@ import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-lin
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 
 const START_CODE_TTL_SECONDS = 24 * 60 * 60;
+// TTL кэша "последний визит на лендинг" (landing-visit-country/landing-visit-attribution) —
+// баг-репорт пользователя 2026-07-24 (клиент PERRIDOL): реальный разрыв между загрузкой
+// страницы лендинга и фактическим вступлением в приватный канал может быть больше 5 минут
+// (вкладка лендинга осталась открытой, вступление произошло по уже загруженной странице без
+// перезагрузки) — кэш успевал истечь, и Client создавался вообще без атрибуции. Поднято с 300
+// до 1800 секунд (компромисс: не 24 часа, как у start:<code> — ключ общий на весь лендинг, а не
+// привязан к конкретному посетителю, поэтому слишком долгий TTL повышает риск, что атрибуция
+// ОДНОГО посетителя пришьётся к вступлению СОВСЕМ ДРУГОГО человека, зашедшего на тот же лендинг
+// с другой рекламы в пределах TTL).
+const LANDING_VISIT_TTL_SECONDS = 30 * 60;
+
+// Баг-репорт пользователя 2026-07-29: "наши events не попадают в фейсбук" — реальная причина
+// (не отсутствие полей, а испорченные данные): Facebook САМ сканирует ссылку на лендинг
+// краулером-препросмотрщиком (facebookexternalhit) почти на каждый показ/клик объявления —
+// его визит попадал в тот же landing-visit-country/landing-visit-attribution:<landingId> кэш
+// (общий на весь лендинг, "последний визит побеждает" — осознанное упрощение, см. комментарий
+// у LANDING_VISIT_TTL_SECONDS), и почти всегда оказывался ПОСЛЕДНИМ перед реальным вступлением
+// в приватный канал: живые Subscribe/Dialogue массово уходили в Facebook с IP/User-Agent самого
+// Facebook (2a03:2880::/32, "facebookexternalhit/1.1...") вместо настоящего посетителя, без
+// fbclid/fbp вообще (краулер не кликает по рекламе и не выполняет JS) — набор данных, который
+// сам Facebook не может сопоставить ни с одним реальным пользователем. Список — известные
+// краулеры/боты предпросмотра ссылок (не только Facebook — тот же класс проблемы возможен и от
+// WhatsApp/Telegram/Slack/Discord и т.п. ботов).
+const BOT_USER_AGENT_PATTERN =
+  /bot|crawl|spider|facebookexternalhit|whatsapp|telegrambot|slackbot|discordbot|linkedinbot|googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|skypeuripreview|vkshare|redditbot|pinterest|ia_archiver|semrushbot|ahrefsbot/i;
+
+function isBotUserAgent(userAgent: string | undefined): boolean {
+  return !!userAgent && BOT_USER_AGENT_PATTERN.test(userAgent);
+}
+
+// Facebook/TikTok иногда подставляют значение динамического макроса ({{campaign.name}} и т.п.)
+// уже percent-encoded (баг-репорт пользователя 2026-07-25: "кампанию... показывает так
+// scm%7Ccr%7Cvd1%7Cspez1" — реальное имя кампании со знаком "|", закодированным как %7C) —
+// Express (`qs`) уже сделал ОДИН проход декодирования при разборе query-строки в req.query, но
+// если после этого в значении всё ещё остался паттерн %XX — значит исходно было закодировано
+// ДВАЖДЫ, декодируем ещё раз. Для уже нормальных значений (без %XX) — no-op. Тот же приём, что
+// и в apps/sdk/src/browser.ts (SDK получает то же самое от Facebook на клике, до сервера).
+function decodeAdMacro(value: string | null): string | null {
+  if (!value || !/%[0-9A-Fa-f]{2}/.test(value)) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 // Клоакинг без явно заданной cloakingRedirectUrl — куда отправлять посетителей из
 // не-разрешённых стран по умолчанию (запрос пользователя 2026-07-03, пример "например
@@ -231,7 +276,7 @@ export class LandingRendererService {
     const templatePath = path.join(this.templatesDir, templateId, 'template.html');
     let html: string;
     try {
-      html = await fs.readFile(templatePath, 'utf-8');
+      html = this.stripStyleComments(await fs.readFile(templatePath, 'utf-8'));
     } catch {
       throw new NotFoundException('Шаблон не найден');
     }
@@ -265,7 +310,7 @@ export class LandingRendererService {
 
   private async renderTemplate(landing: Landing & { project: ProjectWithLandingData }): Promise<string> {
     const templatePath = path.join(this.templatesDir, landing.templateId!, 'template.html');
-    let html = await fs.readFile(templatePath, 'utf-8');
+    let html = this.stripStyleComments(await fs.readFile(templatePath, 'utf-8'));
 
     const data = (landing.templateData as Record<string, string>) || {};
 
@@ -284,8 +329,14 @@ export class LandingRendererService {
     // data.CHANNEL_AVATAR (ручной URL из старого workflow) — фолбэк на случай лендингов,
     // созданных до этой фичи, где ничего из вышеперечисленного не задано.
     const hasOwnOrChannelAvatar = !!landing.avatarKey || !!landing.project.channel?.tgAvatarFileId;
+    // ?v= — баг-фикс 2026-07-27 (запрос пользователя: "при загрузке аватарки она не
+    // обновляется"): URL был статичным (всегда /landings/:id/avatar), а streamAvatar отдаёт
+    // Cache-Control: max-age=86400 — после замены аватарки браузер молча показывал старую
+    // картинку из кэша ещё сутки, потому что сам URL не менялся. avatarKey уже содержит
+    // Date.now() в имени (см. uploadAvatar), поэтому это готовый версионирующий токен — при
+    // каждой загрузке новый avatarKey → новый URL → новый кэш-слот в браузере.
     const channelAvatar = hasOwnOrChannelAvatar
-      ? `${process.env.API_URL}/api/v1/landings/${landing.id}/avatar`
+      ? `${process.env.API_URL}/api/v1/landings/${landing.id}/avatar?v=${encodeURIComponent(landing.avatarKey || 'channel')}`
       : data.CHANNEL_AVATAR || '';
 
     const vars: Record<string, string> = {
@@ -334,6 +385,16 @@ export class LandingRendererService {
     );
   }
 
+  // Баг-репорт 2026-07-27 ("фейсбук блокирует некоторые лендинги, возможно из-за связи с
+  // телеграм") — разработческие CSS-комментарии внутри <style> (объясняют вёрстку, часто на
+  // русском и/или упоминают telegram.org, см. templates/telegram-*/tg-invite-*) невидимы
+  // визитёру, но остаются в исходнике HTML как есть, который может просканировать краулер
+  // рекламной площадки. Вырезаем их из финального рендера — на вёрстку не влияет (CSS-комментарии
+  // и так не отображаются), но чистит то, что реально уходит наружу в ответе сервера.
+  private stripStyleComments(html: string): string {
+    return html.replace(/<style>[\s\S]*?<\/style>/g, (styleBlock) => styleBlock.replace(/\/\*[\s\S]*?\*\//g, ''));
+  }
+
   private async injectTrackingScripts(html: string, project: ProjectWithLandingData, req: Request, landing: Landing): Promise<string> {
     const startCode = nanoid(16);
 
@@ -346,7 +407,7 @@ export class LandingRendererService {
     const paramLookup = invertParamMap(paramMap);
     const adMacroData: Record<string, string | null> = {};
     for (const [actualName, semanticKey] of Object.entries(paramLookup)) {
-      adMacroData[semanticKey] = urlParams.get(actualName);
+      adMacroData[semanticKey] = decodeAdMacro(urlParams.get(actualName));
     }
 
     const trackingData = {
@@ -354,11 +415,15 @@ export class LandingRendererService {
       ttclid: urlParams.get('ttclid'),
       utmSource: urlParams.get('utm_source'),
       utmMedium: urlParams.get('utm_medium'),
-      utmCampaign: urlParams.get('utm_campaign'),
+      utmCampaign: decodeAdMacro(urlParams.get('utm_campaign')),
       utmContent: urlParams.get('utm_content'),
       ...adMacroData,
       ip: this.getClientIp(req),
       userAgent: req.headers['user-agent'],
+      // countryCode (запрос пользователя 2026-07-29, Facebook Advanced Matching) — resolveCountry
+      // уже отдаёт ISO alpha-2 (Cloudflare cf-ipcountry/geoip-lite), просто раньше нигде не
+      // прокидывался дальше fbclid/ip/userAgent через тот же start:<code>-мост.
+      countryCode: this.resolveCountry(req),
       landingUrl: req.url,
       // Запрос пользователя 2026-07-04 (диалоги) — для PERSONAL_DM это единственный способ
       // атрибутировать лендинг: код долетает как обычный текст первого сообщения (см.
@@ -373,15 +438,56 @@ export class LandingRendererService {
     // привязать geo (вступление идёт напрямую через Telegram, минуя tg-redirect/start-код,
     // см. TelegramProvider.handleJoinRequest). Ключ по landingId, не по startCode — заявка на
     // вступление не несёт с собой startCode для этого режима, только invite-ссылку лендинга.
-    // Короткий TTL — осознанно приблизительно (см. комментарий у getCachedLandingCountry).
-    if (project.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
+    // TTL — осознанно приблизительно (см. комментарий у LANDING_VISIT_TTL_SECONDS выше).
+    // !isBotUserAgent(...) — баг-репорт пользователя 2026-07-29 (см. комментарий у
+    // BOT_USER_AGENT_PATTERN выше): без этой проверки визит краулера-предпросмотрщика (общий
+    // ключ на весь лендинг, "последний побеждает") мог затереть реальную атрибуцию настоящего
+    // посетителя прямо перед вступлением в канал.
+    if (project.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST' && !isBotUserAgent(trackingData.userAgent)) {
       const country = this.resolveCountry(req);
-      if (country) await this.redis.set(`landing-visit-country:${landing.id}`, country, 'EX', 300);
+      if (country) await this.redis.set(`landing-visit-country:${landing.id}`, country, 'EX', LANDING_VISIT_TTL_SECONDS);
 
-      // Метка баера (Фаза 3.6) — тот же приём, что и для country выше: PRIVATE_CHANNEL_REQUEST
-      // не проходит через start:<code> (заявка на вступление не несёт код), поэтому нужен
-      // отдельный кэш по landingId, читается в TelegramProvider.handleJoinRequest.
-      if (adMacroData.buyerRef) await this.redis.set(`landing-visit-buyer:${landing.id}`, adMacroData.buyerRef, 'EX', 300);
+      // Полный блок атрибуции (fbclid/ttclid/utm/пиксель/рекламные макросы) — тот же приём,
+      // что и для country выше: PRIVATE_CHANNEL_REQUEST не проходит через start:<code>
+      // (заявка на вступление не несёт код, только invite-ссылку), поэтому нужен отдельный
+      // кэш по landingId, читается в TelegramProvider.handleJoinRequest. Раньше здесь
+      // кэшировался ТОЛЬКО buyerRef (`landing-visit-buyer`) — баг-репорт пользователя
+      // 2026-07-23: у новых подписчиков в PRIVATE_CHANNEL_REQUEST не было вообще никаких
+      // FB-данных (кампания/пиксель/fbclid), а Subscribe/Dialogue-события переставали
+      // доходить до Facebook после того, как 2026-07-21 отправку без реальной атрибуции
+      // отключили (см. TrackingService.recordEvent hasAdAttribution) — эта атрибуция
+      // никогда и не долетала до клиента для этого режима канала.
+      const attribution = {
+        fbclid: trackingData.fbclid,
+        ttclid: trackingData.ttclid,
+        // ip/userAgent/countryCode (запрос пользователя 2026-07-29, сверка с реальным примером
+        // конкурента) — были доступны в trackingData прямо тут же, просто раньше не копировались
+        // в этот отдельный кэш, из-за чего PRIVATE_CHANNEL_REQUEST-подписчики никогда не получали
+        // их на Client, и Subscribe/Dialogue/Purchase уходили в Facebook с почти пустым user_data
+        // (только external_id). fbp сюда не попадает при рендере страницы — cookie ставится
+        // клиентским fbevents.js уже ПОСЛЕ ответа сервера, добавляется отдельно через
+        // TrackingController.tgRedirect (?fbp= на клике по кнопке).
+        ip: trackingData.ip,
+        userAgent: trackingData.userAgent,
+        countryCode: trackingData.countryCode,
+        utmSource: trackingData.utmSource,
+        utmMedium: trackingData.utmMedium,
+        utmCampaign: trackingData.utmCampaign,
+        utmContent: trackingData.utmContent,
+        pixelId: adMacroData.pixelId,
+        adId: adMacroData.adId,
+        adName: adMacroData.adName,
+        adsetId: adMacroData.adsetId,
+        adsetName: adMacroData.adsetName,
+        campaignId: adMacroData.campaignId,
+        campaignName: adMacroData.campaignName,
+        placement: adMacroData.placement,
+        siteSourceName: adMacroData.siteSourceName,
+        buyerRef: adMacroData.buyerRef,
+      };
+      if (Object.values(attribution).some((v) => v != null)) {
+        await this.redis.set(`landing-visit-attribution:${landing.id}`, JSON.stringify(attribution), 'EX', LANDING_VISIT_TTL_SECONDS);
+      }
     }
 
     html = html.replaceAll('{{START_CODE}}', startCode);

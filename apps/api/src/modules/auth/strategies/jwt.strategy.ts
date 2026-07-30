@@ -14,12 +14,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: JwtPayload) {
-    // payload содержит: userId, companyId, role, permissions
+    // payload содержит: userId, companyId, role (permissions больше не в JWT, см.
+    // jwt-payload.interface.ts — проверки теперь DB-backed per-project)
     return {
       userId: payload.sub,
       companyId: payload.companyId,
       role: payload.role,
-      permissions: payload.permissions ?? [],
     };
   }
 }

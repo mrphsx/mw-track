@@ -7,7 +7,7 @@
 // нет; если нет (страница всех лендингов) — внутри диалога появляется обязательный выбор
 // проекта, без него "Создать" недоступна.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { api } from '@/lib/api';
@@ -42,6 +42,10 @@ import {
 interface ProjectOption {
   id: string;
   name: string;
+}
+
+interface ProjectChannelInfo {
+  channel: { tgChannelTitle: string | null; tgBotFirstName: string | null } | null;
 }
 
 export function CreateLandingFromTemplateDialog({
@@ -81,6 +85,21 @@ export function CreateLandingFromTemplateDialog({
   const [templateBehavior, setTemplateBehavior] =
     useState<LandingBehaviorState>(EMPTY_LANDING_BEHAVIOR);
   const [error, setError] = useState('');
+
+  // Запрос пользователя 2026-07-27: "название канала будет сразу заполнено текущим названием
+  // канала, прикреплённого к проекту" — подтягивается один раз при открытии/выборе проекта, не
+  // перезаписывает то, что пользователь уже успел ввести (проверка `!channelTitleInput` ниже).
+  const { data: selectedProject } = useQuery({
+    queryKey: ['project', projectId],
+    queryFn: async () => (await api.get<ProjectChannelInfo>(`/projects/${projectId}`)).data,
+    enabled: !!projectId && open,
+  });
+
+  useEffect(() => {
+    if (channelTitleInput || !selectedProject?.channel) return;
+    const title = selectedProject.channel.tgChannelTitle || selectedProject.channel.tgBotFirstName;
+    if (title) setChannelTitleInput(title);
+  }, [selectedProject, channelTitleInput]);
 
   const reset = () => {
     onOpenChange(false);

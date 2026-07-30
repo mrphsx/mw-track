@@ -28,8 +28,8 @@ export interface GetLinkAttachment {
   path: string;
 }
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
@@ -68,22 +68,34 @@ export function GetLinkDialog({
 
   return (
     <Dialog open={!!landing} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-lg">
+      {/* Расширено (баг-репорт пользователя 2026-07-30: "слишком маленький попап, в выборке не
+          помещаются пикселя, так же сама ссылка не помещается на экран") — max-w-lg было тесно
+          и для длинного списка пикселей в Select, и для самой ссылки (десяток параметров с
+          рекламными макросами легко превышает ширину обычного попапа). max-h-[85vh]+overflow-y
+          на случай проекта с большим числом пикселей — сам Select уже скроллится внутри себя, но
+          общая высота диалога тоже должна иметь предел на низких экранах. */}
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Ссылка для «{landing.name}»</DialogTitle>
         </DialogHeader>
 
         {!attachment ? (
-          <p className="text-sm text-gray-500">Сначала привяжите домен к лендингу.</p>
+          <p className="text-sm text-muted-foreground">Сначала привяжите домен к лендингу.</p>
         ) : (
           <div className="space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="get-link-pixel">Пиксель</Label>
               <Select value={pixelSelection} onValueChange={(v) => v && setPixelSelection(v)}>
-                <SelectTrigger id="get-link-pixel">
+                <SelectTrigger id="get-link-pixel" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                {/* w-max вместо дефолтного w-(--anchor-width) (баг-репорт пользователя
+                    2026-07-30: "выбор пикселя всё ещё не вмещает названия") — попап по умолчанию
+                    жёстко равен ширине триггера, а не самого длинного пункта, длинные названия
+                    пикселей обрезались overflow-x-hidden без многоточия. min-w сохраняет прежнее
+                    поведение "не уже триггера", max-w — защита от переполнения на очень длинных
+                    названиях. */}
+                <SelectContent className="w-max min-w-(--anchor-width) max-w-[26rem]">
                   <SelectItem value={ALL_PIXELS}>Все активные пиксели проекта (без привязки)</SelectItem>
                   {pixels.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
@@ -93,19 +105,29 @@ export function GetLinkDialog({
                 </SelectContent>
               </Select>
               {pixels.length === 0 && (
-                <p className="text-xs text-gray-400">В проекте пока нет пикселей — ссылка сработает без привязки к конкретному.</p>
+                <p className="text-xs text-muted-foreground">В проекте пока нет пикселей — ссылка сработает без привязки к конкретному.</p>
               )}
             </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="get-link-url">Ссылка для рекламного кабинета</Label>
-              <div className="flex gap-2">
-                <Input id="get-link-url" readOnly value={link ?? ''} className="font-mono text-xs" />
-                <Button size="icon" variant="outline" onClick={() => link && copyToClipboard(link)}>
+              <div className="flex gap-2 items-start">
+                {/* Textarea вместо однострочного Input — сама ссылка (баг-репорт: "не
+                    помещается на экран") теперь переносится по строкам вместо горизонтального
+                    скролла/обрезки. resize-none — это поле только для чтения/копирования, не
+                    для редактирования формы. */}
+                <Textarea
+                  id="get-link-url"
+                  readOnly
+                  value={link ?? ''}
+                  rows={4}
+                  className="font-mono text-xs resize-none break-all"
+                />
+                <Button size="icon" variant="outline" className="shrink-0" onClick={() => link && copyToClipboard(link)}>
                   <Copy className="w-4 h-4" />
                 </Button>
               </div>
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-muted-foreground">
                 {'{{ad.id}}, {{campaign.id}}'} и т.п. — подставит сама рекламная система при показе объявления. Имена
                 параметров можно изменить в настройках проекта.
               </p>

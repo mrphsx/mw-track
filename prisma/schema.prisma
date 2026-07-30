@@ -189,18 +189,30 @@ model ProjectAccess {
 // может делать, удалять, создавать, менять лэндинги, пиксели, домены, пуши итд") — второе
 // измерение поверх ProjectAccess: то не "к каким проектам есть доступ", а "что внутри
 // доступного проекта разрешено". OWNER/ADMIN/SUPER_ADMIN никогда не получают строк — остаются
-// безусловно полным доступом (см. PermissionsGuard/assertAccess elevated-байпас), проверяются
-// реально только BUYER/OPERATOR.
+// безусловно полным доступом (см. assertAccess elevated-байпас), проверяются реально только
+// BUYER/OPERATOR.
+//
+// projectId — запрос пользователя 2026-07-28: "чтобы под каждый проект можно было выбрать
+// разрешения, а не общие". Раньше право было плоским на всего пользователя сразу (один набор
+// действовал на всех его ProjectAccess-проектах одновременно) — теперь явно привязано к
+// конкретному проекту, один и тот же Permission может быть выдан на одном проекте и не выдан
+// на другом. DOMAINS_* — единственное деликатное исключение: домены технически не привязаны
+// к одному проекту (см. Domain.projectId — чисто UI-подпись), поэтому по решению пользователя
+// DOMAINS_*-права остаются общими на пользователя — приложение просто не показывает/не пишет
+// для них разные projectId в UI (сама схема не запрещает это технически, ограничение только на
+// уровне приложения, см. PermissionsService/Team UI).
 model UserPermission {
   id         String     @id @default(cuid())
   userId     String
+  projectId  String
   permission Permission
   createdAt  DateTime   @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, permission])
-  @@index([userId])
+  @@unique([userId, projectId, permission])
+  @@index([userId, projectId])
 }
 
 // ============================================================
@@ -233,6 +245,15 @@ model Project {
   // Разрешённые домены для CORS (внешние интеграции)
   allowedDomains String[] @default([])
 
+  // Какие типы событий НЕ отправлять в рекламные платформы (Facebook/TikTok) — запрос
+  // пользователя 2026-07-25: "настроить свитч кнопки которые будут отключать эти events".
+  // Список валидных значений — apps/api/src/modules/tracking/tracking-event-types.const.ts
+  // (PageView/Lead/Subscribe/Dialogue/Purchase/InitiateCheckout/Click). Пустой массив (по
+  // умолчанию) = всё включено, поведение не меняется для существующих проектов. Событие
+  // по-прежнему пишется в свою же CRM (TrackingEvent) независимо от этого списка — выключается
+  // только пересылка на внешние площадки (см. TrackingService.recordEvent).
+  disabledTrackingEvents String[] @default([])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -251,6 +272,7 @@ model Project {
   events        TrackingEvent[]
   purchases     Purchase[]
   projectAccess ProjectAccess[]
+  userPermissions       UserPermission[]
   automationFlows       AutomationFlow[]
   automationEnrollments AutomationEnrollment[]
   abTestGroups          AbTestGroup[]
@@ -277,14 +299,14 @@ model Channel {
   tgChannelId    String?  // числовой ID канала
   tgChannelUsername String? // @username — публичный канал, для PUBLIC_CHANNEL_DIRECT (ссылка на лендинге)
   tgBotUsername  String?
-  tgWelcomeMessage String?
-  // Приветственное сообщение бота при одобрении заявки (PRIVATE_CHANNEL_REQUEST) — запрос
-  // пользователя 2026-07-03. Медиа хранится в MinIO (ChannelMediaService, тот же бакет, что
-  // и лендинги, префикс welcome-media/) и раздаётся Telegram-у публичным HTTP(S)-URL через
-  // GET /channels/:id/welcome-media — тот же принцип, что и sendPhoto(url) уже используется
-  // для Push-рассылок (ChannelsService.sendMessage), просто URL указывает на нас самих, а не
-  // на внешний хостинг. tgWelcomeMediaKey хранит только ключ объекта в MinIO, не сам URL —
-  // сам публичный URL строится на лету из API_URL + channel.id при отправке.
+  // УСТАРЕВШИЕ поля одиночного приветственного сообщения (запрос пользователя 2026-07-03,
+  // до 2026-07-25) — заменены сценарием с триггером SUBSCRIBE (см. BotScenarioTrigger,
+  // TelegramProvider.triggerScenario) по запросу пользователя 2026-07-25: "убери с настроек
+  // бота приветственное сообщение при подписке и добавь его в сценарии". НЕ удаляем колонки и
+  // НЕ читаем/пишем их больше нигде в коде — тот же приём, что уже применён к устаревшим
+  // одиночным полям BotScenario ниже; существующие значения были перенесены одноразовым
+  // скриптом в BotScenarioStep при миграции.
+  tgWelcomeMessage   String?
   tgWelcomeMediaType String? // 'PHOTO' | 'VIDEO' | 'VIDEO_NOTE' | 'VOICE' | 'DOCUMENT', null — без медиа
   tgWelcomeMediaKey  String? // ключ объекта в MinIO (trafficcrm-landings, welcome-media/<channelId>/<file>)
   tgWelcomeButtons   Json?   // [{ text, url }] — та же форма, что и Push.buttons
@@ -359,8 +381,9 @@ model Channel {
   updatedAt DateTime @updatedAt
 
   project Project @relation(fields: [projectId], references: [id])
-  botScenarios BotScenario[]
-  storyPosts   StoryPost[]
+  botScenarios         BotScenario[]
+  scenarioAbTestGroups ScenarioAbTestGroup[]
+  storyPosts           StoryPost[]
 
   // Enforcing 1:1 — см. Project.channel выше.
   @@unique([projectId])
@@ -377,6 +400,34 @@ enum BotScenarioTrigger {
   REPEAT_DEPOSIT  // "RD" (redeposit)
   UNSUBSCRIBE
   DEFAULT
+  // Срабатывает в момент одобрения заявки на вступление (PRIVATE_CHANNEL_REQUEST) — замена
+  // отдельного одиночного Channel.tgWelcomeMessage* (запрос пользователя 2026-07-25:
+  // "приветственное сообщение при подписке" переносится из настроек бота в сценарии, тот же
+  // движок цепочки шагов, что и у остальных триггеров, вместо отдельного одноразового
+  // механизма). См. TelegramProvider.triggerScenario, вызывается вместо старого
+  // sendWelcomeMessage.
+  SUBSCRIBE
+}
+
+// A/B-тест сценариев (запрос пользователя 2026-07-25: "как мы сделали для груп лэндингов...
+// нужно для сценариев сделать примерно так же") — тот же принцип, что AbTestGroup у лендингов
+// (endedAt+resultsSnapshot вместо немедленного удаления при остановке), но БЕЗ привязки
+// варианта к конкретному посетителю/клиенту (запрос пользователя подтверждён явно: "каждый раз
+// заново случайно", та же модель, что уже принята для лендингов) — при каждом срабатывании
+// триггера вариант выбирается заново взвешенным рандомом, см. TelegramProvider.triggerScenario.
+model ScenarioAbTestGroup {
+  id        String    @id @default(cuid())
+  channelId String
+  companyId String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  endedAt   DateTime?
+  resultsSnapshot Json?
+
+  channel   Channel       @relation(fields: [channelId], references: [id])
+  scenarios BotScenario[]
+
+  @@index([channelId])
 }
 
 model BotScenario {
@@ -389,25 +440,114 @@ model BotScenario {
   // строка, НЕ null): Postgres unique-индекс считает каждый NULL уникальным сам по себе,
   // только '' реально гарантирует "одна запись на (channel, triggerType)" для
   // синглтон-триггеров на уровне БД, а не только в коде.
+  // ИСКЛЮЧЕНИЕ — A/B-варианты (isAbTestVariant=true): у них здесь синтетическое уникальное
+  // значение (см. BotScenariosService.addAbTestVariant), а не реальная команда — иначе они
+  // сталкивались бы с этим же unique-индексом и друг с другом, и с "основным" сценарием.
+  // Настоящая команда/триггер варианта показывается в UI ИЗ ГРУППЫ, не из этого поля.
   command String @default("")
 
-  isActive     Boolean @default(true)
-  delaySeconds Int     @default(0)
+  isActive Boolean @default(true)
 
-  // Та же форма контента, что и у Channel.tgWelcomeMessage/Media/Buttons.
-  messageText String?
-  mediaType   String? // 'PHOTO' | 'VIDEO' | 'VIDEO_NOTE' | 'VOICE' | 'DOCUMENT'
-  mediaKey    String? // ключ в MinIO (ChannelMediaService, префикс scenario-media/)
-  buttons     Json?   // [{ text, url }]
+  // A/B-тест (см. ScenarioAbTestGroup выше) — null у обычного сценария без теста.
+  // isAbTestVariant отличает "основной" сценарий группы (владеет настоящими triggerType+
+  // command, найден TelegramProvider.triggerScenario обычным способом) от добавленных
+  // альтернатив (найдены только через группу, у них command — служебное значение).
+  abTestGroupId   String?
+  abTestWeight    Int?
+  isAbTestVariant Boolean @default(false)
+
+  // Точка входа в цепочку шагов (запрос пользователя 2026-07-22: "объединить" сценарии с
+  // автоворонками — тот же граф-паттерн, что у AutomationFlow.firstStepId/AutomationStep,
+  // см. ниже BotScenarioStep/BotScenarioRun). Одношаговый вид (одно сообщение + одна задержка)
+  // теперь частный случай цепочки из одного/двух шагов.
+  firstStepId String?
+
+  // УСТАРЕВШИЕ поля одиночного сообщения (до 2026-07-22) — НЕ удаляем и не читаем в новом
+  // движке (BotScenarioEngineService целиком работает через firstStepId/BotScenarioStep).
+  // Оставлены только для существующих строк, у которых уже есть данные здесь на момент
+  // миграции — она переносит содержимое в BotScenarioStep и проставляет firstStepId, после
+  // чего эти поля больше не используются никаким кодом ни на чтение, ни на запись.
+  delaySeconds Int     @default(0)
+  messageText  String?
+  mediaType    String? // 'PHOTO' | 'VIDEO' | 'VIDEO_NOTE' | 'VOICE' | 'DOCUMENT'
+  mediaKey     String? // ключ в MinIO (ChannelMediaService, префикс scenario-media/)
+  buttons      Json?   // [{ text, url }]
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  channel Channel @relation(fields: [channelId], references: [id])
+  channel     Channel              @relation(fields: [channelId], references: [id])
+  steps       BotScenarioStep[]
+  runs        BotScenarioRun[]
+  abTestGroup ScenarioAbTestGroup? @relation(fields: [abTestGroupId], references: [id])
 
   @@unique([channelId, triggerType, command])
   @@index([companyId, channelId])
+  @@index([abTestGroupId])
+}
+
+enum BotScenarioStepType {
+  DELAY
+  SEND_MESSAGE
+  CONDITION
+}
+
+// Тот же граф-паттерн, что AutomationStep (см. ниже) — один шаг = один узел,
+// onSuccessStepId/onFailureStepId вместо порядкового номера. Общий редактор на фронтенде
+// (StepAccordionEditor) умеет работать что с этой моделью, что с AutomationStep через один
+// и тот же набор REST-маршрутов по форме (add/move/remove), хоть таблицы и разные.
+model BotScenarioStep {
+  id         String              @id @default(cuid())
+  scenarioId String
+  type       BotScenarioStepType
+
+  // DELAY
+  delaySeconds Int?
+
+  // SEND_MESSAGE — messageMedia вместо одиночных mediaType/mediaKey: массив
+  // [{type:'photo'|'video'|'video_note', url}], до 10 файлов (запрос пользователя 2026-07-22,
+  // "до 10 других медиа" — тот же формат, что уже Push.messageMedia/CreatePushDto.messageMedia,
+  // video_note только в одиночку).
+  messageText  String?
+  messageMedia Json?
+  buttons      Json? // [{ text, url }]
+
+  // CONDITION — тот же формат, что AutomationStep.conditionFilter (v1: {hasPurchase}).
+  // Если у BotScenarioRun ещё нет clientId (холодный контакт без Client) — условие трактуется
+  // как невыполненное, см. BotScenarioEngineService.evaluateCondition.
+  conditionFilter Json?
+
+  onSuccessStepId String?
+  onFailureStepId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scenario BotScenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+
+  @@index([scenarioId])
+}
+
+// Аналог AutomationEnrollment, но БЕЗ @@unique([scenarioId, tgUserId]) — в отличие от
+// автоворонок, сценарий должен мочь запускаться заново для одного и того же человека каждый
+// раз, когда происходит триггер (особенно REPEAT_DEPOSIT — повторный депозит по определению
+// повторяется). tgUserId, а не clientId — сценарии (DEFAULT/COMMAND) обязаны уметь сработать
+// и для холодного контакта, у которого Client ещё не существует вообще; clientId — если он
+// на момент срабатывания уже есть (нужен для CONDITION-шагов).
+model BotScenarioRun {
+  id         String                     @id @default(cuid())
+  scenarioId String
+  tgUserId   String
+  clientId   String?
+  status     AutomationEnrollmentStatus @default(ACTIVE)
+  currentStepId String?
+  startedAt  DateTime  @default(now())
+  completedAt DateTime?
+
+  scenario BotScenario @relation(fields: [scenarioId], references: [id])
+
+  @@index([scenarioId, status])
 }
 
 // ============================================================
@@ -586,6 +726,15 @@ model AbTestGroup {
 // КЛИЕНТЫ (CRM)
 // ============================================================
 
+// Источник первой регистрации диалога (Client.dialogueSource, запрос пользователя 2026-07-23) —
+// три реальных способа поставить firstDialogueAt, см. ClientsService.applyDialogueUpdate:
+enum DialogueSource {
+  PERSONAL_ACCOUNT // реальное входящее сообщение с личного MTProto-аккаунта (TelegramPersonalService)
+  BOT_DIRECT       // сообщение боту в режиме tgMode=BOT_DIRECT (там сам бот и есть диалог)
+  MANAGER_CONFIRM  // менеджер переслал сообщение боту и подтвердил ("Да, диалог")
+  CRM_BUTTON       // кнопка "Зарегистрировать" в списке клиентов
+}
+
 model Client {
   id          String  @id @default(cuid())
   companyId   String
@@ -657,6 +806,19 @@ model Client {
   userAgent   String?
   country     String?
   city        String?
+  // ISO 3166-1 alpha-2 код страны (например "ru"), отдельно от country выше (там — то, что
+  // показывается в UI: для браузерных клиентов полное название с ip-api.com, для Telegram —
+  // уже код через geoip-lite/Cloudflare cf-ipcountry, историческая нестыковка форматов, не
+  // трогаем). countryCode — специально под Facebook Advanced Matching (запрос пользователя
+  // 2026-07-29, сверка с реальным примером конкурента): FB требует именно alpha-2 код,
+  // хэшированный, полное название дало бы хэш, который никогда не совпадёт с хэшем FB.
+  countryCode String?
+  // Facebook Browser ID (_fbp cookie, запрос пользователя 2026-07-29, тот же сверенный пример
+  // конкурента) — ставит fbevents.js (см. LandingRendererService.injectTrackingScripts, базовый
+  // пиксель уже подключён) сразу на лендинге; сюда долетает через ?fbp= на клике по Telegram-
+  // кнопке (apps/sdk/src/browser.ts) → TrackingController.tgRedirect, тем же путём, что и
+  // fbclid/ip/userAgent (start:<code> / landing-visit-attribution:<landingId> Redis-мосты).
+  fbp         String?
 
   // Статусы
   channelType   ChannelType?
@@ -676,6 +838,13 @@ model Client {
   firstDialogueAt      DateTime?
   lastDialogueAt       DateTime?
   dialogueMessageCount Int @default(0)
+  // Источник ПЕРВОЙ регистрации диалога (запрос пользователя 2026-07-23: "сделай чтобы можно
+  // было технически отследить откуда зарегистрирован диалог" — баг-репорт про диалог,
+  // отмеченный у клиента, который реально не писал) — ставится один раз, вместе с
+  // firstDialogueAt, в ClientsService.applyDialogueUpdate, дальше не меняется (повторные
+  // сообщения из другого источника не переписывают её). Специально не добавляли кнопку "убрать
+  // диалог" — событие Dialogue, уже отправленное в Facebook, всё равно не отозвать.
+  dialogueSource DialogueSource?
   // botActivatedAt — отдельно от firstDialogueAt (баг-репорт пользователя 2026-07-17: пуши
   // падали с "chat not found" для клиентов, чей firstDialogueAt пришёл от личного MTProto-
   // аккаунта, а не от бота — у бота с ними никогда не было чата). Ставится ТОЛЬКО когда
@@ -698,6 +867,13 @@ model Client {
   // проекту, см. choke points в CLAUDE.md); эти люди остаются во "Внешних контактах", просто
   // с реальной датой вступления вместо пустой, а не переезжают в "наших клиентов".
   externalSubscribedAt DateTime?
+  // Покинул канал — для внешних контактов (запрос пользователя 2026-07-24: "почему нельзя
+  // отслеживать если он отписался и задать как всем дату отписки"). Намеренно ОТДЕЛЬНОЕ поле
+  // от unsubscribedAt, не переиспользуем его — баг-репорт 2026-07-21 уже был ровно про то, что
+  // unsubscribedAt на внешнем контакте показывал вводящий в заблуждение статус "Отписался" для
+  // того, кто никогда не был подписан через воронку в принципе. ClientsService.markUnsubscribed
+  // теперь ставит то или другое поле в зависимости от того, "наш" клиент или "внешний".
+  externalUnsubscribedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -798,6 +974,18 @@ model TrackingEventDelivery {
   status          String   // sent, error
   externalEventId String?  // ID, который вернула платформа (например fbEventId от Facebook)
   error           String?
+  // Реальные тело запроса к Facebook/TikTok и ответ платформы (запрос пользователя 2026-07-28:
+  // "сделай как у конкурентов, полностью с отчётом" — раньше в логах пикселей UI показывал
+  // только внутренний TrackingEvent.payload, не то, что РЕАЛЬНО ушло/пришло). access_token НЕ
+  // входит ни в то, ни в другое — у Facebook он отдельным полем в обёртке вокруг eventData
+  // (см. FacebookCAPIService), у TikTok — в HTTP-заголовке, не в теле; секрет пикселя сюда не
+  // попадает.
+  // @db.Json (не jsonb по умолчанию) — запрос пользователя 2026-07-29: показывать "точь-в-точь"
+  // порядок ключей реального запроса/ответа, jsonb его не сохраняет (пересобирает в свой
+  // внутренний бинарный формат), plain json хранит исходный текст как есть.
+  requestPayload  Json?    @db.Json
+  responsePayload Json?    @db.Json
+  httpStatus      Int?     // реальный HTTP-код ответа платформы (конкурентский пример показывал его отдельной строкой)
   sentAt          DateTime @default(now())
 
   event TrackingEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -1151,6 +1339,11 @@ enum UserRole {
 // EDIT, и CHANNEL — только VIEW/MANAGE, т.к. настройки канала/бота не разбиваются на
 // create/edit/delete отдельно).
 enum Permission {
+  // Настройки самого проекта (домены/таймзона/трекинг-переключатели и т.п., PATCH
+  // /projects/:id) — запрос пользователя 2026-07-28, найдено как дыра при аудите: раньше не
+  // было вообще никакого разрешения под это. Архивация/перегенерация токенов сознательно НЕ
+  // сюда — только Owner/Admin (см. @Roles на этих роутах), необратимые/чувствительные действия.
+  PROJECTS_EDIT
   LANDINGS_VIEW
   LANDINGS_CREATE
   LANDINGS_EDIT

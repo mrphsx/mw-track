@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { History, Plus, SplitSquareHorizontal, UploadCloud, X } from 'lucide-react';
@@ -45,6 +45,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 
 export default function LandingsPage() {
   const { id: projectId } = useParams<{ id: string }>();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
 
@@ -235,7 +236,7 @@ export default function LandingsPage() {
               <Button variant="outline" onClick={() => setCompareMode(true)}>
                 <SplitSquareHorizontal className="w-4 h-4 mr-1.5" /> Сравнить лендинги
               </Button>
-              {hasPermission(user, 'LANDINGS_CREATE') && (
+              {hasPermission(user, projectId, 'LANDINGS_CREATE') && (
                 <>
                   <Button variant="outline" onClick={() => setUploadTarget('new')}>
                     <UploadCloud className="w-4 h-4 mr-1.5" /> Загрузить ZIP
@@ -257,24 +258,28 @@ export default function LandingsPage() {
             {hasEndedAbTestGroups && (
               <Link
                 href={`/projects/${projectId}/landings/history`}
-                className="text-sm text-gray-500 hover:underline inline-flex items-center gap-1"
+                className="text-sm text-muted-foreground hover:underline inline-flex items-center gap-1"
               >
                 <History className="w-3.5 h-3.5" /> История тестов
               </Link>
             )}
           </div>
           {!activeAbTestGroups.length && (
-            <p className="text-sm text-gray-400">Активных тестов нет.</p>
+            <p className="text-sm text-muted-foreground">Активных тестов нет.</p>
           )}
           <div className="space-y-2">
             {activeAbTestGroups.map((g) => {
               const attachment = findGroupAttachment(domains, g.id);
               return (
-                <Card key={g.id}>
+                <Card
+                  key={g.id}
+                  onClick={() => router.push(`/projects/${projectId}/landings/groups/${g.id}`)}
+                  className="cursor-pointer transition-colors hover:ring-foreground/20"
+                >
                   <CardContent className="p-4 flex items-center justify-between gap-4 flex-wrap">
                     <div className="min-w-0 space-y-1">
                       <p className="font-medium truncate">{g.name || groupAutoLabel(g)}</p>
-                      <div className="flex items-center gap-1.5 flex-wrap text-xs text-gray-500">
+                      <div className="flex items-center gap-1.5 flex-wrap text-xs text-muted-foreground">
                         {g.landings.map((l) => (
                           <span key={l.id} className="border rounded px-1.5 py-0.5">
                             {l.name} — {l.abTestWeight ?? 0}%
@@ -282,12 +287,12 @@ export default function LandingsPage() {
                         ))}
                       </div>
                       {attachment ? (
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                           <a
                             href={attachmentUrl(attachment)}
                             target="_blank"
                             rel="noopener"
-                            className="text-xs font-mono text-gray-500 hover:underline truncate"
+                            className="text-xs font-mono text-muted-foreground hover:underline truncate"
                           >
                             {attachment.domain}
                             {attachment.path === '/' ? '' : attachment.path}
@@ -301,16 +306,16 @@ export default function LandingsPage() {
                               })
                             }
                             disabled={unbindTestDomain.isPending}
-                            className="text-xs text-gray-400 hover:underline shrink-0"
+                            className="text-xs text-muted-foreground hover:underline shrink-0"
                           >
                             Отвязать
                           </button>
                         </div>
                       ) : (
-                        <p className="text-xs text-gray-400">Домен не привязан</p>
+                        <p className="text-xs text-muted-foreground">Домен не привязан</p>
                       )}
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                       <Button
                         size="sm"
                         variant="outline"
@@ -328,7 +333,7 @@ export default function LandingsPage() {
                       >
                         Управлять
                       </Button>
-                      {hasPermission(user, 'AB_TESTS_EDIT') && (
+                      {hasPermission(user, projectId, 'AB_TESTS_EDIT') && (
                         <Button
                           size="sm"
                           variant="outline"
@@ -347,11 +352,11 @@ export default function LandingsPage() {
         </div>
       )}
 
-      {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!isLoading && landings?.length === 0 && (
         <Card>
-          <CardContent className="p-8 text-center text-gray-500">Лендингов пока нет.</CardContent>
+          <CardContent className="p-8 text-center text-muted-foreground">Лендингов пока нет.</CardContent>
         </Card>
       )}
 
@@ -377,9 +382,12 @@ export default function LandingsPage() {
               onPublish={() => publish.mutate(l.id)}
               onUnpublish={() => unpublish.mutate(l.id)}
               onDelete={() => remove.mutate(l.id)}
-              isPublishPending={publish.isPending || unpublish.isPending}
-              isDeletePending={remove.isPending}
-              canDelete={hasPermission(user, 'LANDINGS_DELETE')}
+              // Скоуп ожидания на конкретную карточку через .variables — баг-репорт пользователя
+              // 2026-07-30: раньше клик на одной карточке переводил кнопки ВСЕХ карточек в
+              // "ожидание", т.к. isPending читался с общей на всю страницу мутации.
+              isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+              isDeletePending={remove.isPending && remove.variables === l.id}
+              canDelete={hasPermission(user, projectId, 'LANDINGS_DELETE')}
               selectable={compareMode}
               selected={selectedIds.has(l.id)}
               onToggleSelect={() => toggleSelected(l.id)}
@@ -429,13 +437,13 @@ export default function LandingsPage() {
               onClick={() => fileInputRef.current?.click()}
               className={`border-2 border-dashed rounded-lg p-6 text-center text-sm cursor-pointer transition-colors ${
                 dragOver
-                  ? 'border-blue-500 bg-blue-50'
-                  : 'border-gray-300 text-gray-500 hover:border-gray-400'
+                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
+                  : 'border-border text-muted-foreground hover:border-muted-foreground'
               }`}
             >
               <UploadCloud className="w-6 h-6 mx-auto mb-2" />
               {zipFile ? zipFile.name : 'Перетащите ZIP сюда или нажмите для выбора'}
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-xs text-muted-foreground mt-1">
                 Архив должен содержать index.html в корне, до 50MB
               </p>
               <input
@@ -506,8 +514,8 @@ export default function LandingsPage() {
       />
 
       {compareMode && selectedIds.size >= 2 && (
-        <div className="fixed bottom-0 left-0 right-0 border-t bg-white shadow-lg p-3 flex items-center justify-center gap-3 z-40">
-          <span className="text-sm text-gray-500">Выбрано: {selectedIds.size}</span>
+        <div className="fixed bottom-0 left-0 right-0 border-t bg-card shadow-lg p-3 flex items-center justify-center gap-3 z-40">
+          <span className="text-sm text-muted-foreground">Выбрано: {selectedIds.size}</span>
           <Button
             onClick={() =>
               setAbTestTarget({ projectId, groupId: null, preselectedIds: Array.from(selectedIds) })

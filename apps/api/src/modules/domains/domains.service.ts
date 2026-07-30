@@ -87,6 +87,15 @@ export class DomainsService {
       throw new ForbiddenException('Создание доменов для этой компании заблокировано администратором');
     }
 
+    // Багфикс 2026-07-28 (аудит разрешений сотрудников): projectId — чисто UI-подпись (см.
+    // комментарий в DTO), но раньше даже она не проверялась на принадлежность компании, чужой
+    // projectId из другой компании тихо сохранялся. DOMAINS_* остаются общим правом роли, не
+    // per-project (решение пользователя) — эта проверка про целостность данных, не про доступ.
+    if (dto.projectId) {
+      const project = await this.prisma.project.findFirst({ where: { id: dto.projectId, companyId } });
+      if (!project) throw new NotFoundException('Проект не найден');
+    }
+
     try {
       const domain = await this.prisma.domain.create({
         data: { companyId, domain: dto.domain.toLowerCase(), projectId: dto.projectId },
@@ -192,10 +201,17 @@ export class DomainsService {
     }
   }
 
-  async removePath(domainId: string, pathId: string, companyId: string): Promise<void> {
+  // Багфикс 2026-07-28 (аудит разрешений сотрудников): в отличие от upsertPath рядом, здесь не
+  // было вообще никакой проверки владения лендингом/группой — Buyer с доступом только к
+  // проекту A мог удалить привязку пути к лендингу проекта B того же company. Путь (в отличие
+  // от самого домена, см. решение "DOMAINS_* — общее право роли") всегда ведёт ровно в один
+  // проект — та же логика, что уже есть у upsertPath.
+  async removePath(domainId: string, pathId: string, companyId: string, userId: string, role: UserRole): Promise<void> {
     await this.findOneRaw(domainId, companyId);
     const path = await this.prisma.domainPath.findFirst({ where: { id: pathId, domainId } });
     if (!path) throw new NotFoundException('Путь не найден');
+    if (path.landingId) await this.assertLandingOwnership(companyId, path.landingId, userId, role);
+    if (path.abTestGroupId) await this.assertAbTestGroupOwnership(companyId, path.abTestGroupId, userId, role);
     await this.prisma.domainPath.delete({ where: { id: pathId } });
   }
 

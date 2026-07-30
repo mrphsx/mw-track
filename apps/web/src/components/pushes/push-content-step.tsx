@@ -5,12 +5,12 @@ import { useMutation } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { Plus, Upload, X } from 'lucide-react';
 import { api } from '@/lib/api';
-import { renderTelegramHtml } from '@/lib/telegram-html';
+import { TelegramMessagePreview } from '@/components/messages/telegram-message-preview';
+import { MessagePlaceholdersHint } from '@/components/message-placeholders-hint';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 
 export interface PushButton {
   text: string;
@@ -113,7 +113,6 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
   const removeButton = (i: number) => update({ buttons: value.buttons.filter((_, idx) => idx !== i) });
 
   const isAlbum = value.media.length > 1;
-  const mediaTypeLabels: Record<PushMediaType, string> = { photo: 'Фото', video: 'Видео', video_note: 'Кружок' };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -132,7 +131,8 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
             onChange={(e) => update({ messageText: e.target.value })}
             placeholder="Поддерживаются HTML-теги Telegram: <b>, <i>, <u>, <code>"
           />
-          <div className="text-xs text-gray-400 text-right">{value.messageText.length} / 4096</div>
+          <MessagePlaceholdersHint onInsert={(token) => update({ messageText: value.messageText + token })} />
+          <div className="text-xs text-muted-foreground text-right">{value.messageText.length} / 4096</div>
           {hasVideoNote && (
             <p className="text-xs text-amber-600">
               Кружок не поддерживает подпись — текст уйдёт отдельным сообщением сразу следом.
@@ -146,7 +146,7 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
           {value.media.length > 0 && (
             <div className="grid grid-cols-4 gap-2">
               {value.media.map((item, i) => (
-                <div key={i} className="relative rounded-md overflow-hidden border aspect-square bg-gray-50">
+                <div key={i} className="relative rounded-md overflow-hidden border aspect-square bg-muted">
                   {item.type === 'photo' ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={item.url} alt="" className="w-full h-full object-cover" />
@@ -208,7 +208,7 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
             </>
           )}
           {hasVideoNote && (
-            <p className="text-xs text-gray-400">Кружок можно отправить только один, без альбома — уберите его, чтобы добавить другие файлы.</p>
+            <p className="text-xs text-muted-foreground">Кружок можно отправить только один, без альбома — уберите его, чтобы добавить другие файлы.</p>
           )}
           {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
         </div>
@@ -239,74 +239,7 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
         </div>
       </div>
 
-      <div>
-        <Label className="mb-2 block">Предпросмотр</Label>
-        <Card className="bg-[#e7f3ff] border-0">
-          <CardContent className="p-4">
-            <div className="bg-white rounded-lg shadow-sm overflow-hidden max-w-sm">
-              {value.media.length === 1 && value.media[0].type === 'photo' && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={value.media[0].url} alt="" className="w-full max-h-48 object-cover" />
-              )}
-              {value.media.length === 1 && (value.media[0].type === 'video' || value.media[0].type === 'video_note') && (
-                <div className="relative">
-                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                  <video src={value.media[0].url} controls className="w-full max-h-48 object-cover" />
-                  {value.media[0].type === 'video_note' && (
-                    <span className="absolute top-2 left-2 bg-black/60 text-white text-[11px] px-1.5 py-0.5 rounded">
-                      будет кружком
-                    </span>
-                  )}
-                </div>
-              )}
-              {isAlbum && (
-                <div className="grid grid-cols-2 gap-0.5">
-                  {value.media.slice(0, 4).map((item, i) => (
-                    <div key={i} className="relative aspect-square bg-gray-100">
-                      {item.type === 'photo' ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={item.url} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        // eslint-disable-next-line jsx-a11y/media-has-caption
-                        <video src={item.url} className="w-full h-full object-cover" />
-                      )}
-                      {i === 3 && value.media.length > 4 && (
-                        <div className="absolute inset-0 bg-black/50 flex items-center justify-center text-white text-sm font-semibold">
-                          +{value.media.length - 4}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="p-3 space-y-2">
-                {value.messageText ? (
-                  <p
-                    className="text-sm whitespace-pre-wrap break-words"
-                    dangerouslySetInnerHTML={{ __html: renderTelegramHtml(value.messageText) }}
-                  />
-                ) : (
-                  <p className="text-sm text-gray-400">Текст сообщения...</p>
-                )}
-                {!isAlbum &&
-                  value.buttons
-                    .filter((b) => b.text)
-                    .map((b, i) => (
-                      <div key={i} className="border border-blue-200 text-blue-600 text-sm text-center rounded-md py-1.5">
-                        {b.text}
-                      </div>
-                    ))}
-                <div className="text-right text-[11px] text-gray-400">12:34</div>
-              </div>
-            </div>
-            {isAlbum && (
-              <p className="text-xs text-gray-400 mt-2">
-                Альбом: {value.media.length} файл(ов) — {value.media.map((m) => mediaTypeLabels[m.type]).join(', ')}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <TelegramMessagePreview text={value.messageText} media={value.media} buttons={value.buttons} />
     </div>
   );
 }

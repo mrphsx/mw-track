@@ -2,13 +2,15 @@
 
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Send, Users, UserCheck } from 'lucide-react';
+import { Plus, Send, Users, UserX } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
 import { CityTime } from '@/components/city-time';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { CHANNEL_TYPE_LABEL, TG_MODE_LABEL, ChannelType, TgMode } from '@/components/channel-fields-editor';
+import { PersonalAccountIndicator } from '@/components/personal-account-indicator';
 
 interface ProjectSummary {
   id: string;
@@ -19,6 +21,7 @@ interface ProjectSummary {
     id: string;
     type: string;
     isActive: boolean;
+    tgMode: TgMode | null;
     tgAvatarFileId: string | null;
     // Есть только у Telegram-канала — MTProto-подключение личного аккаунта, отдельное от
     // самого бота (запрос пользователя 2026-07-21: "значок если добавлен личный аккаунт").
@@ -26,6 +29,8 @@ interface ProjectSummary {
   } | null;
   _count: { clients: number; pushes: number };
   activeClientsCount: number;
+  // Запрос пользователя 2026-07-28: "покажи количество отписок, за всё время как и клиентов".
+  unsubscribedClientsCount: number;
 }
 
 const STATUS_LABELS: Record<string, string> = { ACTIVE: 'Активен', PAUSED: 'На паузе', ARCHIVED: 'Архив' };
@@ -63,16 +68,18 @@ export default function ProjectsPage() {
           <Link key={project.id} href={`/projects/${project.id}`}>
             <Card className="hover:shadow-md transition-shadow h-full">
               <CardContent className="p-5 space-y-3">
+                {/* Гео+время наверх, отдельной строкой (запрос пользователя 2026-07-28: "чтобы
+                    не сжималась и не переходила с новой строки") — раньше делила нижнюю строку
+                    с бейджами типа/режима канала и в узкой карточке сжималась/переносилась. */}
+                <CityTime timezone={project.timezone} className="shrink-0" />
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 min-w-0">
                     {project.channel?.type === 'TELEGRAM' && (
                       <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
                     )}
                     <span className="font-medium truncate">{project.name}</span>
-                    {project.channel?.tgPersonalConnected && (
-                      <span title="Личный аккаунт Telegram подключён">
-                        <UserCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                      </span>
+                    {project.channel?.type === 'TELEGRAM' && (
+                      <PersonalAccountIndicator projectId={project.id} connected={!!project.channel.tgPersonalConnected} />
                     )}
                   </div>
                   <Badge variant={project.status === 'ACTIVE' ? 'default' : 'secondary'}>
@@ -84,20 +91,33 @@ export default function ProjectsPage() {
                     <Users className="w-3.5 h-3.5" /> {project._count.clients}
                     <span className="text-muted-foreground">/ {project.activeClientsCount}</span>
                   </span>
+                  {/* Отписки за всё время (запрос пользователя 2026-07-28: "как внутри проекта,
+                      только за всё время как и клиентов") — показываем только когда есть хоть
+                      одна, чтобы не засорять карточки с нулём. */}
+                  {project.unsubscribedClientsCount > 0 && (
+                    <span className="flex items-center gap-1 text-red-500 dark:text-red-400" title="Отписались за всё время">
+                      <UserX className="w-3.5 h-3.5" /> {project.unsubscribedClientsCount}
+                    </span>
+                  )}
                   <span className="flex items-center gap-1">
                     <Send className="w-3.5 h-3.5" /> {project._count.pushes}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-2">
-                  {project.channel && (
-                    <div className="flex gap-1.5">
-                      <Badge variant={project.channel.isActive ? 'outline' : 'destructive'} className="text-xs">
-                        {project.channel.type}
+                {project.channel && (
+                  <div className="flex gap-1.5 flex-wrap">
+                    <Badge variant={project.channel.isActive ? 'outline' : 'destructive'} className="text-xs">
+                      {CHANNEL_TYPE_LABEL[project.channel.type as ChannelType] || project.channel.type}
+                    </Badge>
+                    {/* Режим Telegram-канала (запрос пользователя 2026-07-27: "добавь тип
+                        проекта, приватный канал, публичный, личка, бот итд") — только у
+                        Telegram, у WhatsApp/Instagram единственный режим и так есть в типе. */}
+                    {project.channel.type === 'TELEGRAM' && project.channel.tgMode && (
+                      <Badge variant="secondary" className="text-xs">
+                        {TG_MODE_LABEL[project.channel.tgMode]}
                       </Badge>
-                    </div>
-                  )}
-                  <CityTime timezone={project.timezone} />
-                </div>
+                    )}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </Link>

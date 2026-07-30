@@ -4,8 +4,7 @@ import { Permission } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
-import { hasPermission } from '../../common/permissions/permissions.util';
+import { PermissionsService } from '../../common/permissions/permissions.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ClientsService } from './clients.service';
 import { ClientsRepository } from './clients.repository';
@@ -20,29 +19,28 @@ export class ClientsController {
     private clientsRepository: ClientsRepository,
     private purchasesService: PurchasesService,
     private projectsService: ProjectsService,
+    private permissionsService: PermissionsService,
   ) {}
 
   @Get()
-  @RequirePermission(Permission.CLIENTS_VIEW)
   async findMany(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() filters: ClientFiltersDto) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
     return this.clientsService.findMany(projectId, filters);
   }
 
   @Get('stats')
-  @RequirePermission(Permission.STATS_VIEW)
   async stats(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
     @Query() period: StatsPeriodDto,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     const stats = await this.clientsRepository.getProjectStats(projectId, period);
 
     // Выручка (запрос пользователя 2026-07-17: "что видят в статистике а что нет") —
     // без STATS_VIEW_REVENUE денежные поля обнуляются, а не удаляются, фронт ждёт число.
-    if (!hasPermission(user, Permission.STATS_VIEW_REVENUE)) {
+    if (!(await this.permissionsService.hasPermission(user.userId, projectId, user.role, Permission.STATS_VIEW_REVENUE))) {
       return {
         ...stats,
         totalRevenue: 0,
@@ -55,19 +53,17 @@ export class ClientsController {
   }
 
   @Get('funnel')
-  @RequirePermission(Permission.STATS_VIEW)
   async funnel(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
     @Query() period: StatsPeriodDto,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     return this.clientsRepository.getConversionFunnel(projectId, period);
   }
 
   @Get('export/lookalike')
-  @RequirePermission(Permission.CLIENTS_EXPORT)
   async exportLookalike(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
@@ -75,7 +71,7 @@ export class ClientsController {
     @Query('onlyBuyers') onlyBuyers: string,
     @Res() res: Response,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EXPORT]);
     const csv = await this.clientsService.exportForLookalike(projectId, onlyBuyers !== 'false');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="lookalike_${projectId}.csv"`);
@@ -83,38 +79,33 @@ export class ClientsController {
   }
 
   @Get(':clientId')
-  @RequirePermission(Permission.CLIENTS_VIEW)
   async findOne(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
-    return this.clientsService.findOne(clientId, companyId);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
+    return this.clientsService.getClientDetail(clientId, companyId);
   }
 
   @Get(':clientId/purchases')
-  @RequirePermission(Permission.CLIENTS_VIEW)
   async purchases(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
     await this.clientsService.findOne(clientId, companyId);
     return this.purchasesService.findByClient(clientId);
   }
 
   @Get(':clientId/events')
-  @RequirePermission(Permission.CLIENTS_VIEW)
   async events(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
     await this.clientsService.findOne(clientId, companyId);
     return this.clientsService.findEvents(clientId);
   }
 
   @Get(':clientId/pushes')
-  @RequirePermission(Permission.CLIENTS_VIEW)
   async pushes(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
     await this.clientsService.findOne(clientId, companyId);
     return this.clientsService.findPushLogs(clientId);
   }
 
   @Post(':clientId/purchases')
-  @RequirePermission(Permission.CLIENTS_EDIT)
   async addPurchase(
     @Param('clientId') clientId: string,
     @Param('projectId') projectId: string,
@@ -122,15 +113,14 @@ export class ClientsController {
     @Body() dto: CreatePurchaseDto,
     @CurrentUser() user: AuthUser,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EDIT]);
     await this.clientsService.findOne(clientId, companyId);
     return this.purchasesService.create(projectId, clientId, dto, user.userId);
   }
 
   @Delete(':clientId')
-  @RequirePermission(Permission.CLIENTS_DELETE)
   async remove(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_DELETE]);
     await this.clientsService.softDelete(clientId, companyId);
     return { success: true };
   }
@@ -142,11 +132,10 @@ export class ClientsController {
   // менеджером через бота — если диалог уже был зафиксирован любым из способов, событие в
   // Facebook/TikTok повторно не уйдёт (проверка isFirstMessage внутри).
   @Post(':clientId/dialogue')
-  @RequirePermission(Permission.CLIENTS_EDIT)
   async registerDialogue(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EDIT]);
     await this.clientsService.findOne(clientId, companyId);
-    await this.clientsService.recordManualDialogue(clientId, projectId);
+    await this.clientsService.recordManualDialogue(clientId, projectId, 'CRM_BUTTON');
     return { success: true };
   }
 
@@ -162,7 +151,6 @@ export class ClientsController {
   // (только bot token канала), проще и безопаснее продублировать двухшаговый Telegram-флоу
   // (getFile → скачать байты) без единого нового межмодульного импорта.
   @Get(':clientId/avatar')
-  @RequirePermission(Permission.CLIENTS_VIEW)
   async avatar(
     @Param('clientId') clientId: string,
     @Param('projectId') projectId: string,
@@ -170,7 +158,7 @@ export class ClientsController {
     @CurrentUser() user: AuthUser,
     @Res() res: Response,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
     const client = await this.clientsService.findOne(clientId, companyId);
     const channel = client.tgPhotoUrl ? await this.clientsService.getChannelBotToken(client.projectId) : null;
 

@@ -127,8 +127,8 @@ export class AuthService {
       where: { id: userId },
       include: { company: true },
     });
-    const permissions = await this.permissionsService.resolvePermissionsForToken(user.id, user.role);
-    return { ...this.sanitizeUser(user), permissions };
+    const permissionsByProject = await this.permissionsService.resolvePermissionsByProject(user.id, user.role);
+    return { ...this.sanitizeUser(user), permissionsByProject };
   }
 
   // Refresh-токены — уже высокоэнтропийные JWT, а не пользовательские пароли,
@@ -148,16 +148,10 @@ export class AuthService {
   }
 
   private async issueTokens(user: User & { company?: Company | null }) {
-    // Гранулярные права (запрос пользователя 2026-07-17) — вычисляются один раз тут, кладутся
-    // и в JWT payload (для PermissionsGuard на бэкенде), и в user.permissions в ответе (для
-    // фронтенд-гейтинга кнопок/навигации) — единая точка вычисления, не расходятся.
-    const permissions = await this.permissionsService.resolvePermissionsForToken(user.id, user.role);
-
     const payload: JwtPayload = {
       sub: user.id,
       companyId: user.companyId,
       role: user.role,
-      permissions,
     };
 
     const accessToken = this.jwt.sign(payload, {
@@ -180,7 +174,8 @@ export class AuthService {
       },
     });
 
-    return { accessToken, refreshToken, user: { ...this.sanitizeUser(user), permissions } };
+    const permissionsByProject = await this.permissionsService.resolvePermissionsByProject(user.id, user.role);
+    return { accessToken, refreshToken, user: { ...this.sanitizeUser(user), permissionsByProject } };
   }
 
   private sanitizeUser(user: User & { company?: Company | null }) {

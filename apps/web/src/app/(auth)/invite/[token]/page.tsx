@@ -49,14 +49,14 @@ export default function AcceptInvitePage() {
   };
 
   if (isLoading) {
-    return <p className="text-gray-500 text-sm">Загрузка...</p>;
+    return <p className="text-muted-foreground text-sm">Загрузка...</p>;
   }
 
   if (isError || !invite) {
     return (
-      <div className="w-full max-w-md bg-white rounded-2xl shadow p-8 text-center">
-        <div className="text-3xl font-bold text-blue-600 mb-3">MWTRACK</div>
-        <p className="text-gray-600">
+      <div className="w-full max-w-md bg-card rounded-2xl shadow p-8 text-center">
+        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-3">MWTRACK</div>
+        <p className="text-muted-foreground">
           Ссылка-приглашение недействительна, уже использована или истекла. Попросите отправителя
           выслать новую.
         </p>
@@ -65,10 +65,10 @@ export default function AcceptInvitePage() {
   }
 
   return (
-    <div className="w-full max-w-md bg-white rounded-2xl shadow p-8">
+    <div className="w-full max-w-md bg-card rounded-2xl shadow p-8">
       <div className="text-center mb-6">
-        <div className="text-3xl font-bold text-blue-600 mb-1">MWTRACK</div>
-        <p className="text-gray-500 text-sm">
+        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-1">MWTRACK</div>
+        <p className="text-muted-foreground text-sm">
           Вас пригласили в команду «{invite.companyName}» с ролью {ROLE_LABELS[invite.role] || invite.role}
         </p>
       </div>

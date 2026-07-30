@@ -37,22 +37,60 @@ export const PERMISSIONS = [
   'STATS_VIEW',
   'STATS_VIEW_REVENUE',
   'STATS_VIEW_TEAM_LEADERBOARDS',
+  'PROJECTS_EDIT',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
 const ELEVATED_ROLES = ['OWNER', 'ADMIN', 'SUPER_ADMIN'];
 
-// Elevated роли (OWNER/ADMIN/SUPER_ADMIN) всегда полный доступ, не проверяются по списку —
-// зеркалит backend isElevatedRole/PermissionsGuard.
-export function hasPermission(user: Pick<User, 'role' | 'permissions'> | null | undefined, ...permissions: Permission[]): boolean {
+// Права per-project (запрос пользователя 2026-07-28) — нужен конкретный projectId. Elevated
+// роли (OWNER/ADMIN/SUPER_ADMIN) всегда полный доступ, не проверяются по списку — зеркалит
+// backend isElevatedRole/ProjectsService.assertAccess.
+export function hasPermission(
+  user: Pick<User, 'role' | 'permissionsByProject'> | null | undefined,
+  projectId: string,
+  ...permissions: Permission[]
+): boolean {
   if (!user) return false;
   if (ELEVATED_ROLES.includes(user.role)) return true;
-  return permissions.every((p) => user.permissions.includes(p));
+  const granted = user.permissionsByProject[projectId] ?? [];
+  return permissions.every((p) => granted.includes(p));
 }
 
+// DOMAINS_* и сайдбар-гейтинг — единственные случаи без конкретного projectId (решение
+// пользователя: домены не привязаны к одному проекту, остаются общим правом роли; сайдбар —
+// "есть ли доступ хотя бы на одном проекте"). Зеркалит backend
+// PermissionsService.hasAnyProjectPermission.
+export function hasAnyPermission(
+  user: Pick<User, 'role' | 'permissionsByProject'> | null | undefined,
+  ...permissions: Permission[]
+): boolean {
+  if (!user) return false;
+  if (ELEVATED_ROLES.includes(user.role)) return true;
+  const granted = new Set(Object.values(user.permissionsByProject).flat());
+  return permissions.every((p) => granted.has(p));
+}
+
+// Единственная группа НЕ per-project (решение пользователя 2026-07-28: домены технически не
+// привязаны к одному проекту) — рендерится отдельно от остальных, одним блоком на участника
+// целиком, см. DomainsPermissionsSection в team/page.tsx. Зеркалит backend
+// permission.constants.ts DOMAIN_PERMISSIONS.
+export const DOMAIN_PERMISSIONS: Permission[] = ['DOMAINS_VIEW', 'DOMAINS_CREATE', 'DOMAINS_EDIT', 'DOMAINS_DELETE'];
+
+export const DOMAINS_PERMISSION_GROUP: { label: string; permissions: { value: Permission; label: string }[] } = {
+  label: 'Домены',
+  permissions: [
+    { value: 'DOMAINS_VIEW', label: 'Просмотр' },
+    { value: 'DOMAINS_CREATE', label: 'Создание' },
+    { value: 'DOMAINS_EDIT', label: 'Изменение' },
+    { value: 'DOMAINS_DELETE', label: 'Удаление' },
+  ],
+};
+
 // Группировка по ресурсу — переиспользуется и в дефолтных шаблонах (см. team/page.tsx), и
-// в матрице чекбоксов "Разрешения" в диалогах создания/редактирования участника.
+// в матрице чекбоксов "Разрешения" в диалогах создания/редактирования участника. Домены сюда
+// НЕ входят (см. DOMAINS_PERMISSION_GROUP выше) — это per-project часть.
 export const PERMISSION_GROUPS: { label: string; permissions: { value: Permission; label: string }[] }[] = [
   {
     label: 'Лендинги',
@@ -73,15 +111,6 @@ export const PERMISSION_GROUPS: { label: string; permissions: { value: Permissio
     ],
   },
   {
-    label: 'Домены',
-    permissions: [
-      { value: 'DOMAINS_VIEW', label: 'Просмотр' },
-      { value: 'DOMAINS_CREATE', label: 'Создание' },
-      { value: 'DOMAINS_EDIT', label: 'Изменение' },
-      { value: 'DOMAINS_DELETE', label: 'Удаление' },
-    ],
-  },
-  {
     label: 'Пуши',
     permissions: [
       { value: 'PUSHES_VIEW', label: 'Просмотр' },
@@ -90,15 +119,10 @@ export const PERMISSION_GROUPS: { label: string; permissions: { value: Permissio
       { value: 'PUSHES_DELETE', label: 'Удаление' },
     ],
   },
-  {
-    label: 'Автоворонки',
-    permissions: [
-      { value: 'AUTOMATIONS_VIEW', label: 'Просмотр' },
-      { value: 'AUTOMATIONS_CREATE', label: 'Создание' },
-      { value: 'AUTOMATIONS_EDIT', label: 'Изменение' },
-      { value: 'AUTOMATIONS_DELETE', label: 'Удаление' },
-    ],
-  },
+  // Группа "Автоворонки" скрыта из редактора ролей команды (запрос пользователя 2026-07-22:
+  // автоворонки временно отключены "даже из ui") — сами права AUTOMATIONS_* остаются в
+  // PERMISSIONS/DEFAULT_ROLE_PERMISSIONS (бэкенд не трогаем), просто нечего включать в UI, раз
+  // страницы недоступны.
   {
     label: 'A/B-тесты',
     permissions: [
@@ -131,6 +155,12 @@ export const PERMISSION_GROUPS: { label: string; permissions: { value: Permissio
       { value: 'STATS_VIEW_REVENUE', label: 'Выручка' },
       { value: 'STATS_VIEW_TEAM_LEADERBOARDS', label: 'Топ команды' },
     ],
+  },
+  {
+    // Архивация/перегенерация токенов проекта — только Owner/Admin (решение пользователя
+    // 2026-07-28, security-critical), сюда не входят.
+    label: 'Настройки проекта',
+    permissions: [{ value: 'PROJECTS_EDIT', label: 'Редактирование настроек' }],
   },
 ];
 
@@ -170,3 +200,14 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'STATS_VIEW',
   ],
 };
+
+// DEFAULT_ROLE_PERMISSIONS смешивает project-scoped и DOMAINS_* права в одном списке (как и
+// backend permission.constants.ts) — при инициализации формы их нужно развести по двум
+// отдельным кускам состояния (per-project матрица vs. общий блок доменов).
+export function splitPermissionsByScope(permissions: Permission[]): { projectPermissions: Permission[]; domainsPermissions: Permission[] } {
+  const domainSet = new Set(DOMAIN_PERMISSIONS);
+  return {
+    projectPermissions: permissions.filter((p) => !domainSet.has(p)),
+    domainsPermissions: permissions.filter((p) => domainSet.has(p)),
+  };
+}

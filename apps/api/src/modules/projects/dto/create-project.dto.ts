@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import { IsArray, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { ChannelFieldsDto } from '../../channels/dto/channel-fields.dto';
+import { TRACKING_EVENT_TYPES } from '../../tracking/tracking-event-types.const';
 
 // IANA-зоны (запрос пользователя 2026-07-04, диалоги с клиентами) — проект может целиться в
 // аудиторию на другом конце света, "сутки" во всех дневных графиках считаются по зоне
@@ -30,6 +31,14 @@ export class CreateProjectDto {
   @IsOptional()
   @IsIn(IANA_TIMEZONES)
   timezone?: string;
+
+  // Типы событий, которые НЕ пересылать в Facebook/TikTok (запрос пользователя 2026-07-27,
+  // свитчи включения/выключения по типу события) — см. tracking-event-types.const.ts и
+  // TrackingService.recordEvent. Событие всё равно всегда пишется в TrackingEvent.
+  @IsOptional()
+  @IsArray()
+  @IsIn(TRACKING_EVENT_TYPES, { each: true })
+  disabledTrackingEvents?: string[];
 
   // Кастомные имена query-параметров трекинг-ссылки лендинга (запрос пользователя
   // 2026-07-04) — { pixel: "px", adId: "zid1", ... }, ключи и формат значений проверяются

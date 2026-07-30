@@ -9,12 +9,14 @@ import { ChannelMediaService } from './channel-media.service';
 import { VideoProcessingService } from './video-processing.service';
 import { BotScenariosController } from './bot-scenarios.controller';
 import { BotScenariosService } from './bot-scenarios.service';
+import { BotScenarioEngineService } from './bot-scenario-engine.service';
+import { ScenarioStepMediaController } from './scenario-step-media.controller';
 import { TelegramProvider } from './providers/telegram.provider';
 import { TelegramPersonalService } from './providers/telegram-personal.service';
 import { WhatsAppProvider } from './providers/whatsapp.provider';
 import { InstagramProvider } from './providers/instagram.provider';
 import { JoinRequestApprovalProcessor } from './join-request-approval.processor';
-import { BotScenarioMessageProcessor } from './bot-scenario-message.processor';
+import { BotScenarioStepProcessor } from './bot-scenario-step.processor';
 
 @Module({
   imports: [
@@ -23,23 +25,25 @@ import { BotScenarioMessageProcessor } from './bot-scenario-message.processor';
     // Задержка одобрения заявки на вступление (Channel.tgJoinDelaySeconds) — см.
     // TelegramProvider.approveJoinRequestMaybeDelayed / JoinRequestApprovalProcessor.
     BullModule.registerQueue({ name: 'join-request-approval' }),
-    // Отложенная отправка сообщений сценариев (BotScenario.delaySeconds) — см.
-    // TelegramProvider.triggerScenario / BotScenarioMessageProcessor.
-    BullModule.registerQueue({ name: 'bot-scenario-message' }),
+    // Продвижение цепочки шагов сценария (запрос пользователя 2026-07-22, объединение с
+    // автоворонками) — заменяет прежнюю одноразовую очередь bot-scenario-message, см.
+    // BotScenarioEngineService/BotScenarioStepProcessor.
+    BullModule.registerQueue({ name: 'bot-scenario-steps' }),
   ],
-  controllers: [ChannelsController, BotScenariosController],
+  controllers: [ChannelsController, BotScenariosController, ScenarioStepMediaController],
   providers: [
     ChannelsService,
     ChannelMediaService,
     VideoProcessingService,
     BotScenariosService,
+    BotScenarioEngineService,
     TelegramProvider,
     TelegramPersonalService,
     EncryptionService,
     WhatsAppProvider,
     InstagramProvider,
     JoinRequestApprovalProcessor,
-    BotScenarioMessageProcessor,
+    BotScenarioStepProcessor,
   ],
   // ChannelMediaService экспортирован дополнительно (запрос пользователя 2026-07-17,
   // "загружать медиа для рассылок") — PushesModule уже импортирует ChannelsModule (см.

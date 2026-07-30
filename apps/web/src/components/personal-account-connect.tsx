@@ -98,7 +98,7 @@ export function PersonalAccountConnect({ channelId }: { channelId: string }) {
           <div className="flex items-center justify-between">
             <div>
               <Badge>Подключён</Badge>
-              {info.tgPersonalPhone && <span className="text-sm text-gray-500 ml-2">{info.tgPersonalPhone}</span>}
+              {info.tgPersonalPhone && <span className="text-sm text-muted-foreground ml-2">{info.tgPersonalPhone}</span>}
             </div>
             <Button
               size="sm"
@@ -113,7 +113,7 @@ export function PersonalAccountConnect({ channelId }: { channelId: string }) {
           </div>
         ) : (
           <>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-muted-foreground">
               Чтобы CRM видела диалоги с клиентами в личных сообщениях, нужно подключить сам
               аккаунт (не бота) — вход по номеру телефона, как в обычном Telegram-клиенте.
             </p>

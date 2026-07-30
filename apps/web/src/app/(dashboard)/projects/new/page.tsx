@@ -51,7 +51,7 @@ export default function NewProjectPage() {
           <div className="space-y-1.5">
             <Label htmlFor="name">Название</Label>
             <Input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-muted-foreground">
               Рабочее название — если подключишь Telegram-канал/бота, после успешного подключения
               подставим его настоящее имя и фото автоматически.
             </p>

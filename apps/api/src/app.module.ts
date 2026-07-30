@@ -6,7 +6,6 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
-import { PermissionsGuard } from './common/permissions/permissions.guard';
 import { PermissionsModule } from './common/permissions/permissions.module';
 import { CompanyContextInterceptor } from './common/interceptors/company-context.interceptor';
 import { AdminModule } from './modules/admin/admin.module';
@@ -65,7 +64,6 @@ import { RedisModule } from './redis/redis.module';
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
-    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_INTERCEPTOR, useClass: CompanyContextInterceptor },
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
   ],

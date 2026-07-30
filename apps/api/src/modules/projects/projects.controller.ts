@@ -1,19 +1,23 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { Permission } from '@prisma/client';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Permission, UserRole } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { SubscriptionLimit } from '../../common/decorators/subscription-limit.decorator';
 import { SubscriptionGuard } from '../../common/guards/subscription.guard';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
-import { hasPermission } from '../../common/permissions/permissions.util';
+import { PermissionsService } from '../../common/permissions/permissions.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
+import { LeaderboardFunnelQueryDto } from './dto/leaderboard-funnel-query.dto';
 import { ProjectsService } from './projects.service';
 
 @Controller('projects')
 export class ProjectsController {
-  constructor(private projectsService: ProjectsService) {}
+  constructor(
+    private projectsService: ProjectsService,
+    private permissionsService: PermissionsService,
+  ) {}
 
   @Get()
   findAll(@Company() companyId: string, @CurrentUser() user: AuthUser) {
@@ -33,23 +37,35 @@ export class ProjectsController {
     return this.projectsService.findOne(id, companyId);
   }
 
+  // Багфикс 2026-07-28 (аудит разрешений сотрудников, дыра найдена — ни assertAccess, ни
+  // разрешение раньше не проверялись вообще). Настройки проекта (домены/таймзона/трекинг-
+  // переключатели) теперь — разрешение PROJECTS_EDIT, выдаётся per-project как и остальные.
   @Patch(':id')
-  update(@Param('id') id: string, @Company() companyId: string, @Body() dto: UpdateProjectDto) {
+  async update(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: UpdateProjectDto) {
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.PROJECTS_EDIT]);
     return this.projectsService.update(id, companyId, dto);
   }
 
+  // Архивация/перегенерация токенов — необратимо/чувствительно, сознательно НЕ разрешение
+  // (нет способа выдать их per-project тоньше, чем "весь проект"), только Owner/Admin.
   @Delete(':id')
+  @Roles(UserRole.OWNER, UserRole.ADMIN)
   archive(@Param('id') id: string, @Company() companyId: string) {
     return this.projectsService.archive(id, companyId);
   }
 
   @Post(':id/tokens')
+  @Roles(UserRole.OWNER, UserRole.ADMIN)
   regenerateTokens(@Param('id') id: string, @Company() companyId: string) {
     return this.projectsService.regenerateTokens(id, companyId);
   }
 
+  // Тот же баг-репорт — отдавал publicToken/secretKey-контекст любого проекта компании без
+  // проверки принадлежности. Здесь достаточно обычного членства (assertAccess без permission),
+  // как у findOne выше — снипет нужен любому, кто работает с проектом, не только Owner/Admin.
   @Get(':id/snippet')
-  getSnippet(@Param('id') id: string, @Company() companyId: string) {
+  async getSnippet(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
     return this.projectsService.getSnippet(id, companyId);
   }
 
@@ -57,45 +73,79 @@ export class ProjectsController {
   // раньше не звали assertAccess вообще — любой авторизованный пользователь компании мог
   // смотреть статистику ЛЮБОГО проекта, просто зная его id, независимо от ProjectAccess.
   @Get(':id/overview')
-  @RequirePermission(Permission.STATS_VIEW)
   async getOverview(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query('days') days?: string) {
-    await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     return this.projectsService.getOverview(id, companyId, days ? parseInt(days, 10) : 30);
   }
 
   @Get(':id/ad-breakdown')
-  @RequirePermission(Permission.STATS_VIEW)
   async getAdBreakdown(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() period: StatsPeriodDto) {
-    await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     return this.projectsService.getAdBreakdown(id, companyId, period);
   }
 
   // Топ баеров/выручка (запрос пользователя 2026-07-17: "что видят в статистике а что нет")
   // частично скрываются — не 403 всего роута, а вырезание конкретных полей, поэтому проверка
-  // ручная (hasPermission), не PermissionsGuard: без STATS_VIEW_TEAM_LEADERBOARDS человек не
-  // видит рейтинг команды (конкурентно-чувствительно) вообще, остальные 3 лидерборда (пиксели/
-  // лэндинги/кампании — про ассеты, не про людей) видит; без STATS_VIEW_REVENUE везде, где
-  // видны деньги, поле обнуляется, а не удаляется — фронт ждёт число, не undefined.
+  // ручная (PermissionsService.hasPermission), не через assertAccess: без
+  // STATS_VIEW_TEAM_LEADERBOARDS человек не видит рейтинг команды (конкурентно-чувствительно)
+  // вообще, остальные 3 лидерборда (пиксели/лэндинги/кампании — про ассеты, не про людей)
+  // видит; без STATS_VIEW_REVENUE везде, где видны деньги, поле обнуляется, а не удаляется —
+  // фронт ждёт число, не undefined.
   @Get(':id/leaderboards')
-  @RequirePermission(Permission.STATS_VIEW)
   async getLeaderboards(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() period: StatsPeriodDto) {
-    await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     const data = await this.projectsService.getLeaderboards(id, companyId, period);
 
-    if (!hasPermission(user, Permission.STATS_VIEW_TEAM_LEADERBOARDS)) {
+    if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS))) {
       data.buyers = [];
     }
-    if (!hasPermission(user, Permission.STATS_VIEW_REVENUE)) {
+    if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
       data.buyers = data.buyers.map((b) => ({ ...b, revenue: 0 }));
       data.landings = data.landings.map((l) => ({ ...l, revenue: 0 }));
       data.campaigns = data.campaigns.map((c) => ({ ...c, revenue: 0 }));
+      // pixels теперь тоже несёт revenue (баг-фикс 2026-07-28, раньше было только conversions —
+      // счётчик, не деньги) — та же граница видимости, что и у остальных трёх.
+      data.pixels = data.pixels.map((p) => ({ ...p, revenue: 0 }));
     }
 
     return data;
   }
 
+  // Развёрнутая воронка по конкретным top-5 id одной категории лидерборда (запрос пользователя
+  // 2026-07-27) — вызывается фронтом только при открытии соответствующей вкладки (лениво,
+  // см. комментарий у ProjectsService.getLeaderboardFunnel), ids — уже известные id из ответа
+  // getLeaderboards выше, отдаются фронтом обратно через ?ids=a,b,c.
+  @Get(':id/leaderboards/:category/funnel')
+  async getLeaderboardFunnel(
+    @Param('id') id: string,
+    @Param('category') category: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: LeaderboardFunnelQueryDto,
+  ) {
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
+
+    const categories = ['buyers', 'pixels', 'landings', 'campaigns'] as const;
+    if (!(categories as readonly string[]).includes(category)) throw new BadRequestException('Неизвестная категория лидерборда');
+    if (category === 'buyers' && !(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS))) {
+      return { items: [] };
+    }
+
+    const ids = (query.ids || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+
+    const data = await this.projectsService.getLeaderboardFunnel(id, companyId, category as (typeof categories)[number], ids, query);
+
+    if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
+      return { items: data.items.map((i) => ({ ...i, revenue: 0 })) };
+    }
+    return data;
+  }
+
   @Get(':id/pixel-logs')
-  @RequirePermission(Permission.STATS_VIEW)
   async getPixelLogs(
     @Param('id') id: string,
     @Company() companyId: string,
@@ -106,13 +156,21 @@ export class ProjectsController {
     @Query('status') status?: string,
     @Query('eventName') eventName?: string,
   ) {
-    await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
-    return this.projectsService.getPixelLogs(id, companyId, {
-      page: page ? parseInt(page, 10) : undefined,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      pixelId,
-      status,
-      eventName,
-    });
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
+    return this.projectsService.getPixelLogs(
+      id,
+      companyId,
+      {
+        page: page ? parseInt(page, 10) : undefined,
+        limit: limit ? parseInt(limit, 10) : undefined,
+        pixelId,
+        status,
+        eventName,
+      },
+      // curl-команда с реальным access_token пикселя (запрос пользователя 2026-07-29, "чтобы
+      // Owner мог просто взять ссылку и вставить в cmd") — секрет, поэтому строго только для
+      // роли OWNER, не ADMIN и не остальных.
+      user.role === 'OWNER',
+    );
   }
 }

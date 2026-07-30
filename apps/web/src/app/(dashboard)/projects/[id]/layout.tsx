@@ -2,10 +2,10 @@
 
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { UserCheck } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
 import { CityTime } from '@/components/city-time';
+import { PersonalAccountIndicator } from '@/components/personal-account-indicator';
 
 interface ProjectHeaderData {
   id: string;
@@ -43,14 +43,12 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
             fallbackLetter={project.name}
           />
         ) : (
-          <div className="w-10 h-10 rounded-full bg-gray-100 border shrink-0" />
+          <div className="w-10 h-10 rounded-full bg-muted border shrink-0" />
         )}
         <div className="flex items-center gap-2 min-w-0">
-          <h2 className="text-base font-semibold text-gray-500 truncate">{project?.name ?? ' '}</h2>
-          {project?.channel?.tgPersonalConnected && (
-            <span title="Личный аккаунт Telegram подключён">
-              <UserCheck className="w-4 h-4 text-blue-600 shrink-0" />
-            </span>
+          <h2 className="text-base font-semibold text-muted-foreground truncate">{project?.name ?? ' '}</h2>
+          {project?.channel?.type === 'TELEGRAM' && id && (
+            <PersonalAccountIndicator projectId={id} connected={!!project.channel.tgPersonalConnected} size="md" />
           )}
         </div>
         {project?.timezone && <CityTime timezone={project.timezone} className="shrink-0" />}

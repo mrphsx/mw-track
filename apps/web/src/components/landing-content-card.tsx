@@ -127,7 +127,11 @@ export function LandingContentCard({
   // /landings/:id/avatar публичный и всегда отдаёт что-то осмысленное (своя аватарка либо
   // фото канала как дефолт) — можно просто <img src>, без blob-фетча с авторизацией, как у
   // ChannelAvatar (та привязана к закрытому /channels/:id/avatar).
-  const avatarPreviewUrl = `${API_BASE_URL}/landings/${landingId}/avatar`;
+  // ?v= — баг-фикс 2026-07-27 ("при загрузке аватарки она не обновляется"): без версии URL не
+  // менялся между загрузками, а бэкенд отдаёт Cache-Control: max-age=86400 — браузер держал
+  // старую картинку в кэше сутки. avatarKey меняется на каждую загрузку (см.
+  // LandingsService.uploadAvatar), готовый версионирующий токен.
+  const avatarPreviewUrl = `${API_BASE_URL}/landings/${landingId}/avatar?v=${encodeURIComponent(landing.avatarKey || 'channel')}`;
 
   return (
     <Card>
@@ -141,7 +145,7 @@ export function LandingContentCard({
             <img
               src={avatarPreviewUrl}
               alt=""
-              className="w-16 h-16 rounded-full object-cover bg-gray-100 shrink-0"
+              className="w-16 h-16 rounded-full object-cover bg-muted shrink-0"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.visibility = 'hidden';
               }}
@@ -162,8 +166,8 @@ export function LandingContentCard({
                 onClick={() => fileInputRef.current?.click()}
                 className={`border-2 border-dashed rounded-lg p-3 text-center text-xs cursor-pointer transition-colors ${
                   dragOver
-                    ? 'border-blue-500 bg-blue-50'
-                    : 'border-gray-300 text-gray-500 hover:border-gray-400'
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
+                    : 'border-border text-muted-foreground hover:border-muted-foreground'
                 }`}
               >
                 <UploadCloud className="w-4 h-4 mx-auto mb-1" />
@@ -199,7 +203,7 @@ export function LandingContentCard({
               </div>
             </div>
           </div>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-muted-foreground">
             Пока своя не загружена — показывается фото канала.
           </p>
         </div>
@@ -251,7 +255,7 @@ export function LandingContentCard({
               </Button>
             )}
           </div>
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-muted-foreground">
             При создании лендинга подставляется текущее число участников канала — дальше можно
             менять вручную.
           </p>

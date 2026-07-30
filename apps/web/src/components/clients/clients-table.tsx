@@ -31,12 +31,28 @@ export interface ClientRow {
   // Client.externalSubscribedAt, отдельно от subscribedAt (тот только для реальной атрибуции
   // воронки). Показываем таким реальную дату вступления вместо голого "Внешний".
   externalSubscribedAt: string | null;
+  // Покинул канал — для внешних контактов (запрос пользователя 2026-07-24), отдельно от
+  // unsubscribedAt (тот только для настоящей подписки через воронку, см. баг-репорт 2026-07-21
+  // про вводящий в заблуждение статус "Отписался" у внешних).
+  externalUnsubscribedAt: string | null;
   // Диалог (запрос пользователя 2026-07-21) — первое входящее сообщение клиента боту/личному
   // аккаунту (Client.firstDialogueAt, тот же признак, что уже используется в воронке проекта
   // и как триггер автоворонок), уже приходит с бэкенда без изменений — просто раньше не
   // отображалось в списке.
   firstDialogueAt: string | null;
+  // Источник первой регистрации диалога (запрос пользователя 2026-07-23: "сделай чтобы можно
+  // было технически отследить откуда зарегистрирован диалог" — баг-репорт про диалог у
+  // клиента, который реально не писал) — показывается во всплывающей подсказке над той же
+  // галочкой, отдельного UI не потребовалось.
+  dialogueSource: 'PERSONAL_ACCOUNT' | 'BOT_DIRECT' | 'MANAGER_CONFIRM' | 'CRM_BUTTON' | null;
 }
+
+export const DIALOGUE_SOURCE_LABEL: Record<NonNullable<ClientRow['dialogueSource']>, string> = {
+  PERSONAL_ACCOUNT: 'с личного аккаунта',
+  BOT_DIRECT: 'через бота (режим "Прямой бот")',
+  MANAGER_CONFIRM: 'подтверждено менеджером в боте',
+  CRM_BUTTON: 'вручную, кнопкой в CRM',
+};
 
 interface ClientsTableProps {
   projectId: string;
@@ -61,6 +77,23 @@ export function formatDuration(fromIso: string, toIso: string): string {
 
   if (days > 0) return remainingHours > 0 ? `${days}д ${remainingHours}ч` : `${days}д`;
   return hours > 0 ? `${hours}ч` : '<1ч';
+}
+
+// "Xд Yч" / "Xч Yм" / "Xм" / "<1м" — та же идея, что formatDuration выше, но с точностью до
+// минут и на входе уже готовые секунды, а не две даты (запрос пользователя 2026-07-30: "среднее
+// время которое проходит от подписки до диалога за разные периоды" — агрегат из SQL AVG(),
+// под-часовые значения тут обычны и важны для решения, в отличие от per-client списка выше, где
+// хватало точности до часов).
+export function formatSecondsDuration(totalSeconds: number): string {
+  if (totalSeconds <= 0) return '<1м';
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) return hours > 0 ? `${days}д ${hours}ч` : `${days}д`;
+  if (hours > 0) return minutes > 0 ? `${hours}ч ${minutes}м` : `${hours}ч`;
+  return minutes > 0 ? `${minutes}м` : '<1м';
 }
 
 // Кнопка "Зарегистрировать диалог" в списке клиентов (запрос пользователя 2026-07-21) — третий
@@ -118,7 +151,7 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
           <TableHead>Диалог</TableHead>
           <TableHead>Подписан</TableHead>
           <TableHead>Отписан</TableHead>
-          <TableHead>Был подписан</TableHead>
+          <TableHead>Длительность</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -146,13 +179,23 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
                   отписались, хотя они не отписались" — прежняя логика показывала "Отписался"
                   для любого isSubscribed:false, включая внешних холодных контактов, которые
                   никогда не были подписаны вообще (subscribedAt: null). Теперь "Отписался"
-                  только когда реально был unsubscribedAt, "Внешний" — когда подписки не было. */}
+                  только когда реально был unsubscribedAt, "Внешний" — когда подписки не было.
+                  Доп. правка 2026-07-24: у внешних теперь тоже отслеживается уход из канала,
+                  отдельным полем externalUnsubscribedAt (не unsubscribedAt — тот статус
+                  зарезервирован за настоящей подпиской через воронку). */}
               {client.subscribedAt !== null ? (
                 client.unsubscribedAt ? (
                   <Badge variant="secondary">Отписался</Badge>
                 ) : (
                   <Badge>Активен</Badge>
                 )
+              ) : client.externalUnsubscribedAt ? (
+                <Badge
+                  variant="secondary"
+                  title={format(new Date(client.externalUnsubscribedAt), 'd MMM yyyy, HH:mm')}
+                >
+                  Покинул канал (внеш.)
+                </Badge>
               ) : client.externalSubscribedAt ? (
                 <Badge
                   variant="outline"
@@ -176,24 +219,55 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
               )}
             </TableCell>
             <TableCell>
+              {/* Раньше время диалога и задержка от подписки жили только в hover-подсказке
+                  (title) над бейджем "Есть" — запрос пользователя 2026-07-30: "во первых надо
+                  показать время когда он начал диалог (через сколько после подписки тоже
+                  оставь)" — теперь оба значения видны в самой ячейке, без наведения. */}
               {client.firstDialogueAt ? (
-                <Badge variant="outline" title={format(new Date(client.firstDialogueAt), 'd MMM yyyy, HH:mm')}>
-                  <MessageCircle className="w-3 h-3 mr-1" /> Есть
-                </Badge>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1 text-sm">
+                    <MessageCircle className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                    {format(new Date(client.firstDialogueAt), 'd MMM, HH:mm')}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {client.subscribedAt
+                      ? `через ${formatDuration(client.subscribedAt, client.firstDialogueAt)} после подписки`
+                      : client.dialogueSource
+                        ? DIALOGUE_SOURCE_LABEL[client.dialogueSource]
+                        : null}
+                  </div>
+                </div>
               ) : (
                 <RegisterDialogueButton projectId={projectId} clientId={client.id} />
               )}
             </TableCell>
-            <TableCell className="text-gray-500">
+            <TableCell className="text-muted-foreground">
               {format(new Date(client.subscribedAt ?? client.externalSubscribedAt ?? client.createdAt), 'd MMM yyyy, HH:mm')}
             </TableCell>
-            <TableCell className="text-gray-500">
-              {client.unsubscribedAt ? format(new Date(client.unsubscribedAt), 'd MMM yyyy, HH:mm') : '—'}
-            </TableCell>
-            <TableCell className="text-gray-500">
-              {client.subscribedAt
-                ? formatDuration(client.subscribedAt, client.unsubscribedAt || new Date().toISOString())
+            <TableCell className="text-muted-foreground">
+              {client.unsubscribedAt || client.externalUnsubscribedAt
+                ? format(new Date(client.unsubscribedAt ?? client.externalUnsubscribedAt!), 'd MMM yyyy, HH:mm')
                 : '—'}
+            </TableCell>
+            <TableCell className="text-muted-foreground">
+              {/* Уточнение 2026-07-24 (пользователь принял живого подписчика @Gmhv4 за
+                  отписавшегося — проверено через Bot API getChatMember, она реально ещё в
+                  канале): "Был подписан X" читается как завершённое действие даже когда
+                  подписка ещё активна (до отписки конец периода — просто "сейчас"). Явная
+                  приставка "В канале"/"Был подписан" убирает эту двусмысленность. */}
+              {client.subscribedAt ? (
+                <>
+                  {client.unsubscribedAt ? 'Был подписан' : 'В канале'}{' '}
+                  {formatDuration(client.subscribedAt, client.unsubscribedAt || new Date().toISOString())}
+                </>
+              ) : client.externalSubscribedAt ? (
+                <>
+                  {client.externalUnsubscribedAt ? 'Был подписан' : 'В канале'}{' '}
+                  {formatDuration(client.externalSubscribedAt, client.externalUnsubscribedAt || new Date().toISOString())}
+                </>
+              ) : (
+                '—'
+              )}
             </TableCell>
           </TableRow>
         ))}

@@ -24,7 +24,7 @@ import {
   Monitor,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
-import { hasPermission } from '@/lib/permissions';
+import { hasAnyPermission } from '@/lib/permissions';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -120,7 +120,9 @@ export function Sidebar() {
         {navItems
           .filter((item) => !item.ownerAdminOnly || isOwnerOrAdmin)
           .filter(
-            (item) => !item.requiredPermission || hasPermission(user, item.requiredPermission),
+            // Нет конкретного projectId в контексте сайдбара — "есть ли право хотя бы на
+            // одном доступном проекте" (запрос пользователя 2026-07-28, per-project редизайн).
+            (item) => !item.requiredPermission || hasAnyPermission(user, item.requiredPermission),
           )
           .map((item) => {
             const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);

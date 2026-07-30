@@ -21,7 +21,7 @@ import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dia
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth.store';
-import { hasPermission } from '@/lib/permissions';
+import { hasAnyPermission, hasPermission } from '@/lib/permissions';
 
 // Все лендинги компании сразу, а не только внутри одного проекта — со ссылкой на проект и
 // канал, на который лендинг ведёт, прямо в карточке. Создание лендинга (запрос пользователя
@@ -73,18 +73,18 @@ export default function AllLandingsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Все лендинги</h1>
-        {hasPermission(user, 'LANDINGS_CREATE') && (
+        {hasAnyPermission(user, 'LANDINGS_CREATE') && (
           <Button onClick={() => setShowCreateDialog(true)}>
             <Plus className="w-4 h-4 mr-1.5" /> Создать из шаблона
           </Button>
         )}
       </div>
 
-      {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!isLoading && landings?.length === 0 && (
         <Card>
-          <CardContent className="p-8 text-center text-gray-500">Лендингов пока нет.</CardContent>
+          <CardContent className="p-8 text-center text-muted-foreground">Лендингов пока нет.</CardContent>
         </Card>
       )}
 
@@ -109,9 +109,13 @@ export default function AllLandingsPage() {
               onPublish={() => publish.mutate(l.id)}
               onUnpublish={() => unpublish.mutate(l.id)}
               onDelete={() => remove.mutate(l.id)}
-              isPublishPending={publish.isPending || unpublish.isPending}
-              isDeletePending={remove.isPending}
-              canDelete={hasPermission(user, 'LANDINGS_DELETE')}
+              // Раньше isPending читался с общей мутации целиком — клик по одной карточке
+              // переводил кнопки ВСЕХ карточек в состояние ожидания (баг-репорт пользователя
+              // 2026-07-30). Сверка с .variables — id, с которым мутация реально сейчас
+              // выполняется — скоупит "ожидание" ровно на ту карточку, где кликнули.
+              isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+              isDeletePending={remove.isPending && remove.variables === l.id}
+              canDelete={hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
               abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
             />
           ))}

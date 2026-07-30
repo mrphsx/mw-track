@@ -27,14 +27,14 @@ const OPTIONS: { value: StatsPeriod; label: string }[] = [
 export function PeriodSelector({ value, onChange }: { value: PeriodValue; onChange: (value: PeriodValue) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="flex rounded-lg border border-gray-200 p-0.5 gap-0.5">
+      <div className="flex rounded-lg border border-border p-0.5 gap-0.5">
         {OPTIONS.map((opt) => (
           <button
             key={opt.value}
             type="button"
             onClick={() => onChange(opt.value === 'custom' ? { period: 'custom', from: value.from, to: value.to } : { period: opt.value })}
             className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              value.period === opt.value ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+              value.period === opt.value ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-muted'
             }`}
           >
             {opt.label}
@@ -50,7 +50,7 @@ export function PeriodSelector({ value, onChange }: { value: PeriodValue; onChan
             onChange={(e) => onChange({ period: 'custom', from: e.target.value, to: value.to })}
             className="w-auto"
           />
-          <span className="text-gray-400 text-sm">—</span>
+          <span className="text-muted-foreground text-sm">—</span>
           <Input
             type="date"
             value={value.to ?? ''}

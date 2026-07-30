@@ -61,6 +61,16 @@ export default function ClientsPage() {
             country: filters.country,
             minSpent: filters.minSpent,
             landingId: filters.landingId,
+            buyerId: filters.buyerId,
+            pixelId: filters.pixelId,
+            campaignName: filters.campaignName,
+            adName: filters.adName,
+            adsetName: filters.adsetName,
+            siteSourceName: filters.siteSourceName,
+            utmSource: filters.utmSource,
+            utmMedium: filters.utmMedium,
+            utmCampaign: filters.utmCampaign,
+            utmContent: filters.utmContent,
             search: search || undefined,
           },
         })
@@ -73,7 +83,7 @@ export default function ClientsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Клиенты</h1>
-          {data && <p className="text-sm text-gray-500">Всего: {data.total}</p>}
+          {data && <p className="text-sm text-muted-foreground">Всего: {data.total}</p>}
         </div>
         <div className="flex gap-2">
           <Input placeholder="Поиск..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-56" />
@@ -84,12 +94,12 @@ export default function ClientsPage() {
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="flex rounded-lg border border-gray-200 p-0.5 gap-0.5">
+        <div className="flex rounded-lg border border-border p-0.5 gap-0.5">
           <button
             type="button"
             onClick={() => { setOrigin('ours'); setPage(1); }}
             className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              origin === 'ours' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+              origin === 'ours' ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-muted'
             }`}
           >
             Наши клиенты
@@ -98,22 +108,24 @@ export default function ClientsPage() {
             type="button"
             onClick={() => { setOrigin('external'); setPage(1); }}
             className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-              origin === 'external' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+              origin === 'external' ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-muted'
             }`}
           >
             Внешние контакты
           </button>
         </div>
         {origin === 'external' && (
-          <p className="text-xs text-gray-400">
-            Написали в личку/боту или вступили в канал не по нашей ссылке — не учитываются в статистике проекта
+          <p className="text-xs text-muted-foreground">
+            Написали в личку/боту или вступили в канал не по нашей ссылке — не учитываются в статистике проекта.
+            Дата диалога — когда мы впервые увидели сообщение, а не обязательно начало реального общения с клиентом:
+            переписка могла идти и раньше.
           </p>
         )}
       </div>
 
       <ClientsFilter projectId={id} value={filters} onChange={(v) => { setFilters(v); setPage(1); }} />
 
-      <div className="border rounded-lg bg-white">
+      <div className="border rounded-lg bg-card">
         <ClientsTable projectId={id} clients={data?.items ?? []} onSelect={setSelectedClientId} />
       </div>
 
@@ -122,7 +134,7 @@ export default function ClientsPage() {
           <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
             Назад
           </Button>
-          <span className="text-sm text-gray-500">
+          <span className="text-sm text-muted-foreground">
             {page} / {data.totalPages}
           </span>
           <Button variant="outline" size="sm" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)}>

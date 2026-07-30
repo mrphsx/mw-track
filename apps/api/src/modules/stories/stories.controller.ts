@@ -4,7 +4,7 @@ import { Response } from 'express';
 import { Permission } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
+import { PermissionsService } from '../../common/permissions/permissions.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ChannelMediaService } from '../channels/channel-media.service';
 import { StoriesService } from './stories.service';
@@ -18,12 +18,12 @@ const MAX_STORY_MEDIA_SIZE = 50 * 1024 * 1024;
 export class StoriesOverviewController {
   constructor(
     private storiesService: StoriesService,
-    private projectsService: ProjectsService,
+    private permissionsService: PermissionsService,
   ) {}
 
   @Get('overview')
-  @RequirePermission(Permission.CHANNEL_VIEW)
   async overview(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.CHANNEL_VIEW);
     return this.storiesService.getCompanyOverview(companyId, user.userId, user.role);
   }
 }
@@ -37,7 +37,6 @@ export class StoriesController {
   ) {}
 
   @Get()
-  @RequirePermission(Permission.CHANNEL_VIEW)
   async findMany(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
@@ -45,12 +44,11 @@ export class StoriesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CHANNEL_VIEW]);
     return this.storiesService.findMany(projectId, Number(page) || 1, Number(limit) || 20);
   }
 
   @Post()
-  @RequirePermission(Permission.CHANNEL_MANAGE)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_STORY_MEDIA_SIZE } }))
   async create(
     @Param('projectId') projectId: string,
@@ -59,22 +57,20 @@ export class StoriesController {
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: CreateStoryDto,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CHANNEL_MANAGE]);
     return this.storiesService.create(projectId, companyId, user.userId, file, dto);
   }
 
   @Post(':id/retry')
-  @RequirePermission(Permission.CHANNEL_MANAGE)
   async retry(@Param('projectId') projectId: string, @Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CHANNEL_MANAGE]);
     await this.storiesService.retry(id, projectId);
     return { success: true };
   }
 
   @Delete(':id')
-  @RequirePermission(Permission.CHANNEL_MANAGE)
   async remove(@Param('projectId') projectId: string, @Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CHANNEL_MANAGE]);
     await this.storiesService.remove(id, projectId);
     return { success: true };
   }
@@ -84,7 +80,6 @@ export class StoriesController {
   // для превью в списке историй самой CRM, поэтому нет причин делать медиа доступным по ссылке
   // без авторизации.
   @Get(':id/media')
-  @RequirePermission(Permission.CHANNEL_VIEW)
   async streamMedia(
     @Param('projectId') projectId: string,
     @Param('id') id: string,
@@ -92,7 +87,7 @@ export class StoriesController {
     @CurrentUser() user: AuthUser,
     @Res() res: Response,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CHANNEL_VIEW]);
     const story = await this.storiesService.findOneForMedia(id, projectId);
     try {
       const [stream, contentType] = await Promise.all([

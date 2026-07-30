@@ -2,8 +2,8 @@
 
 import { Fragment, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Users,
   TrendingUp,
@@ -22,6 +22,8 @@ import {
   ChevronDown,
   LucideIcon,
   Bot,
+  RefreshCw,
+  Timer,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
@@ -32,6 +34,9 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { StatsCard, DualStatsCard } from '@/components/shared/stats-card';
 import { PeriodSelector, PeriodValue } from '@/components/shared/period-selector';
+import { TRACKING_EVENT_TYPES } from '@/lib/tracking-events';
+import { ClientsTable, ClientRow, formatSecondsDuration } from '@/components/clients/clients-table';
+import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 
@@ -40,11 +45,23 @@ interface Project {
   name: string;
   status: string;
   channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null } | null;
+  disabledTrackingEvents: string[];
 }
 
 interface ProjectStats {
+  // totalClients/activeClients — за ВСЁ ВРЕМЯ жизни проекта, намеренно не зависят от
+  // PeriodSelector (держат синхронность с карточкой проекта в общем списке /projects, там
+  // периода нет вообще) — карточка "Клиентов" ниже использует period-scoped newClients, не
+  // это поле (баг-репорт пользователя 2026-07-24: "меняю периоды а количество остаётся тем же").
   totalClients: number;
   activeClients: number;
+  // Клиенты, подписавшиеся именно в выбранном периоде (Client.subscribedAt в окне since/until)
+  // — то, что реально должно стоять в карточке "Клиентов" на этой странице.
+  newClients: number;
+  // Отписавшиеся за тот же период (запрос пользователя 2026-07-24) — параллельная цифра,
+  // newClients её не вычитает (кто-то мог подписаться и отписаться за один и тот же период —
+  // и то и другое должно быть видно, а не взаимно погашаться).
+  unsubscribedClients: number;
   // Активировавшие бота (запрос пользователя 2026-07-17) — firstDialogueAt задан, включая
   // тех, кто никогда не был подписан ни на один канал (в отличие от totalClients/activeClients,
   // которые считают только "наших" через subscribedAt).
@@ -62,6 +79,9 @@ interface ProjectStats {
   // графика.
   totalDialogues: number;
   totalCrmDialogues: number;
+  // Среднее время от подписки до первого диалога, в секундах (запрос пользователя 2026-07-30) —
+  // null, если в периоде нет ни одного CRM-диалога с известной датой подписки.
+  avgSubscribeToDialogueSeconds: number | null;
   dailySubscribers: { date: string; count: number }[];
   dailyPageViews: { date: string; count: number }[];
   dailyLeads: { date: string; count: number }[];
@@ -80,14 +100,6 @@ interface FunnelStage {
   rate?: number;
 }
 
-interface ClientRow {
-  id: string;
-  tgFirstName: string | null;
-  tgUsername: string | null;
-  channelType: string | null;
-  country: string | null;
-  createdAt: string;
-}
 
 // Просмотры/клики приходят с бэка как два отдельных по-дневных массива (в отличие от
 // dailyDialogues, где merge уже сделан на сервере) — сливаем по дате здесь же, для одного
@@ -117,7 +129,10 @@ interface AdBreakdownRow {
 
 interface Leaderboards {
   buyers: { buyerId: string; name: string; clients: number; revenue: number }[];
-  pixels: { pixelId: string | null; label: string; conversions: number }[];
+  // Багфикс 2026-07-28 ("пиксель с реальным подписчиком отсутствовал в топе") — раньше только
+  // `conversions` (счётчик Purchase-событий, из-за чего пиксель без покупок пропадал из списка
+  // целиком), теперь как у остальных категорий: clients (новых подписчиков за период) + revenue.
+  pixels: { pixelId: string | null; label: string; clients: number; revenue: number }[];
   landings: { landingId: string; name: string; subscribers: number; revenue: number }[];
   campaigns: { campaignId: string; campaignName: string | null; clients: number; revenue: number }[];
 }
@@ -133,46 +148,113 @@ const previewLanding = async (landingId: string) => {
   window.open(URL.createObjectURL(blob), '_blank');
 };
 
+// Развёрнутая воронка на top-5 id одной категории лидерборда (запрос пользователя 2026-07-27:
+// "показывай и просмотры, диалоги, выручка, клики и конверсии из каждой в следующую") — GET
+// /projects/:id/leaderboards/:category/funnel, лениво подгружается только для реально открытой
+// вкладки (см. activeLeaderboardTab ниже), не на каждой загрузке страницы. pageViews/leads
+// отсутствуют у баеров (см. бэкенд-комментарий у ProjectsService.getBuyersFunnel) — атрибуция
+// баера резолвится только на подписке, просмотры/клики баеру принципиально не приписать.
+interface LeaderboardFunnelRow {
+  id: string;
+  pageViews?: number;
+  leads?: number;
+  subscribes: number;
+  dialogues: number;
+  purchases: number;
+  revenue: number;
+}
+
+type LeaderboardCategory = 'buyers' | 'pixels' | 'landings' | 'campaigns';
+
+// Компактная строка-воронка под каждым элементом лидерборда — сознательно НЕ полноразмерный
+// ConversionFunnel (5 карточек × 4 категории на странице было бы избыточно тяжело визуально),
+// просто иконка+число+% от предыдущего шага в один ряд, с переносом на мобильном. Тот же
+// цветовой язык (FUNNEL_STAGE_STYLE), что и у основной воронки проекта выше на этой же странице.
+function LeaderboardFunnelMini({ row }: { row: LeaderboardFunnelRow }) {
+  const stages: { key: string; icon: LucideIcon; color: string; count: number }[] = [];
+  if (row.pageViews !== undefined) stages.push({ key: 'pageViews', icon: Eye, color: '#7c3aed', count: row.pageViews });
+  if (row.leads !== undefined) stages.push({ key: 'leads', icon: MousePointerClick, color: '#0891b2', count: row.leads });
+  stages.push({ key: 'subscribes', icon: Users, color: '#2563eb', count: row.subscribes });
+  stages.push({ key: 'dialogues', icon: MessageCircle, color: '#16a34a', count: row.dialogues });
+  stages.push({ key: 'purchases', icon: Wallet, color: '#d97706', count: row.purchases });
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground mt-1.5 pt-1.5 border-t">
+      {stages.map((stage, i) => {
+        const prev = stages[i - 1];
+        const rate = prev && prev.count > 0 ? Math.round((stage.count / prev.count) * 100) : undefined;
+        const Icon = stage.icon;
+        return (
+          <Fragment key={stage.key}>
+            {i > 0 && <ChevronRight className="w-3 h-3 shrink-0" />}
+            <span
+              className="inline-flex items-center gap-0.5 shrink-0"
+              title={rate !== undefined ? `${rate}% от предыдущего шага` : undefined}
+            >
+              <Icon className="w-3 h-3 shrink-0" style={{ color: stage.color }} />
+              {stage.count}
+              {rate !== undefined && <span className="text-[10px]">({rate}%)</span>}
+            </span>
+          </Fragment>
+        );
+      })}
+      {row.revenue > 0 && <span className="font-medium text-foreground shrink-0">${row.revenue.toFixed(2)}</span>}
+    </div>
+  );
+}
+
 // Компактный лидерборд (запрос пользователя 2026-07-17: "топ баеров, топ пикселей, топ
 // лэндингов, топ кампаний") — общий рендер для всех 4 карточек, различаются только заголовком
 // и тем, что уже посчитано на бэке в GET /projects/:id/leaderboards. previewId — опционально,
-// сейчас используется только в "Топ лэндингов".
+// сейчас используется только в "Топ лэндингов". funnelById/funnelLoading — опционально,
+// передаются только для реально открытой вкладки (запрос пользователя 2026-07-27).
 function LeaderboardCard({
   title,
   items,
+  funnelById,
+  funnelLoading,
 }: {
   title: string;
-  items: { label: string; primary: string; secondary?: string; previewId?: string }[];
+  items: { id: string; label: string; primary: string; secondary?: string; previewId?: string }[];
+  funnelById?: Map<string, LeaderboardFunnelRow>;
+  funnelLoading?: boolean;
 }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">{title}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-3">
         {items.length === 0 && <p className="text-sm text-muted-foreground">Нет данных за период.</p>}
-        {items.map((item, i) => (
-          <div key={i} className="flex items-center justify-between text-sm gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-muted-foreground shrink-0">{i + 1}.</span>
-              <span className="truncate">{item.label}</span>
-              {item.previewId && (
-                <button
-                  type="button"
-                  onClick={() => previewLanding(item.previewId!)}
-                  className="shrink-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400"
-                  title="Предпросмотр лендинга"
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                </button>
-              )}
+        {items.map((item, i) => {
+          const funnel = funnelById?.get(item.id);
+          return (
+            <div key={item.id}>
+              <div className="flex items-center justify-between text-sm gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-muted-foreground shrink-0">{i + 1}.</span>
+                  <span className="truncate">{item.label}</span>
+                  {item.previewId && (
+                    <button
+                      type="button"
+                      onClick={() => previewLanding(item.previewId!)}
+                      className="shrink-0 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400"
+                      title="Предпросмотр лендинга"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-medium">{item.primary}</div>
+                  {item.secondary && <div className="text-xs text-muted-foreground">{item.secondary}</div>}
+                </div>
+              </div>
+              {funnel && <LeaderboardFunnelMini row={funnel} />}
+              {funnelLoading && !funnel && <p className="text-xs text-muted-foreground mt-1.5 pt-1.5 border-t">Загрузка воронки...</p>}
             </div>
-            <div className="text-right shrink-0">
-              <div className="font-medium">{item.primary}</div>
-              {item.secondary && <div className="text-xs text-muted-foreground">{item.secondary}</div>}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </CardContent>
     </Card>
   );
@@ -260,13 +342,55 @@ const PERIOD_LABELS: Record<PeriodValue['period'], string> = {
   custom: 'за период',
 };
 
+const PERIOD_VALUES = ['today', 'yesterday', '7d', '30d', 'custom'] as const;
+
+// Читает период из query-параметров ссылки (?period=...&from=...&to=...) — запрос пользователя
+// 2026-07-25: "при обновлении страницы должен остаться выбранный период" (раньше был просто
+// useState, сбрасывался на дефолт при каждой перезагрузке). По умолчанию — "Сегодня" (тот же
+// запрос: "изначально ставь период СЕГОДНЯ"), не "30 дней", как было.
+function readPeriodFromSearchParams(params: URLSearchParams): PeriodValue {
+  const period = params.get('period');
+  if (period === 'custom') {
+    const from = params.get('from') || undefined;
+    const to = params.get('to') || undefined;
+    if (from && to) return { period: 'custom', from, to };
+  }
+  if (period && (PERIOD_VALUES as readonly string[]).includes(period)) return { period: period as PeriodValue['period'] };
+  return { period: 'today' };
+}
+
 export default function ProjectOverviewPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
-  const canViewRevenue = hasPermission(user, 'STATS_VIEW_REVENUE');
-  const canViewTeamLeaderboards = hasPermission(user, 'STATS_VIEW_TEAM_LEADERBOARDS');
-  const [periodValue, setPeriodValue] = useState<PeriodValue>({ period: '30d' });
+  const canViewRevenue = hasPermission(user, id, 'STATS_VIEW_REVENUE');
+  const canViewTeamLeaderboards = hasPermission(user, id, 'STATS_VIEW_TEAM_LEADERBOARDS');
+  const [periodValue, setPeriodValueState] = useState<PeriodValue>(() => readPeriodFromSearchParams(searchParams));
+  // Запрос пользователя 2026-07-27: "показывай сразу как список на странице клиентов, со всеми
+  // параметрами, только без фильтров" — переиспользуем ClientsTable/ClientDetailDrawer 1:1,
+  // тот же компонент, что и на /projects/[id]/clients, а не свой урезанный рендер.
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+
+  const setPeriodValue = (next: PeriodValue) => {
+    setPeriodValueState(next);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('period', next.period);
+    if (next.period === 'custom') {
+      if (next.from) params.set('from', next.from); else params.delete('from');
+      if (next.to) params.set('to', next.to); else params.delete('to');
+    } else {
+      params.delete('from');
+      params.delete('to');
+    }
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
   const periodLabel = PERIOD_LABELS[periodValue.period];
+  // Графики по дням не показываем для однодневного периода (запрос пользователя 2026-07-29) —
+  // см. комментарий у Tabs ниже.
+  const isSingleDayPeriod = periodValue.period === 'today' || periodValue.period === 'yesterday';
   // Кастомный период шлём на бэк только когда обе даты выбраны — иначе остаёмся на
   // предыдущих данных вместо запроса с половиной диапазона.
   const periodReady = periodValue.period !== 'custom' || (!!periodValue.from && !!periodValue.to);
@@ -301,11 +425,54 @@ export default function ProjectOverviewPage() {
     enabled: periodReady,
   });
 
-  const { data: leaderboards } = useQuery({
+  // staleTime: Infinity (запрос пользователя 2026-07-28: "не подгружай каждый раз заново, а
+  // сохраняй для экономии ресурсов сервера, добавь кнопку обновления") — раз загруженные
+  // лидерборды/воронка больше не перезапрашиваются сами по себе (ни при возврате на вкладку, ни
+  // при повторном фокусе окна — тот и так глобально off, см. providers.tsx), только явным
+  // нажатием кнопки "Обновить" (refreshLeaderboards ниже) или сменой периода/вкладки — то и
+  // другое законно новые данные, а не просто "тот же запрос ещё раз".
+  const { data: leaderboards, isFetching: leaderboardsLoading } = useQuery({
     queryKey: ['project', id, 'leaderboards', periodParams],
     queryFn: async () => (await api.get<Leaderboards>(`/projects/${id}/leaderboards`, { params: periodParams })).data,
     enabled: periodReady,
+    staleTime: Infinity,
   });
+
+  // Развёрнутая воронка по вкладке (запрос пользователя 2026-07-27) — намеренно НЕ часть
+  // основного leaderboards-запроса выше: считается только для той категории, вкладку которой
+  // пользователь реально открыл (activeLeaderboardTab), id уже известны из уже загруженного
+  // leaderboards, второго похода "какие top-5" не нужно. Так обычный визит страницы проекта
+  // (лидерборды почти всегда закрыты) вообще не платит за эти доп. запросы к БД.
+  const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<LeaderboardCategory>(canViewTeamLeaderboards ? 'buyers' : 'pixels');
+
+  const activeLeaderboardIds: string[] = !leaderboards
+    ? []
+    : activeLeaderboardTab === 'buyers'
+      ? leaderboards.buyers.map((b) => b.buyerId).filter(Boolean)
+      : activeLeaderboardTab === 'pixels'
+        ? leaderboards.pixels.map((p) => p.pixelId).filter((v): v is string => !!v)
+        : activeLeaderboardTab === 'landings'
+          ? leaderboards.landings.map((l) => l.landingId)
+          : leaderboards.campaigns.map((c) => c.campaignId).filter(Boolean);
+
+  const { data: leaderboardFunnel, isFetching: leaderboardFunnelLoading } = useQuery({
+    queryKey: ['project', id, 'leaderboard-funnel', activeLeaderboardTab, periodParams, activeLeaderboardIds.join(',')],
+    queryFn: async () =>
+      (
+        await api.get<{ items: LeaderboardFunnelRow[] }>(`/projects/${id}/leaderboards/${activeLeaderboardTab}/funnel`, {
+          params: { ...periodParams, ids: activeLeaderboardIds.join(',') },
+        })
+      ).data.items,
+    enabled: periodReady && activeLeaderboardIds.length > 0,
+    staleTime: Infinity,
+  });
+  const leaderboardFunnelById = new Map((leaderboardFunnel ?? []).map((r) => [r.id, r]));
+
+  const refreshingLeaderboards = leaderboardsLoading || leaderboardFunnelLoading;
+  const refreshLeaderboards = () => {
+    queryClient.invalidateQueries({ queryKey: ['project', id, 'leaderboards'] });
+    queryClient.invalidateQueries({ queryKey: ['project', id, 'leaderboard-funnel'] });
+  };
 
   if (!project) return <p className="text-sm text-muted-foreground">Загрузка...</p>;
 
@@ -325,10 +492,15 @@ export default function ProjectOverviewPage() {
           )}
         </div>
         <div className="flex gap-2">
+          {/* Баг-репорт пользователя 2026-07-28: "не могу попасть на страницу история рассылок"
+              — кнопка вела прямиком на форму создания (pushes/new), минуя список/историю
+              рассылок (pushes) целиком, в отличие от соседних кнопок "Лендинги"/"Сценарии" (обе
+              ведут на список, создание — отдельной кнопкой уже на самой странице списка). Список
+              рассылок уже существовал и работал, просто до него не было пути из интерфейса. */}
           <Button
             nativeButton={false}
             render={
-              <Link href={`/projects/${id}/pushes/new`}>
+              <Link href={`/projects/${id}/pushes`}>
                 <Send className="w-4 h-4 mr-1.5" /> Рассылка
               </Link>
             }
@@ -346,8 +518,8 @@ export default function ProjectOverviewPage() {
             variant="outline"
             nativeButton={false}
             render={
-              <Link href={`/projects/${id}/automations`}>
-                <Workflow className="w-4 h-4 mr-1.5" /> Автоворонки
+              <Link href={`/projects/${id}/scenarios`}>
+                <Workflow className="w-4 h-4 mr-1.5" /> Сценарии
               </Link>
             }
           />
@@ -363,10 +535,35 @@ export default function ProjectOverviewPage() {
         </div>
       </div>
 
+      {/* Индикатор вкл/выкл пересылки событий в Facebook/TikTok по типу (запрос пользователя
+          2026-07-27) — сами свитчи находятся в /settings, вкладка "События", здесь только
+          сводка, чтобы было видно с первого взгляда, что сейчас выключено. */}
+      <div className="flex flex-wrap gap-1.5">
+        {TRACKING_EVENT_TYPES.map((eventType) => {
+          const isEnabled = !project.disabledTrackingEvents.includes(eventType.name);
+          return (
+            <Badge
+              key={eventType.name}
+              variant="outline"
+              className={`text-xs gap-1.5 ${isEnabled ? 'text-muted-foreground' : 'text-red-500 border-red-200 dark:border-red-900'}`}
+              title={eventType.description}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${isEnabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
+              {eventType.label}
+            </Badge>
+          );
+        })}
+      </div>
+
       <PeriodSelector value={periodValue} onChange={setPeriodValue} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatsCard label="Клиентов" value={stats?.totalClients ?? '—'} icon={Users} />
+        <StatsCard
+          label="Клиентов"
+          value={stats?.newClients ?? '—'}
+          icon={Users}
+          dangerHint={stats && stats.unsubscribedClients > 0 ? `−${stats.unsubscribedClients} отписались` : undefined}
+        />
         {/* "Активных" убрана по запросу пользователя 2026-07-18 — дублировала смысл
             "Активировали бота" (обе про то, кому можно слать пуши), оставили одну. */}
         <StatsCard label="Активировали бота" value={stats?.botActivatedClients ?? '—'} icon={Bot} />
@@ -389,12 +586,38 @@ export default function ProjectOverviewPage() {
           items={[
             { label: 'Диалоги', value: stats?.totalDialogues ?? '—', icon: MessageCircle },
             { label: 'Из CRM', value: stats?.totalCrmDialogues ?? '—', icon: MessageCircle },
+            // Среднее время от подписки до диалога (запрос пользователя 2026-07-30) — та же
+            // карточка, третьим пунктом, а не отдельная StatsCard: логически это уточнение
+            // именно диалоговых метрик рядом, а не самостоятельная величина.
+            {
+              label: 'Ср. время до диалога',
+              value: stats ? (stats.avgSubscribeToDialogueSeconds !== null ? formatSecondsDuration(stats.avgSubscribeToDialogueSeconds) : '—') : '—',
+              icon: Timer,
+            },
           ]}
         />
       </div>
 
-      {/* Графики — вкладки вместо сетки карточек (запрос пользователя 2026-07-17: "лучше
-          сделать как вкладки переключаемые"), тот же паттерн, что и лидерборды ниже. */}
+      {/* Графики по дням имеют смысл только для периода от нескольких дней (запрос пользователя
+          2026-07-28/29: "графики показывать только если выбран период а не один день") —
+          "Сегодня"/"Вчера" дают одну точку на линии. Воронка — не дневной график (снимок за
+          период), остаётся видна всегда, поэтому при однодневном периоде показываем её одну,
+          без остальных вкладок графиков. */}
+      {isSingleDayPeriod ? (
+        <div className="space-y-4">
+          <p className="text-sm text-muted-foreground rounded-lg border border-border bg-card p-4">
+            Графики по дням доступны для периода от 7 дней — на «Сегодня»/«Вчера» это была бы одна точка.
+          </p>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Воронка конверсий {periodLabel}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ConversionFunnel stages={funnel} />
+            </CardContent>
+          </Card>
+        </div>
+      ) : (
       <Tabs defaultValue="subscribers">
         <TabsList>
           <TabsTrigger value="subscribers">Подписчики</TabsTrigger>
@@ -541,6 +764,7 @@ export default function ProjectOverviewPage() {
           </Card>
         </TabsContent>
       </Tabs>
+      )}
 
       {!!adBreakdown?.length && (
         <Card>
@@ -586,50 +810,76 @@ export default function ProjectOverviewPage() {
       )}
 
       {/* Лидерборды — тоже вкладки (запрос пользователя 2026-07-17: "так же как и метрики
-          топ"), тот же паттерн, что и графики выше. */}
-      <Tabs defaultValue={canViewTeamLeaderboards ? 'buyers' : 'pixels'}>
-        <TabsList>
-          {canViewTeamLeaderboards && <TabsTrigger value="buyers">Топ баеров</TabsTrigger>}
-          <TabsTrigger value="pixels">Топ пикселей</TabsTrigger>
-          <TabsTrigger value="landings">Топ лэндингов</TabsTrigger>
-          <TabsTrigger value="campaigns">Топ кампаний</TabsTrigger>
-        </TabsList>
+          топ"), тот же паттерн, что и графики выше. Развёрнутая воронка (запрос пользователя
+          2026-07-27) подгружается только для реально открытой вкладки — activeLeaderboardTab. */}
+      <Tabs value={activeLeaderboardTab} onValueChange={(v) => v && setActiveLeaderboardTab(v as LeaderboardCategory)}>
+        <div className="flex items-center justify-between gap-2">
+          <TabsList>
+            {canViewTeamLeaderboards && <TabsTrigger value="buyers">Топ баеров</TabsTrigger>}
+            <TabsTrigger value="pixels">Топ пикселей</TabsTrigger>
+            <TabsTrigger value="landings">Топ лэндингов</TabsTrigger>
+            <TabsTrigger value="campaigns">Топ кампаний</TabsTrigger>
+          </TabsList>
+          {/* Запрос пользователя 2026-07-28: данные лидербордов/воронки больше не обновляются
+              сами по себе (staleTime: Infinity выше) — только по этой кнопке, чтобы не грузить
+              БД лишними запросами на каждое открытие вкладки/возврат на страницу. */}
+          <Button variant="ghost" size="sm" onClick={refreshLeaderboards} disabled={refreshingLeaderboards} className="shrink-0">
+            <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${refreshingLeaderboards ? 'animate-spin' : ''}`} />
+            Обновить
+          </Button>
+        </div>
 
         <TabsContent value="buyers" className="mt-4">
           <LeaderboardCard
             title="Топ баеров"
             items={(leaderboards?.buyers ?? []).map((b) => ({
+              id: b.buyerId,
               label: b.name,
               primary: `$${b.revenue.toFixed(2)}`,
               secondary: `${b.clients} клиентов`,
             }))}
+            funnelById={activeLeaderboardTab === 'buyers' ? leaderboardFunnelById : undefined}
+            funnelLoading={activeLeaderboardTab === 'buyers' && leaderboardFunnelLoading}
           />
         </TabsContent>
         <TabsContent value="pixels" className="mt-4">
           <LeaderboardCard
             title="Топ пикселей"
-            items={(leaderboards?.pixels ?? []).map((p) => ({ label: p.label, primary: `${p.conversions} конверсий` }))}
+            items={(leaderboards?.pixels ?? []).map((p) => ({
+              id: p.pixelId || 'none',
+              label: p.label,
+              primary: `$${p.revenue.toFixed(2)}`,
+              secondary: `${p.clients} клиентов`,
+            }))}
+            funnelById={activeLeaderboardTab === 'pixels' ? leaderboardFunnelById : undefined}
+            funnelLoading={activeLeaderboardTab === 'pixels' && leaderboardFunnelLoading}
           />
         </TabsContent>
         <TabsContent value="landings" className="mt-4">
           <LeaderboardCard
             title="Топ лэндингов"
             items={(leaderboards?.landings ?? []).map((l) => ({
+              id: l.landingId,
               label: l.name,
               primary: `$${l.revenue.toFixed(2)}`,
               secondary: `${l.subscribers} подписчиков`,
               previewId: l.landingId,
             }))}
+            funnelById={activeLeaderboardTab === 'landings' ? leaderboardFunnelById : undefined}
+            funnelLoading={activeLeaderboardTab === 'landings' && leaderboardFunnelLoading}
           />
         </TabsContent>
         <TabsContent value="campaigns" className="mt-4">
           <LeaderboardCard
             title="Топ кампаний"
             items={(leaderboards?.campaigns ?? []).map((c) => ({
+              id: c.campaignId,
               label: c.campaignName || c.campaignId,
               primary: `$${c.revenue.toFixed(2)}`,
               secondary: `${c.clients} клиентов`,
             }))}
+            funnelById={activeLeaderboardTab === 'campaigns' ? leaderboardFunnelById : undefined}
+            funnelLoading={activeLeaderboardTab === 'campaigns' && leaderboardFunnelLoading}
           />
         </TabsContent>
       </Tabs>
@@ -640,17 +890,16 @@ export default function ProjectOverviewPage() {
         </CardHeader>
         <CardContent className="space-y-2">
           {recentClients?.length === 0 && <p className="text-sm text-muted-foreground">Пока нет клиентов.</p>}
-          {recentClients?.map((client) => (
-            <div key={client.id} className="flex items-center justify-between py-1.5 text-sm">
-              <span>{client.tgFirstName || client.tgUsername || client.id}</span>
-              <span className="text-muted-foreground">{client.country || '—'}</span>
-            </div>
-          ))}
+          {recentClients && recentClients.length > 0 && (
+            <ClientsTable projectId={id} clients={recentClients} onSelect={setSelectedClientId} />
+          )}
           <Link href={`/projects/${id}/clients`} className="text-sm text-blue-600 dark:text-blue-400 hover:underline inline-block pt-1">
             Все клиенты →
           </Link>
         </CardContent>
       </Card>
+
+      <ClientDetailDrawer projectId={id} clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
     </div>
   );
 }

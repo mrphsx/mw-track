@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { Prisma, UserRole } from '@prisma/client';
+import { Client, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
 
@@ -16,13 +16,23 @@ export interface OverlapMatrix {
   pairs: OverlapPair[];
 }
 
+// Запрос пользователя 2026-07-30: "чтобы можно было сразу сравнить действие и параметры лида в
+// обеих проектах" — раньше здесь была узкая пара {hasPurchase, totalSpent, isSubscribed} на
+// каждую сторону, теперь полные строки Client (то же самое, что ClientsService.findMany уже
+// отдаёт для обычного списка клиентов — фронтенд рендерит их тем же ClientsTable, только двумя
+// колонками рядом).
 export interface OverlapDetailRow {
   tgUserId: string;
-  tgFirstName: string | null;
-  tgLastName: string | null;
-  tgUsername: string | null;
-  inA: { hasPurchase: boolean; totalSpent: string; isSubscribed: boolean };
-  inB: { hasPurchase: boolean; totalSpent: string; isSubscribed: boolean };
+  clientA: Client;
+  clientB: Client;
+}
+
+export interface OverlapDetailPage {
+  items: OverlapDetailRow[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
 }
 
 const ELEVATED_ROLES: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN];
@@ -103,41 +113,64 @@ export class AudienceService {
     };
   }
 
-  async getOverlapDetail(companyId: string, userId: string, role: UserRole, projectAId: string, projectBId: string): Promise<OverlapDetailRow[]> {
+  // Пагинация — запрос пользователя 2026-07-30 ("с пагинацией") — сортировка по tgUserId для
+  // стабильного порядка страниц (простой детерминированный ключ, не завязан ни на одну из двух
+  // сторон персонально). LIMIT/OFFSET применяются к самому списку общих tgUserId ДО дозагрузки
+  // полных строк Client — иначе при большом пересечении пришлось бы каждый раз тянуть всех
+  // клиентов с обеих сторон только чтобы показать одну страницу.
+  async getOverlapDetail(
+    companyId: string,
+    userId: string,
+    role: UserRole,
+    projectAId: string,
+    projectBId: string,
+    page: number,
+    limit: number,
+  ): Promise<OverlapDetailPage> {
     const projectsService = this.getProjectsService();
     await projectsService.assertAccess(projectAId, companyId, userId, role);
     await projectsService.assertAccess(projectBId, companyId, userId, role);
+
+    const sharedWhere = Prisma.sql`
+      c1."projectId" = ${projectAId} AND c2."projectId" = ${projectBId}
+      AND c1."companyId" = ${companyId} AND c2."companyId" = ${companyId}
+      AND c1."deletedAt" IS NULL AND c2."deletedAt" IS NULL
+      AND c1."tgUserId" IS NOT NULL
+    `;
+
+    const [{ count }] = await this.prisma.$queryRaw<{ count: bigint }[]>`
+      SELECT COUNT(DISTINCT c1."tgUserId")::bigint as count
+      FROM "Client" c1
+      JOIN "Client" c2 ON c1."tgUserId" = c2."tgUserId"
+      WHERE ${sharedWhere}
+    `;
+    const total = Number(count);
+    const totalPages = Math.ceil(total / limit);
+    if (total === 0) return { items: [], total: 0, page, limit, totalPages: 0 };
 
     const shared = await this.prisma.$queryRaw<{ tgUserId: string }[]>`
       SELECT DISTINCT c1."tgUserId"
       FROM "Client" c1
       JOIN "Client" c2 ON c1."tgUserId" = c2."tgUserId"
-      WHERE c1."projectId" = ${projectAId} AND c2."projectId" = ${projectBId}
-        AND c1."companyId" = ${companyId} AND c2."companyId" = ${companyId}
-        AND c1."deletedAt" IS NULL AND c2."deletedAt" IS NULL
-        AND c1."tgUserId" IS NOT NULL
+      WHERE ${sharedWhere}
+      ORDER BY c1."tgUserId"
+      LIMIT ${limit} OFFSET ${(page - 1) * limit}
     `;
     const tgUserIds = shared.map((r) => r.tgUserId);
-    if (tgUserIds.length === 0) return [];
 
     const [clientsA, clientsB] = await Promise.all([
       this.prisma.client.findMany({ where: { projectId: projectAId, tgUserId: { in: tgUserIds } } }),
       this.prisma.client.findMany({ where: { projectId: projectBId, tgUserId: { in: tgUserIds } } }),
     ]);
+    const byIdA = new Map(clientsA.map((c) => [c.tgUserId!, c]));
     const byIdB = new Map(clientsB.map((c) => [c.tgUserId!, c]));
 
-    return clientsA
-      .filter((a) => byIdB.has(a.tgUserId!))
-      .map((a) => {
-        const b = byIdB.get(a.tgUserId!)!;
-        return {
-          tgUserId: a.tgUserId!,
-          tgFirstName: a.tgFirstName,
-          tgLastName: a.tgLastName,
-          tgUsername: a.tgUsername,
-          inA: { hasPurchase: a.hasPurchase, totalSpent: a.totalSpent.toString(), isSubscribed: a.isSubscribed },
-          inB: { hasPurchase: b.hasPurchase, totalSpent: b.totalSpent.toString(), isSubscribed: b.isSubscribed },
-        };
-      });
+    // Порядок сохраняем по tgUserIds (уже отсортирован в SQL) — так строки A и B на фронтенде
+    // остаются попарно выровнены построчно между двумя колонками.
+    const items = tgUserIds
+      .filter((id) => byIdA.has(id) && byIdB.has(id))
+      .map((id) => ({ tgUserId: id, clientA: byIdA.get(id)!, clientB: byIdB.get(id)! }));
+
+    return { items, total, page, limit, totalPages };
   }
 }

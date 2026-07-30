@@ -57,6 +57,6 @@ export class JoinRequestApprovalProcessor {
     if (!sendWelcome) return;
 
     const channel = await this.prisma.channel.findUnique({ where: { id: channelId } });
-    if (channel) await this.telegramProvider.sendWelcomeMessage(String(tgUserId), channel);
+    if (channel) await this.telegramProvider.triggerScenario(String(tgUserId), channel, 'SUBSCRIBE');
   }
 }

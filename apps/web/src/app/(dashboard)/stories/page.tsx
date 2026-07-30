@@ -53,7 +53,7 @@ export default function StoriesPage() {
 
       <AboutCard />
 
-      {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!isLoading && overview && overview.connectedProjects.length > 0 && (
         <>
@@ -107,8 +107,8 @@ export default function StoriesPage() {
 function AboutCard() {
   return (
     <Card>
-      <CardContent className="p-5 space-y-2 text-sm text-gray-600">
-        <p className="font-medium text-gray-900">Что умеет этот модуль</p>
+      <CardContent className="p-5 space-y-2 text-sm text-muted-foreground">
+        <p className="font-medium text-foreground">Что умеет этот модуль</p>
         <p>
           Публикация Telegram Stories прямо из CRM, без необходимости открывать сам Telegram на
           телефоне — медиа, подпись и (по желанию) время публикации задаются здесь.
@@ -119,7 +119,7 @@ function AboutCard() {
           <li>Повтор публикации одной кнопкой при ошибке.</li>
           <li>Несколько подключённых личных аккаунтов — из одного места.</li>
         </ul>
-        <p className="text-xs text-gray-400">
+        <p className="text-xs text-muted-foreground">
           Доступно только для проектов с Telegram-каналом (любой режим) и подключённым личным
           аккаунтом — см. вкладку «Личный аккаунт» в настройках проекта.
         </p>
@@ -184,7 +184,7 @@ function UploadForm({ projectId }: { projectId: string }) {
             value={scheduledAt}
             onChange={(e) => setScheduledAt(e.target.value)}
           />
-          <p className="text-xs text-gray-400">Пусто — как можно скорее (в течение минуты).</p>
+          <p className="text-xs text-muted-foreground">Пусто — как можно скорее (в течение минуты).</p>
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
         {done && <p className="text-sm text-green-600">Загружено — см. «История публикаций».</p>}

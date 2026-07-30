@@ -17,6 +17,7 @@ import {
 import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RedisService } from '../../redis/redis.service';
 import { ProjectsService } from '../projects/projects.service';
 import { TrackingService } from './tracking.service';
 import { TrackEventDto } from './dto/track-event.dto';
@@ -30,6 +31,7 @@ export class TrackingController {
     private prisma: PrismaService,
     private projectsService: ProjectsService,
     private trackingService: TrackingService,
+    private redis: RedisService,
   ) {}
 
   // Браузерный SDK (track.js на лендинге) — публичный токен в URL, без подписи
@@ -108,6 +110,13 @@ export class TrackingController {
     @Param('publicToken') publicToken: string,
     @Query('code') code: string | undefined,
     @Query('landingId') landingId: string | undefined,
+    // fbp (запрос пользователя 2026-07-29, сверка с реальным примером конкурента) — _fbp cookie
+    // ставится клиентским fbevents.js уже ПОСЛЕ рендера страницы, поэтому LandingRendererService
+    // не может знать его в момент записи start:<code>/landing-visit-attribution в Redis. SDK
+    // (apps/sdk/src/browser.ts) читает cookie в момент клика по кнопке Telegram и добавляет сюда
+    // — донашиваем его в уже существующие блоки атрибуции задним числом, тем же путём, что и
+    // fbclid/ip/userAgent.
+    @Query('fbp') fbp: string | undefined,
     @Res() res: Response,
   ) {
     // code — одноразовый (см. комментарий выше), поэтому ответ никогда не должен оседать в
@@ -115,6 +124,13 @@ export class TrackingController {
     // redirect-доменом, запрос пользователя 2026-07-20): закэшированный 302 отдавал бы ВСЕМ
     // следующим посетителям чужую атрибуцию/устаревший инвайт вместо честного редиректа.
     res.set('Cache-Control', 'no-store');
+
+    if (fbp) {
+      await Promise.all([
+        code ? this.patchCachedAttribution(`start:${code}`, { fbp }) : Promise.resolve(),
+        landingId ? this.patchCachedAttribution(`landing-visit-attribution:${landingId}`, { fbp }) : Promise.resolve(),
+      ]);
+    }
 
     const project = await this.projectsService.findByPublicToken(publicToken);
 
@@ -154,6 +170,20 @@ export class TrackingController {
     }
 
     res.redirect(302, url);
+  }
+
+  // Донашивает поля (сейчас — только fbp) в уже существующий JSON-блок атрибуции в Redis,
+  // не трогая TTL (KEEPTTL) и не создавая ключ, если его ещё нет (запись без остальной
+  // атрибуции рядом бесполезна — просто ключ не найден, тихо ничего не делаем).
+  private async patchCachedAttribution(key: string, patch: Record<string, string>): Promise<void> {
+    const raw = await this.redis.get(key);
+    if (!raw) return;
+    try {
+      const merged = { ...JSON.parse(raw), ...patch };
+      await this.redis.set(key, JSON.stringify(merged), 'KEEPTTL');
+    } catch {
+      // битый JSON в кэше — не должно ронять сам редирект
+    }
   }
 
   private getClientIp(req: Request): string {

@@ -27,10 +27,11 @@ export interface User {
   role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR';
   avatarUrl?: string | null;
   company?: Company;
-  // Гранулярные права (запрос пользователя 2026-07-17) — [] для elevated ролей
+  // Гранулярные права, per-project (запрос пользователя 2026-07-28) — {} для elevated ролей
   // (OWNER/ADMIN/SUPER_ADMIN, см. @/lib/permissions.ts hasPermission — они не проверяются по
-  // списку вообще), реальный список для BUYER/OPERATOR. Приходит из /auth/login|refresh|me.
-  permissions: string[];
+  // списку вообще), реальная карта projectId -> Permission[] для BUYER/OPERATOR. Приходит из
+  // /auth/login|refresh|me. Только UI-подсказка — реальная защита всегда на бэкенде.
+  permissionsByProject: Record<string, string[]>;
 }
 
 interface RegisterPayload {

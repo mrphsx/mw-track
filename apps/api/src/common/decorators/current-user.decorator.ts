@@ -1,16 +1,15 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import { Permission, UserRole } from '@prisma/client';
+import { UserRole } from '@prisma/client';
 
 // Форма request.user, которую кладёт JwtStrategy.validate() — общий тип, чтобы не дублировать
 // один и тот же локальный интерфейс в каждом контроллере (было в ProjectsController).
+// Права (запрос пользователя 2026-07-28, per-project редизайн) больше не приходят из JWT —
+// проверяются DB-backed через ProjectsService.assertAccess/PermissionsService.hasPermission,
+// см. permissions.service.ts.
 export interface AuthUser {
   userId: string;
   companyId: string;
   role: UserRole;
-  // Гранулярные права (запрос пользователя 2026-07-17) — пусто для elevated ролей
-  // (OWNER/ADMIN/SUPER_ADMIN, см. PermissionsGuard/isElevatedRole), реальный список для
-  // BUYER/OPERATOR. Приходит из JWT payload, см. AuthService.issueTokens.
-  permissions: Permission[];
 }
 
 // @CurrentUser() — получить request.user (userId, companyId, role из JWT payload)

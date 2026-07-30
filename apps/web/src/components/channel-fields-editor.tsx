@@ -201,7 +201,7 @@ export function ChannelFieldsEditor({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-gray-500">{TG_MODE_HINT[value.tgMode]}</p>
+            <p className="text-xs text-muted-foreground">{TG_MODE_HINT[value.tgMode]}</p>
           </div>
 
           {value.tgMode === 'PERSONAL_DM' ? (
@@ -216,7 +216,7 @@ export function ChannelFieldsEditor({
             </div>
           ) : (
             <>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-muted-foreground">
                 Создайте бота через @BotFather
                 {value.tgMode !== 'BOT_DIRECT' && ', добавьте его администратором в ваш канал'}, вставьте токен ниже.
               </p>
@@ -252,7 +252,7 @@ export function ChannelFieldsEditor({
 
       {value.type === 'WHATSAPP' && (
         <>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-muted-foreground">
             Подключите номер к 360dialog (BSP для WhatsApp Cloud API), вставьте API-ключ канала ниже —
             вебхук в 360dialog мы зарегистрируем автоматически.
           </p>
@@ -269,7 +269,7 @@ export function ChannelFieldsEditor({
 
       {value.type === 'INSTAGRAM' && (
         <>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-muted-foreground">
             Нужна Facebook Page, привязанная к Instagram Professional аккаунту, и Page Access
             Token с правом instagram_manage_messages. Подписку Page на вебхуки мы оформим
             автоматически — единый Callback URL для всех Instagram-каналов настраивается один

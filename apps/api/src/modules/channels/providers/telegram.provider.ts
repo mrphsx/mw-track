@@ -11,8 +11,40 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { RedisService } from '../../../redis/redis.service';
 import { ChannelProvider, SendMessageOptions, SendMessageResult, UserStatus } from './channel.provider.interface';
 import { ApproveJoinRequestJob } from '../join-request-approval.processor';
-import { ScenarioMessageJob } from '../bot-scenario-message.processor';
+import { BotScenarioEngineService } from '../bot-scenario-engine.service';
 import { VideoProcessingService } from '../video-processing.service';
+
+// Форма JSON, кэшируемого LandingRendererService.injectTrackingScripts под
+// landing-visit-attribution:<landingId> (см. getCachedLandingAttribution ниже) — buyerRef, не
+// buyerId, т.к. это сырое имя семантического ключа рекламных макросов до маппинга на
+// FindOrCreateClientInput.buyerId.
+interface CachedLandingAttribution {
+  fbclid?: string | null;
+  ttclid?: string | null;
+  // Запрос пользователя 2026-07-29 (сверка с реальным примером конкурента) — были доступны в
+  // LandingRendererService.trackingData всё это время, просто не копировались в этот кэш (баг),
+  // из-за чего PRIVATE_CHANNEL_REQUEST-подписчики уходили в Facebook почти без user_data. fbp
+  // отдельно — cookie ставится клиентским JS уже после рендера страницы, добавляется через
+  // TrackingController.tgRedirect (см. getCachedLandingAttribution ниже, merge при клике).
+  ip?: string | null;
+  userAgent?: string | null;
+  countryCode?: string | null;
+  fbp?: string | null;
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
+  utmContent?: string | null;
+  pixelId?: string | null;
+  adId?: string | null;
+  adName?: string | null;
+  adsetId?: string | null;
+  adsetName?: string | null;
+  campaignId?: string | null;
+  campaignName?: string | null;
+  placement?: string | null;
+  siteSourceName?: string | null;
+  buyerRef?: string | null;
+}
 
 @Injectable()
 export class TelegramProvider implements ChannelProvider {
@@ -27,8 +59,11 @@ export class TelegramProvider implements ChannelProvider {
     private trackingService: TrackingService,
     private config: ConfigService,
     private videoProcessing: VideoProcessingService,
+    // BotScenarioEngineService резолвит TelegramProvider обратно лениво через ModuleRef (см.
+    // комментарий там) — здесь безопасна обычная конструкторная инъекция, цикл не замыкается,
+    // потому что обратное ребро не участвует в графе Nest вообще.
+    private scenarioEngine: BotScenarioEngineService,
     @InjectQueue('join-request-approval') private joinRequestQueue: Queue<ApproveJoinRequestJob>,
-    @InjectQueue('bot-scenario-message') private scenarioQueue: Queue<ScenarioMessageJob>,
   ) {}
 
   getBot(channelId: string): Bot | undefined {
@@ -84,7 +119,7 @@ export class TelegramProvider implements ChannelProvider {
       }
       const clientId = ctx.match[1];
       try {
-        await this.clientsService.recordManualDialogue(clientId, channel.projectId);
+        await this.clientsService.recordManualDialogue(clientId, channel.projectId, 'MANAGER_CONFIRM');
         await ctx.answerCallbackQuery({ text: 'Диалог записан' });
         await ctx.editMessageReplyMarkup();
         const text = ctx.callbackQuery.message?.text;
@@ -291,22 +326,31 @@ export class TelegramProvider implements ChannelProvider {
 
   // Приблизительная страна клиента для PRIVATE_CHANNEL_REQUEST (запрос пользователя
   // 2026-07-04) — Telegram Bot API вообще не отдаёт страну пользователя, единственный
-  // источник — IP визита на лендинг, закэшированный LandingRendererService в Redis на 5 минут
-  // (ключ landing-visit-country:{landingId}). Осознанно приблизительно: если на лендинг
-  // почти одновременно зайдёт два разных человека, может подставиться не тот — согласовано.
+  // источник — IP визита на лендинг, закэшированный LandingRendererService в Redis на 30 минут
+  // (ключ landing-visit-country:{landingId}, LANDING_VISIT_TTL_SECONDS — поднято с 5 минут
+  // 2026-07-24, см. комментарий там же). Осознанно приблизительно: если на лендинг почти
+  // одновременно зайдёт два разных человека, может подставиться не тот — согласовано.
   private async getCachedLandingCountry(landingId: string | undefined): Promise<string | undefined> {
     if (!landingId) return undefined;
     const cached = await this.redis.get(`landing-visit-country:${landingId}`);
     return cached ?? undefined;
   }
 
-  // Метка баера (Фаза 3.6, Team Analytics) — тот же приём и та же приблизительность, что и у
-  // getCachedLandingCountry выше, тот же 5-минутный кэш по landingId
-  // (LandingRendererService.injectTrackingScripts).
-  private async getCachedLandingBuyer(landingId: string | undefined): Promise<string | undefined> {
+  // Полный блок атрибуции (fbclid/ttclid/utm/пиксель/рекламные макросы + метка баера, Фаза 3.6)
+  // — тот же приём и та же приблизительность, что и у getCachedLandingCountry выше, тот же
+  // 30-минутный кэш по landingId (LandingRendererService.injectTrackingScripts). Раньше здесь
+  // читался только buyerRef — баг-репорт пользователя 2026-07-23: у новых подписчиков
+  // PRIVATE_CHANNEL_REQUEST не было вообще никаких FB-данных, и Subscribe/Dialogue-события не
+  // доходили до Facebook (TrackingService.recordEvent требует реальную атрибуцию с 2026-07-21).
+  private async getCachedLandingAttribution(landingId: string | undefined): Promise<CachedLandingAttribution | undefined> {
     if (!landingId) return undefined;
-    const cached = await this.redis.get(`landing-visit-buyer:${landingId}`);
-    return cached ?? undefined;
+    const cached = await this.redis.get(`landing-visit-attribution:${landingId}`);
+    if (!cached) return undefined;
+    try {
+      return JSON.parse(cached);
+    } catch {
+      return undefined;
+    }
   }
 
   private async handleJoinRequest(ctx: Context, channel: Channel) {
@@ -351,16 +395,35 @@ export class TelegramProvider implements ChannelProvider {
 
     try {
       const bot = this.bots.get(channel.id);
-      const [tgPhotoUrl, country, buyerId] = await Promise.all([
+      const [tgPhotoUrl, country, attribution] = await Promise.all([
         bot ? this.fetchProfilePhotoFileId(bot, tgUser.id) : undefined,
         this.getCachedLandingCountry(landingId),
-        this.getCachedLandingBuyer(landingId),
+        this.getCachedLandingAttribution(landingId),
       ]);
 
       const client = await this.clientsService.findOrCreate({
         projectId: channel.projectId,
         landingId,
-        buyerId,
+        buyerId: attribution?.buyerRef ?? undefined,
+        fbclid: attribution?.fbclid ?? undefined,
+        ttclid: attribution?.ttclid ?? undefined,
+        ipAddress: attribution?.ip ?? undefined,
+        userAgent: attribution?.userAgent ?? undefined,
+        fbp: attribution?.fbp ?? undefined,
+        countryCode: attribution?.countryCode ?? undefined,
+        utmSource: attribution?.utmSource ?? undefined,
+        utmMedium: attribution?.utmMedium ?? undefined,
+        utmCampaign: attribution?.utmCampaign ?? undefined,
+        utmContent: attribution?.utmContent ?? undefined,
+        pixelId: attribution?.pixelId ?? undefined,
+        adId: attribution?.adId ?? undefined,
+        adName: attribution?.adName ?? undefined,
+        adsetId: attribution?.adsetId ?? undefined,
+        adsetName: attribution?.adsetName ?? undefined,
+        campaignId: attribution?.campaignId ?? undefined,
+        campaignName: attribution?.campaignName ?? undefined,
+        placement: attribution?.placement ?? undefined,
+        siteSourceName: attribution?.siteSourceName ?? undefined,
         tgUserId: String(tgUser.id),
         tgUsername: tgUser.username,
         tgFirstName: tgUser.first_name,
@@ -427,7 +490,7 @@ export class TelegramProvider implements ChannelProvider {
         throw error;
       }
     }
-    if (sendWelcome) await this.sendWelcomeMessage(String(tgUserId), channel);
+    if (sendWelcome) await this.triggerScenario(String(tgUserId), channel, 'SUBSCRIBE');
   }
 
   private async handleStart(ctx: Context, channel: Channel) {
@@ -442,6 +505,55 @@ export class TelegramProvider implements ChannelProvider {
     // ботов, где основной сценарий входа — именно /start (баг-репорт пользователя 2026-07-17:
     // "после того как пользователь написал боту и активировал его... бот не пишется как
     // активированным").
+    // Атрибуция (fbclid/pixelId/рекламные макросы) читается ДО recordInboundMessage ниже и
+    // передаётся в него напрямую (не только через отдельный updateTracking) — баг-репорт
+    // пользователя 2026-07-23: для BOT_DIRECT recordInboundMessage тут же шлёт Dialogue-событие
+    // (countBotAsDialogue), которое проверяет атрибуцию клиента (TrackingService.recordEvent →
+    // hasAdAttribution). Если это самое первое сообщение от нового клиента, recordInboundMessage
+    // сам его создаёт (findOrCreate) — отдельный updateTracking ПОСЛЕ него был бы бесполезен
+    // (клиента для апдейта ещё не существовало в момент чтения), поэтому атрибуция передаётся
+    // сюда явно, а updateTracking остаётся для случая, когда клиент уже существовал раньше.
+    let attribution: {
+      fbclid?: string; ttclid?: string; ip?: string; userAgent?: string; countryCode?: string; fbp?: string;
+      utmSource?: string; utmCampaign?: string; pixelId?: string;
+      adId?: string; adName?: string; adsetId?: string; adsetName?: string; campaignId?: string;
+      campaignName?: string; placement?: string; siteSourceName?: string; buyerRef?: string;
+    } | undefined;
+
+    if (startParam) {
+      const trackingDataRaw = await this.redis.get(`start:${startParam}`);
+      if (trackingDataRaw) {
+        attribution = JSON.parse(trackingDataRaw);
+
+        await this.clientsService.updateTracking(String(ctx.from?.id), channel.projectId, {
+          fbclid: attribution?.fbclid,
+          ttclid: attribution?.ttclid,
+          // Тот же баг, что нашли в findOrCreate/handleJoinRequest (запрос пользователя
+          // 2026-07-29) — ip/userAgent/countryCode/fbp были в этом же JSON-блоке всё это время
+          // (trackingData в LandingRendererService), просто не читались тут.
+          ipAddress: attribution?.ip,
+          userAgent: attribution?.userAgent,
+          countryCode: attribution?.countryCode,
+          fbp: attribution?.fbp,
+          utmSource: attribution?.utmSource,
+          utmCampaign: attribution?.utmCampaign,
+          pixelId: attribution?.pixelId,
+          adId: attribution?.adId,
+          adName: attribution?.adName,
+          adsetId: attribution?.adsetId,
+          adsetName: attribution?.adsetName,
+          campaignId: attribution?.campaignId,
+          campaignName: attribution?.campaignName,
+          placement: attribution?.placement,
+          siteSourceName: attribution?.siteSourceName,
+          buyerId: attribution?.buyerRef,
+        });
+
+        // Одноразовый код — удаляется после использования
+        await this.redis.del(`start:${startParam}`);
+      }
+    }
+
     if (ctx.from?.id) {
       try {
         await this.clientsService.recordInboundMessage(channel.projectId, {
@@ -452,51 +564,27 @@ export class TelegramProvider implements ChannelProvider {
           treatAsSubscriber: false,
           viaBot: true,
           countBotAsDialogue: channel.tgMode === 'BOT_DIRECT',
+          buyerId: attribution?.buyerRef,
+          fbclid: attribution?.fbclid,
+          ttclid: attribution?.ttclid,
+          ipAddress: attribution?.ip,
+          userAgent: attribution?.userAgent,
+          countryCode: attribution?.countryCode,
+          fbp: attribution?.fbp,
+          utmSource: attribution?.utmSource,
+          utmCampaign: attribution?.utmCampaign,
+          pixelId: attribution?.pixelId,
+          adId: attribution?.adId,
+          adName: attribution?.adName,
+          adsetId: attribution?.adsetId,
+          adsetName: attribution?.adsetName,
+          campaignId: attribution?.campaignId,
+          campaignName: attribution?.campaignName,
+          placement: attribution?.placement,
+          siteSourceName: attribution?.siteSourceName,
         });
       } catch (error) {
         this.logger.warn(`recordInboundMessage (start) failed for channel ${channel.id}: ${(error as Error).message}`);
-      }
-    }
-
-    if (startParam) {
-      const trackingDataRaw = await this.redis.get(`start:${startParam}`);
-      if (trackingDataRaw) {
-        const {
-          fbclid,
-          ttclid,
-          utmSource,
-          utmCampaign,
-          pixelId,
-          adId,
-          adName,
-          adsetId,
-          adsetName,
-          campaignId,
-          campaignName,
-          placement,
-          siteSourceName,
-          buyerRef,
-        } = JSON.parse(trackingDataRaw);
-
-        await this.clientsService.updateTracking(String(ctx.from?.id), channel.projectId, {
-          fbclid,
-          ttclid,
-          utmSource,
-          utmCampaign,
-          pixelId,
-          adId,
-          adName,
-          adsetId,
-          adsetName,
-          campaignId,
-          campaignName,
-          placement,
-          siteSourceName,
-          buyerId: buyerRef,
-        });
-
-        // Одноразовый код — удаляется после использования
-        await this.redis.del(`start:${startParam}`);
       }
     }
 
@@ -786,76 +874,54 @@ export class TelegramProvider implements ChannelProvider {
     await this.triggerScenario(String(tgUserId), channel, 'DEFAULT');
   }
 
-  // Находит активный сценарий по (channel, triggerType, command) и отправляет его — сразу
-  // либо отложенной джобой (BotScenario.delaySeconds), тот же принцип, что и
-  // approveJoinRequestMaybeDelayed. Публичный — вызывается и отсюда (message:text/
-  // chat_member), и из ChannelsService.triggerScenario (канало-агностичная обёртка,
-  // используется из PurchasesService для FIRST_DEPOSIT/REPEAT_DEPOSIT).
+  // Находит активный сценарий по (channel, triggerType, command) и запускает его цепочку
+  // шагов через BotScenarioEngineService (запрос пользователя 2026-07-22, объединение
+  // сценариев с автоворонками — сообщение/задержка/условие теперь могут повторяться сколько
+  // угодно раз подряд, а не одно сообщение с одной задержкой, как раньше). Публичный —
+  // вызывается отсюда (message:text/chat_member/join-request), из ChannelsService.
+  // triggerScenario (канало-агностичная обёртка, используется из PurchasesService для
+  // FIRST_DEPOSIT/REPEAT_DEPOSIT) и из approveJoinRequestMaybeDelayed/
+  // JoinRequestApprovalProcessor с triggerType='SUBSCRIBE' — замена бывшего одиночного
+  // sendWelcomeMessage (запрос пользователя 2026-07-25: приветственное сообщение переехало
+  // из настроек бота в обычный сценарий с триггером "Подписка", тот же движок цепочки шагов,
+  // что и у остальных). clientId — best-effort (сценарии срабатывают и для холодных контактов
+  // без Client вообще, см. BotScenarioEngineService.evaluateCondition).
   async triggerScenario(channelUserId: string, channel: Channel, triggerType: BotScenarioTrigger, command?: string): Promise<void> {
     const scenario = await this.prisma.botScenario.findFirst({
-      where: { channelId: channel.id, triggerType, command: command ?? '', isActive: true, deletedAt: null },
+      where: { channelId: channel.id, triggerType, command: command ?? '', isActive: true, deletedAt: null, isAbTestVariant: false },
     });
     if (!scenario) return; // сценарий просто не настроен — в т.ч. нормальный случай для DEFAULT
 
-    if (scenario.delaySeconds > 0) {
-      await this.scenarioQueue.add(
-        'send-scenario-message',
-        { channelId: channel.id, tgUserId: channelUserId, scenarioId: scenario.id },
-        { delay: scenario.delaySeconds * 1000, removeOnComplete: true, removeOnFail: 50 },
-      );
-      return;
+    const chosenId = await this.pickAbTestVariant(scenario);
+
+    const client = await this.clientsService.findByTgId(channelUserId, channel.projectId);
+    await this.scenarioEngine.trigger(chosenId, channelUserId, channel, client?.id);
+  }
+
+  // A/B-тест сценариев (запрос пользователя 2026-07-25, "как мы сделали для груп лэндингов") —
+  // случайный взвешенный выбор варианта НА КАЖДОЕ срабатывание, без привязки к клиенту
+  // (согласовано с пользователем явно, тот же принцип, что уже принят для A/B лендингов —
+  // см. LandingRendererService.pickAbTestGroupVariant, здесь тот же алгоритм). Для одноразовых
+  // триггеров (SUBSCRIBE/FIRST_DEPOSIT/UNSUBSCRIBE) это не создаёт разночтений — повторного
+  // срабатывания физически не бывает; для повторяющихся (REPEAT_DEPOSIT/DEFAULT/COMMAND) один
+  // и тот же клиент может со временем получить оба варианта — статистика A/B считает это как
+  // есть, не пытается разделить клиентов "поровну" между вариантами.
+  private async pickAbTestVariant(primary: BotScenario): Promise<string> {
+    if (!primary.abTestGroupId) return primary.id;
+
+    const members = await this.prisma.botScenario.findMany({
+      where: { abTestGroupId: primary.abTestGroupId, isActive: true, deletedAt: null },
+      select: { id: true, abTestWeight: true },
+    });
+    if (members.length <= 1) return primary.id;
+
+    const totalWeight = members.reduce((sum, m) => sum + (m.abTestWeight ?? 0), 0) || members.length;
+    let roll = Math.random() * totalWeight;
+    for (const m of members) {
+      roll -= m.abTestWeight ?? totalWeight / members.length;
+      if (roll <= 0) return m.id;
     }
-
-    await this.sendScenarioMessage(channelUserId, scenario, channel);
-  }
-
-  // Собирает SendMessageOptions из сценария (та же форма, что и у приветствия — текст/медиа/
-  // кнопки) и отправляет. Публичный — вызывается и из triggerScenario (без задержки), и из
-  // BotScenarioMessageProcessor (с задержкой).
-  async sendScenarioMessage(channelUserId: string, scenario: BotScenario, channel: Channel): Promise<void> {
-    const buttons = (scenario.buttons as Array<{ text: string; url: string }> | null) || undefined;
-    const mediaUrl = scenario.mediaKey
-      ? `${this.config.get<string>('API_URL')}/api/v1/channels/${channel.id}/scenarios/${scenario.id}/media`
-      : undefined;
-
-    await this.sendMessage(
-      channelUserId,
-      {
-        text: scenario.messageText || '',
-        mediaUrl,
-        mediaType: (scenario.mediaType?.toLowerCase() as SendMessageOptions['mediaType']) || undefined,
-        buttons,
-      },
-      channel,
-    );
-  }
-
-  // Собирает SendMessageOptions из настроек канала (текст/медиа/кнопки) и отправляет —
-  // вынесено из handleJoinRequest отдельным методом, т.к. используется только здесь (одно
-  // приветственное сообщение на одобрение заявки, см. описание фичи в 15_PHASES.md). Медиа
-  // отдаётся Telegram-у не байтами, а публичной ссылкой на самих себя
-  // (GET /channels/:id/welcome-media, см. ChannelsService.streamWelcomeMedia) — тот же приём,
-  // что и mediaUrl у Push-рассылок, только источник — наш собственный API, а не сторонний хостинг.
-  // Публичный — вызывается и отсюда (handleJoinRequest, без задержки), и из
-  // JoinRequestApprovalProcessor (с задержкой, Channel.tgJoinDelaySeconds).
-  async sendWelcomeMessage(channelUserId: string, channel: Channel): Promise<void> {
-    if (!channel.tgWelcomeMessage && !channel.tgWelcomeMediaKey) return;
-
-    const buttons = (channel.tgWelcomeButtons as Array<{ text: string; url: string }> | null) || undefined;
-    const mediaUrl = channel.tgWelcomeMediaKey
-      ? `${this.config.get<string>('API_URL')}/api/v1/channels/${channel.id}/welcome-media`
-      : undefined;
-
-    await this.sendMessage(
-      channelUserId,
-      {
-        text: channel.tgWelcomeMessage || '',
-        mediaUrl,
-        mediaType: (channel.tgWelcomeMediaType?.toLowerCase() as SendMessageOptions['mediaType']) || undefined,
-        buttons,
-      },
-      channel,
-    );
+    return members[members.length - 1].id;
   }
 
   async sendMessage(channelUserId: string, options: SendMessageOptions, channel: Channel): Promise<SendMessageResult> {

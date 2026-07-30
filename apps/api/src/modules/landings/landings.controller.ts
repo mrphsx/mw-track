@@ -1,11 +1,11 @@
-import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Patch, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { Permission } from '@prisma/client';
 import { Public } from '../../common/decorators/public.decorator';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
+import { PermissionsService } from '../../common/permissions/permissions.service';
 import { ProjectsService } from '../projects/projects.service';
 import { LandingsService } from './landings.service';
 import { LandingRendererService } from './landing-renderer.service';
@@ -20,14 +20,15 @@ export class LandingsController {
     private landingsService: LandingsService,
     private rendererService: LandingRendererService,
     private projectsService: ProjectsService,
+    private permissionsService: PermissionsService,
   ) {}
 
   // Buyer/Operator видят только лендинги проектов, к которым у них есть ProjectAccess —
   // остальные роуты ниже трогают лендинг по его id напрямую, поэтому проверяем через его
   // projectId (см. LandingsService.findOne, единственный, который отдаёт projectId).
-  private async assertAccess(id: string, companyId: string, user: AuthUser): Promise<void> {
+  private async assertAccess(id: string, companyId: string, user: AuthUser, requiredPermissions?: Permission[]): Promise<void> {
     const landing = await this.landingsService.findOne(id, companyId);
-    await this.projectsService.assertAccess(landing.projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(landing.projectId, companyId, user.userId, user.role, requiredPermissions);
   }
 
   @Get('templates')
@@ -46,56 +47,56 @@ export class LandingsController {
 
   // Отдельная страница /landings (все лендинги компании сразу, не только внутри одного
   // проекта) — эндпоинт объявлен раньше ':id', чтобы Nest не пытался матчить пустой path
-  // как параметр.
+  // как параметр. Разрешение здесь не привязано к конкретному проекту (список company-wide) —
+  // проверяем "есть ли LANDINGS_VIEW хотя бы на одном проекте", реальная фильтрация по
+  // конкретным проектам — внутри LandingsService.findAllForCompany.
   @Get()
-  @RequirePermission(Permission.LANDINGS_VIEW)
-  findAllForCompany(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+  async findAllForCompany(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.LANDINGS_VIEW);
     return this.landingsService.findAllForCompany(companyId, user.userId, user.role);
   }
 
   @Get(':id')
-  @RequirePermission(Permission.LANDINGS_VIEW)
   async findOne(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
     return this.landingsService.findOne(id, companyId);
   }
 
   @Patch(':id')
-  @RequirePermission(Permission.LANDINGS_EDIT)
   async update(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: UpdateLandingDto) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.update(id, companyId, dto);
   }
 
   @Post(':id/publish')
-  @RequirePermission(Permission.LANDINGS_EDIT)
   async publish(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.publish(id, companyId);
   }
 
   @Post(':id/unpublish')
-  @RequirePermission(Permission.LANDINGS_EDIT)
   async unpublish(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.unpublish(id, companyId);
   }
 
+  // Багфикс 2026-07-28 (аудит разрешений сотрудников): раньше ни @RequirePermission, ни
+  // assertAccess вообще — любой сотрудник компании мог посмотреть превью ЛЮБОГО лендинга
+  // компании, зная его id, независимо от ProjectAccess к конкретному проекту.
   @Get(':id/preview')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  preview(@Param('id') id: string, @Company() companyId: string) {
+  async preview(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
     return this.rendererService.renderPreviewHtml(id, companyId);
   }
 
   @Get(':id/stats')
-  @RequirePermission(Permission.LANDINGS_VIEW)
   async stats(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
     return this.landingsService.getStats(id, companyId);
   }
 
   @Post(':id/upload')
-  @RequirePermission(Permission.LANDINGS_EDIT)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_ZIP_SIZE } }))
   async upload(
     @Param('id') id: string,
@@ -103,19 +104,17 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.uploadCustomLanding(id, companyId, file);
   }
 
   @Delete(':id')
-  @RequirePermission(Permission.LANDINGS_DELETE)
   async remove(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_DELETE]);
     return this.landingsService.remove(id, companyId);
   }
 
   @Post(':id/avatar')
-  @RequirePermission(Permission.LANDINGS_EDIT)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_AVATAR_SIZE } }))
   async uploadAvatar(
     @Param('id') id: string,
@@ -123,14 +122,13 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.uploadAvatar(id, companyId, file);
   }
 
   @Delete(':id/avatar')
-  @RequirePermission(Permission.LANDINGS_EDIT)
   async removeAvatar(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user);
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.removeAvatar(id, companyId);
   }
 

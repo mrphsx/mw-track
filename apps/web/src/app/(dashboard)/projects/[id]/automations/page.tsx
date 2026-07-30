@@ -18,6 +18,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 
+// Автоворонки временно отключены из UI (запрос пользователя 2026-07-22: "не удаляем, просто
+// отключи временно везде, даже из ui" — объединение с сценариями бота, см. /scenarios).
+// Код/данные/бэкенд не тронуты — уже существующие enrollments продолжают продвигаться
+// AutomationEngineService как раньше, здесь только блокируем прямой заход по URL, раз кнопка
+// на странице проекта убрана (теперь ведёт на /scenarios).
+function AutomationsDisabledNotice() {
+  return (
+    <Card>
+      <CardContent className="p-8 text-center text-gray-500">Автоворонки временно недоступны.</CardContent>
+    </Card>
+  );
+}
+
 // Автоворонки (Drip Campaigns, Фаза 3.1, запрос пользователя 2026-07-15) — список воронок
 // проекта. Создание воронки — только имя + триггер, шаги добавляются уже в редакторе
 // (/automations/[flowId]), по тому же принципу, что и лендинг создаётся сначала пустым.
@@ -52,6 +65,9 @@ export default function AutomationsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project', projectId, 'automations'] }),
   });
 
+  const automationsDisabled = true;
+  if (automationsDisabled) return <AutomationsDisabledNotice />;
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -59,7 +75,7 @@ export default function AutomationsPage() {
           <h1 className="text-2xl font-bold">Автоворонки</h1>
           <p className="text-sm text-gray-500">Автоматические цепочки: событие → задержка → сообщение → условие.</p>
         </div>
-        {hasPermission(user, 'AUTOMATIONS_CREATE') && (
+        {hasPermission(user, projectId, 'AUTOMATIONS_CREATE') && (
           <Button onClick={() => setShowCreate(true)}>
             <Plus className="w-4 h-4 mr-1.5" /> Создать воронку
           </Button>

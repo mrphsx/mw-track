@@ -1,6 +1,7 @@
-import { ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsOptional, IsString } from 'class-validator';
+import { ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { Permission } from '@prisma/client';
-import { CREATABLE_ROLES, CreatableRole } from './create-team-member.dto';
+import { CREATABLE_ROLES, CreatableRole, ProjectPermissionsDto } from './create-team-member.dto';
 
 export class UpdateTeamMemberDto {
   @IsOptional()
@@ -19,10 +20,18 @@ export class UpdateTeamMemberDto {
   @IsString({ each: true })
   projectIds?: string[];
 
-  // Полная замена набора прав (не патч), тот же принцип, что projectIds выше — см.
-  // TeamService.update/PermissionsService.replacePermissions.
+  // Полная замена прав НА КАЖДОМ проекте из projectIds (не патч) — запрос пользователя
+  // 2026-07-28, см. TeamService.update/PermissionsService.replacePermissionsForProject.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProjectPermissionsDto)
+  projectPermissions?: ProjectPermissionsDto[];
+
+  // DOMAINS_* — общие права роли, не per-project (решение пользователя), см. комментарий в
+  // CreateTeamMemberDto.
   @IsOptional()
   @IsArray()
   @IsEnum(Permission, { each: true })
-  permissions?: Permission[];
+  domainsPermissions?: Permission[];
 }

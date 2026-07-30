@@ -56,7 +56,7 @@ export function CalendarGrid({ visibleMonth, onMonthChange, counts, selectedDate
 
       <div className="grid grid-cols-7 gap-1 text-center">
         {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((d) => (
-          <div key={d} className="text-[11px] text-gray-400 py-1">
+          <div key={d} className="text-[11px] text-muted-foreground py-1">
             {d}
           </div>
         ))}
@@ -73,14 +73,14 @@ export function CalendarGrid({ visibleMonth, onMonthChange, counts, selectedDate
               className={`flex flex-col items-center justify-center gap-0.5 rounded-md border border-transparent ${
                 compact ? 'h-11' : 'h-14'
               } text-sm ${
-                !inMonth ? 'text-gray-300' : selected ? 'bg-blue-600 text-white' : 'text-gray-700 hover:border-gray-200 hover:bg-gray-50'
+                !inMonth ? 'text-muted-foreground' : selected ? 'bg-blue-600 text-white' : 'text-foreground hover:border-border hover:bg-muted'
               } ${isToday(day) && !selected ? 'font-bold text-blue-600' : ''}`}
             >
               <span>{format(day, 'd')}</span>
               {count > 0 && (
                 <span
                   className={`rounded-full px-1.5 text-[10px] leading-tight ${
-                    selected ? 'bg-white text-blue-600' : 'bg-blue-100 text-blue-600'
+                    selected ? 'bg-white text-blue-600' : 'bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400'
                   }`}
                 >
                   {count}

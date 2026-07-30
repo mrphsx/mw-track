@@ -85,6 +85,12 @@ export class PurchasesService {
     // накопления через Redis start-param bridge (1.5): без них FB/TikTok не смогут
     // сматчить покупку с рекламным кликом.
     try {
+      // forceSend: true — этот метод сейчас единственная точка регистрации покупки (webhook от
+      // платёжных систем отменён, см. 15_PHASES.md §3.5), т.е. по сути всегда ручное действие
+      // сотрудника ("Добавить покупку" в списке клиентов) — выключенный свитч "Покупка" (запрос
+      // пользователя 2026-07-27) не должен блокировать именно эту, единственную сегодня, точку
+      // входа. Когда появится автоматическая регистрация депозитов (см. память про планируемый
+      // модуль Deposits), она должна звать recordEvent БЕЗ forceSend, чтобы свитч на неё влиял.
       await this.trackingService.recordEvent(projectId, {
         eventName: 'Purchase',
         idempotencyKey: `${projectId}_Purchase_${purchase.id}`,
@@ -97,6 +103,7 @@ export class PurchasesService {
         email: clientBefore?.email ?? undefined,
         phone: clientBefore?.phone ?? undefined,
         source: 'SERVER',
+        forceSend: true,
       });
     } catch (error) {
       this.logger.warn(`Failed to record Purchase tracking event for ${purchase.id}: ${(error as Error).message}`);

@@ -47,6 +47,18 @@ export const DEFAULT_ROLE_PERMISSIONS: Partial<Record<UserRole, Permission[]>> =
   ],
 };
 
+// DOMAINS_* — единственная группа прав, которая НЕ per-project (решение пользователя
+// 2026-07-28: домены технически не привязаны к одному проекту). Хранится в UserPermission с
+// обычным projectId (см. schema.prisma), но применяется/читается по-другому — см.
+// PermissionsService.applyProjectPermissions (полная замена на КАЖДОМ проекте разом, не
+// add-only) и hasAnyProjectPermission (грант хотя бы на одном проекте = грант везде).
+export const DOMAIN_PERMISSIONS: Permission[] = [
+  Permission.DOMAINS_VIEW,
+  Permission.DOMAINS_CREATE,
+  Permission.DOMAINS_EDIT,
+  Permission.DOMAINS_DELETE,
+];
+
 // Роли, которые физически проверяются по UserPermission — остальные (SUPER_ADMIN/OWNER/
 // ADMIN) elevated, безусловный полный доступ.
 export const RESTRICTED_ROLES: UserRole[] = [UserRole.BUYER, UserRole.OPERATOR];

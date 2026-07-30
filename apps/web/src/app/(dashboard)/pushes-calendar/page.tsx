@@ -40,7 +40,7 @@ export default function PushesCalendarPage() {
         <h1 className="flex items-center gap-2 text-2xl font-bold">
           <CalendarDays className="h-6 w-6" /> Календарь рассылок
         </h1>
-        <p className="mt-1 text-sm text-gray-500">Все запланированные рассылки по всем проектам сразу</p>
+        <p className="mt-1 text-sm text-muted-foreground">Все запланированные рассылки по всем проектам сразу</p>
       </div>
 
       <Card>

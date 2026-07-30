@@ -34,10 +34,10 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="w-full max-w-md bg-white rounded-2xl shadow p-8">
+    <div className="w-full max-w-md bg-card rounded-2xl shadow p-8">
       <div className="text-center mb-6">
-        <div className="text-3xl font-bold text-blue-600 mb-1">MWTRACK</div>
-        <p className="text-gray-500 text-sm">Регистрация — 14 дней бесплатно</p>
+        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-1">MWTRACK</div>
+        <p className="text-muted-foreground text-sm">Регистрация — 14 дней бесплатно</p>
       </div>
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-1.5">
@@ -60,9 +60,9 @@ export default function RegisterPage() {
         <Button type="submit" disabled={loading} className="w-full">
           {loading ? 'Создаём аккаунт...' : 'Зарегистрироваться'}
         </Button>
-        <p className="text-center text-sm text-gray-500">
+        <p className="text-center text-sm text-muted-foreground">
           Уже есть аккаунт?{' '}
-          <Link href="/login" className="text-blue-600 hover:underline">
+          <Link href="/login" className="text-blue-600 dark:text-blue-400 hover:underline">
             Войти
           </Link>
         </p>

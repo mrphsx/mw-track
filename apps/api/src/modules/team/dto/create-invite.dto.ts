@@ -1,6 +1,7 @@
-import { ArrayMinSize, IsArray, IsEnum, IsIn, IsOptional, IsString } from 'class-validator';
+import { ArrayMinSize, IsArray, IsEnum, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
 import { Permission } from '@prisma/client';
-import { CREATABLE_ROLES, CreatableRole } from './create-team-member.dto';
+import { CREATABLE_ROLES, CreatableRole, ProjectPermissionsDto } from './create-team-member.dto';
 
 export class CreateInviteDto {
   @IsIn(CREATABLE_ROLES)
@@ -15,9 +16,15 @@ export class CreateInviteDto {
   projectIds?: string[];
 
   // Как в CreateTeamMemberDto — если не передано, TeamInvitesService.accept засеет дефолт по
-  // роли при создании пользователя.
+  // роли при создании пользователя (запрос пользователя 2026-07-28, per-project права).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProjectPermissionsDto)
+  projectPermissions?: ProjectPermissionsDto[];
+
   @IsOptional()
   @IsArray()
   @IsEnum(Permission, { each: true })
-  permissions?: Permission[];
+  domainsPermissions?: Permission[];
 }

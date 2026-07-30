@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import { Permission, Prisma, UserRole } from '@prisma/client';
 import { subDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -7,6 +7,7 @@ import { dailyBucketSql, resolveStatsPeriod } from '../../common/timezone.util';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { ChannelsService } from '../channels/channels.service';
 import { LINK_PARAM_KEYS, LINK_PARAM_NAME_REGEX } from '../tracking/link-params.const';
+import { buildPixelCurlCommand } from '../tracking/curl-command.util';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 
@@ -38,16 +39,7 @@ export class ProjectsService {
       });
 
       const channel = await tx.channel.create({
-        // tgWelcomeButtons — Json-колонка, class-validator-инстанс структурно не совпадает с
-        // Prisma.InputJsonValue (см. тот же приём в ChannelsService.update/PushesService).
-        data: {
-          projectId: project.id,
-          name: dto.name,
-          ...dto.channel,
-          tgWelcomeButtons: dto.channel.tgWelcomeButtons
-            ? (dto.channel.tgWelcomeButtons as unknown as Prisma.InputJsonValue)
-            : undefined,
-        },
+        data: { projectId: project.id, name: dto.name, ...dto.channel },
       });
 
       await tx.company.update({
@@ -87,7 +79,11 @@ export class ProjectsService {
   // AudienceModule ходит к ProjectsService через ModuleRef — см. память про циклы импорта;
   // PushesModule импортирует ProjectsModule напрямую, поэтому здесь достаточно публичного
   // метода без обхода).
-  async getAccessibleProjectIds(companyId: string, userId: string, role: UserRole): Promise<string[]> {
+  // requiredPermission — опционально (запрос пользователя 2026-07-28, per-project права):
+  // без него — как раньше, просто членство (используется AudienceService, там нет
+  // конкретного ресурса-разрешения). С ним — дополнительно фильтрует по конкретному
+  // Permission на каждом проекте (используется PushesCalendarController).
+  async getAccessibleProjectIds(companyId: string, userId: string, role: UserRole, requiredPermission?: Permission): Promise<string[]> {
     const projects = await this.prisma.project.findMany({
       where: {
         companyId,
@@ -96,7 +92,15 @@ export class ProjectsService {
       },
       select: { id: true },
     });
-    return projects.map((p) => p.id);
+    const ids = projects.map((p) => p.id);
+    if (!requiredPermission || ELEVATED_ROLES.includes(role)) return ids;
+
+    const grants = await this.prisma.userPermission.findMany({
+      where: { userId, projectId: { in: ids }, permission: requiredPermission },
+      select: { projectId: true },
+    });
+    const grantedIds = new Set(grants.map((g) => g.projectId));
+    return ids.filter((id) => grantedIds.has(id));
   }
 
   async findAll(companyId: string, userId: string, role: UserRole) {
@@ -106,7 +110,7 @@ export class ProjectsService {
       ? await this.prisma.project.findMany({
           where: { companyId, deletedAt: null },
           include: {
-            channel: { select: { id: true, type: true, isActive: true, tgAvatarFileId: true, tgSessionEncrypted: true } },
+            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgAvatarFileId: true, tgSessionEncrypted: true } },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
             _count: { select: { pushes: true } },
           },
@@ -116,7 +120,7 @@ export class ProjectsService {
         await this.prisma.project.findMany({
           where: { companyId, deletedAt: null, projectAccess: { some: { userId } } },
           include: {
-            channel: { select: { id: true, type: true, isActive: true, tgSessionEncrypted: true } },
+            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgSessionEncrypted: true } },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
             _count: { select: { pushes: true } },
           },
@@ -129,6 +133,9 @@ export class ProjectsService {
       channel: this.sanitizeChannel(p.channel),
       _count: { ...p._count, clients: metrics.get(p.id)?.total ?? 0 },
       activeClientsCount: metrics.get(p.id)?.active ?? 0,
+      // Запрос пользователя 2026-07-28: "покажи количество отписок, за всё время как и
+      // клиентов" — та же семантика "ours only", что и total/active выше.
+      unsubscribedClientsCount: metrics.get(p.id)?.unsubscribed ?? 0,
     }));
   }
 
@@ -153,10 +160,10 @@ export class ProjectsService {
   // ClientsRepository.getProjectStats (страница проекта).
   private async getClientMetricsByProject(
     projectIds: string[],
-  ): Promise<Map<string, { total: number; active: number }>> {
+  ): Promise<Map<string, { total: number; active: number; unsubscribed: number }>> {
     if (projectIds.length === 0) return new Map();
 
-    const [totalGroups, activeGroups] = await Promise.all([
+    const [totalGroups, activeGroups, unsubscribedGroups] = await Promise.all([
       this.prisma.client.groupBy({
         by: ['projectId'],
         where: { projectId: { in: projectIds }, deletedAt: null, subscribedAt: { not: null } },
@@ -167,12 +174,21 @@ export class ProjectsService {
         where: { projectId: { in: projectIds }, deletedAt: null, subscribedAt: { not: null }, isBotActive: true },
         _count: true,
       }),
+      // unsubscribedAt зарезервирован только за реальными подписчиками через нашу воронку
+      // (внешние контакты пишут в externalUnsubscribedAt, см. feedback_external_contact_
+      // unsubscribe_tracking) — доп. фильтр subscribedAt: not null тут избыточен, но явный.
+      this.prisma.client.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: projectIds }, deletedAt: null, subscribedAt: { not: null }, unsubscribedAt: { not: null } },
+        _count: true,
+      }),
     ]);
 
-    const map = new Map<string, { total: number; active: number }>();
-    for (const id of projectIds) map.set(id, { total: 0, active: 0 });
+    const map = new Map<string, { total: number; active: number; unsubscribed: number }>();
+    for (const id of projectIds) map.set(id, { total: 0, active: 0, unsubscribed: 0 });
     for (const g of totalGroups) map.get(g.projectId)!.total = g._count;
     for (const g of activeGroups) map.get(g.projectId)!.active = g._count;
+    for (const g of unsubscribedGroups) map.get(g.projectId)!.unsubscribed = g._count;
     return map;
   }
 
@@ -200,7 +216,13 @@ export class ProjectsService {
             tgSessionEncrypted: true,
           },
         },
-        pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
+        // testEventCode (запрос пользователя 2026-07-29: "проверь ещё раз создание пикселя...
+        // чтобы всё работало идеально") — не секрет в том же смысле, что accessToken (обычный
+        // короткий отладочный код, и так виден в интерфейсе Meta любому с доступом к аккаунту),
+        // отдаём как есть — нужен фронтенду, чтобы показать индикатор "тестовый режим" и дать
+        // отредактировать/убрать его перед запуском реальной рекламы (раньше такой возможности
+        // не было вообще — единственный способ был удалить пиксель и создать заново).
+        pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true, testEventCode: true } },
         _count: { select: { pushes: true } },
       },
     });
@@ -224,15 +246,34 @@ export class ProjectsService {
   // Admin/SuperAdmin, у которых доступ ко всем проектам компании без исключений.
   // Точечно применяется в самых используемых ежедневно контроллерах (landings/channels/
   // pushes/clients) — не на все ~99 роутов API сразу, список расширяется по необходимости.
-  async assertAccess(projectId: string, companyId: string, userId: string, role: UserRole): Promise<void> {
+  // requiredPermissions — запрос пользователя 2026-07-28: "чтобы под каждый проект можно было
+  // выбрать разрешения, а не общие". Раньше гранулярные права проверял отдельный, JWT-based
+  // @RequirePermission/PermissionsGuard (не знал о projectId вообще, права были плоские на
+  // пользователя). Теперь право привязано к конкретному проекту (UserPermission.projectId) —
+  // единственное место, которое реально ЗНАЕТ, какой проект проверяется на каждом из ~100
+  // роутов, это уже существующий assertAccess (либо вызывается напрямую, либо через один из
+  // приватных wrapper-методов контроллеров, которые сначала резолвят id ресурса в projectId) —
+  // поэтому проверка разрешения переехала сюда же, а не осталась отдельным гвардом. DOMAINS_*
+  // сюда НЕ передаются никогда (решение пользователя — домены не привязаны к одному проекту,
+  // остаются общим правом на пользователя, см. PermissionsService.hasAnyProjectPermission).
+  async assertAccess(projectId: string, companyId: string, userId: string, role: UserRole, requiredPermissions?: Permission[]): Promise<void> {
     await this.findOne(projectId, companyId); // бросит 404, если проект не в этой компании
 
     if (role === UserRole.OWNER || role === UserRole.ADMIN || role === UserRole.SUPER_ADMIN) return;
 
-    const access = await this.prisma.projectAccess.findUnique({
-      where: { userId_projectId: { userId, projectId } },
-    });
+    const [access, granted] = await Promise.all([
+      this.prisma.projectAccess.findUnique({ where: { userId_projectId: { userId, projectId } } }),
+      requiredPermissions?.length
+        ? this.prisma.userPermission.findMany({ where: { userId, projectId, permission: { in: requiredPermissions } }, select: { permission: true } })
+        : Promise.resolve([]),
+    ]);
     if (!access) throw new ForbiddenException('Нет доступа к этому проекту');
+
+    if (requiredPermissions?.length) {
+      const grantedSet = new Set(granted.map((g) => g.permission));
+      const missing = requiredPermissions.filter((p) => !grantedSet.has(p));
+      if (missing.length > 0) throw new ForbiddenException(`Недостаточно прав: ${missing.join(', ')}`);
+    }
   }
 
   // Без авторизации (companyId) — вызывается из публичных tracking-эндпоинтов,
@@ -523,31 +564,45 @@ requests.post(
   // в рамках одного проекта + с периодом); landings — join Landing->Client->Purchase;
   // pixels — по TrackingEvent.pixelId by conversions (без revenue: Purchase не хранит pixelId,
   // а парсить сумму из TrackingEvent.payload ради лидерборда избыточно).
+  // Багфикс 2026-07-28 (баг-репорт пользователя: "есть человек пришедший с пикселя, но в топ
+  // пикселей этого пикселя нет"). Причина: "buyers" и "pixels" считались через
+  // groupBy/INNER-JOIN НАЧИНАЯ С Purchase — если у баера/пикселя ещё ни одной покупки, строка
+  // в результате вообще не появляется, независимо от того, сколько у него реальных подписанных
+  // клиентов. "landings" и "campaigns" уже были устроены правильно — LEFT JOIN, начиная с самой
+  // сущности (Landing/Client.campaignId), поэтому 0 revenue/подписчиков не прячет строку целиком.
+  // buyers/pixels переписаны на тот же LEFT-JOIN-от-сущности паттерн. Заодно "campaigns.clients"
+  // считался БЕЗ фильтра по периоду (в отличие от landings.subscribers, который period-scoped) —
+  // теперь везде одинаково: "clients"/"subscribers" = новые подписчики ИМЕННО за period, а не
+  // все подписчики за всё время.
   async getLeaderboards(id: string, companyId: string, periodQuery: StatsPeriodDto) {
     const project = await this.findOne(id, companyId); // проверка владения + 404
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
 
-    const [buyerRows, users, pixelRows, pixels, landingRows, campaignRows] = await Promise.all([
+    const [buyerRows, users, pixelRows, landingRows, campaignRows] = await Promise.all([
       this.prisma.$queryRaw<{ buyerId: string; clients: bigint; revenue: string | null }[]>`
-        SELECT c."buyerId", COUNT(DISTINCT p."clientId") as clients, COALESCE(SUM(p.amount), 0) as revenue
-        FROM "Purchase" p
-        JOIN "Client" c ON c.id = p."clientId"
-        WHERE p."projectId" = ${id}
-          AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
-          AND c."buyerId" IS NOT NULL AND c."deletedAt" IS NULL
+        SELECT c."buyerId",
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+        FROM "Client" c
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."buyerId" IS NOT NULL
         GROUP BY c."buyerId"
-        ORDER BY revenue DESC
+        ORDER BY revenue DESC, clients DESC
         LIMIT 5
       `,
       this.prisma.user.findMany({ where: { companyId }, select: { id: true, firstName: true, lastName: true } }),
-      this.prisma.trackingEvent.groupBy({
-        by: ['pixelId'],
-        where: { projectId: id, eventName: 'Purchase', pixelId: { not: null }, createdAt: { gte: since, lt: until } },
-        _count: true,
-        orderBy: { _count: { pixelId: 'desc' } },
-        take: 5,
-      }),
-      this.prisma.trackingPixel.findMany({ where: { projectId: id }, select: { id: true, label: true, platform: true } }),
+      this.prisma.$queryRaw<{ pixelId: string; label: string | null; platform: string; clients: bigint; revenue: string | null }[]>`
+        SELECT tp.id as "pixelId", tp.label, tp.platform,
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+        FROM "TrackingPixel" tp
+        LEFT JOIN "Client" c ON c."pixelId" = tp.id AND c."deletedAt" IS NULL
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE tp."projectId" = ${id}
+        GROUP BY tp.id, tp.label, tp.platform
+        ORDER BY revenue DESC, clients DESC
+        LIMIT 5
+      `,
       this.prisma.$queryRaw<{ landing_id: string; name: string; subscribers: bigint; revenue: string | null }[]>`
         SELECT l.id as landing_id, l.name,
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as subscribers,
@@ -562,19 +617,18 @@ requests.post(
       `,
       this.prisma.$queryRaw<{ campaignId: string; campaignName: string | null; clients: bigint; revenue: string | null }[]>`
         SELECT c."campaignId", MAX(c."campaignName") as "campaignName",
-          COUNT(DISTINCT c.id) as clients,
-          COALESCE(SUM(p.amount), 0) as revenue
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."campaignId" IS NOT NULL
         GROUP BY c."campaignId"
-        ORDER BY revenue DESC
+        ORDER BY revenue DESC, clients DESC
         LIMIT 5
       `,
     ]);
 
     const usersById = new Map(users.map((u) => [u.id, u]));
-    const pixelsById = new Map(pixels.map((p) => [p.id, p]));
 
     return {
       buyers: buyerRows.map((r) => {
@@ -586,14 +640,12 @@ requests.post(
           revenue: Number(r.revenue || 0),
         };
       }),
-      pixels: pixelRows.map((r) => {
-        const pixel = r.pixelId ? pixelsById.get(r.pixelId) : undefined;
-        return {
-          pixelId: r.pixelId,
-          label: pixel?.label || pixel?.platform || 'Удалённый пиксель',
-          conversions: r._count,
-        };
-      }),
+      pixels: pixelRows.map((r) => ({
+        pixelId: r.pixelId,
+        label: r.label || r.platform,
+        clients: Number(r.clients),
+        revenue: Number(r.revenue || 0),
+      })),
       landings: landingRows.map((r) => ({
         landingId: r.landing_id,
         name: r.name,
@@ -609,17 +661,184 @@ requests.post(
     };
   }
 
+  // Развёрнутая воронка (PageView→Lead→Subscribe→Dialogue→Purchase) для конкретных top-5 id
+  // одной категории лидерборда (запрос пользователя 2026-07-27: "показывай и просмотры,
+  // диалоги, выручка, клики и конверсии из каждой в следующую"). Намеренно ОТДЕЛЬНЫЙ,
+  // лениво подгружаемый эндпоинт, а не расширение getLeaderboards — считать это для всех 4
+  // категорий на каждой загрузке страницы проекта заметно утяжелило бы её самый частый путь
+  // (обычный визит), хотя реально разворачивает эти цифры меньшинство визитов. Фронт зовёт
+  // этот метод только когда пользователь реально открыл конкретную вкладку лидерборда (см.
+  // projects/[id]/page.tsx, activeLeaderboardTab) — ids уже известны на фронте из уже
+  // загруженного getLeaderboards, повторный запрос "какие 5 топовых" не нужен.
+  async getLeaderboardFunnel(
+    id: string,
+    companyId: string,
+    category: 'buyers' | 'pixels' | 'landings' | 'campaigns',
+    ids: string[],
+    periodQuery: StatsPeriodDto,
+  ) {
+    const project = await this.findOne(id, companyId); // проверка владения + 404
+    const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    if (ids.length === 0) return { items: [] };
+
+    if (category === 'landings') return { items: await this.getLandingsFunnel(id, ids, since, until) };
+    if (category === 'pixels') return { items: await this.getEventColumnFunnel('pixelId', id, ids, since, until) };
+    if (category === 'campaigns') return { items: await this.getEventColumnFunnel('campaignId', id, ids, since, until) };
+    return { items: await this.getBuyersFunnel(ids, since, until) };
+  }
+
+  // PageView/Lead лендинга живут только в TrackingEvent.payload (JSON, см. computeLandingStats
+  // в LandingsService — тот же источник, что уже используется на странице статистики самого
+  // лендинга). Subscribe/Dialogue надёжнее брать из Client.landingId напрямую: TrackingEvent на
+  // Subscribe несёт landingId только для PRIVATE_CHANNEL_REQUEST (см. RecordEventDto.landingId),
+  // а Client.landingId проставляется единообразно для всех режимов канала.
+  private async getLandingsFunnel(projectId: string, ids: string[], since: Date, until: Date) {
+    const [eventRows, clientRows, purchaseRows] = await Promise.all([
+      this.prisma.$queryRaw<{ id: string; eventName: string; count: number }[]>`
+        SELECT payload->>'landingId' as id, "eventName", COUNT(*)::int as count
+        FROM "TrackingEvent"
+        WHERE "projectId" = ${projectId} AND "eventName" IN ('PageView', 'Lead')
+          AND "createdAt" >= ${since} AND "createdAt" < ${until}
+          AND payload->>'landingId' IN (${Prisma.join(ids)})
+        GROUP BY payload->>'landingId', "eventName"
+      `,
+      this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
+        SELECT "landingId" as id,
+          COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+        FROM "Client"
+        WHERE "landingId" IN (${Prisma.join(ids)}) AND "deletedAt" IS NULL
+        GROUP BY "landingId"
+      `,
+      this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
+        SELECT c."landingId" as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
+        FROM "Purchase" p
+        JOIN "Client" c ON c.id = p."clientId"
+        WHERE c."landingId" IN (${Prisma.join(ids)}) AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        GROUP BY c."landingId"
+      `,
+    ]);
+
+    const eventsById = this.groupEventCounts(eventRows);
+    const clientsById = new Map(clientRows.map((r) => [r.id, r]));
+    const purchasesById = new Map(purchaseRows.map((r) => [r.id, r]));
+
+    return ids.map((id) => ({
+      id,
+      pageViews: eventsById.get(id)?.PageView ?? 0,
+      leads: eventsById.get(id)?.Lead ?? 0,
+      subscribes: clientsById.get(id)?.subscribes ?? 0,
+      dialogues: clientsById.get(id)?.dialogues ?? 0,
+      purchases: purchasesById.get(id)?.purchases ?? 0,
+      revenue: Number(purchasesById.get(id)?.revenue ?? 0),
+    }));
+  }
+
+  // Пиксели и кампании — структурно один и тот же запрос, отличается только колонка. В отличие
+  // от лендингов, pixelId/campaignId — реальные колонки TrackingEvent, заполняются
+  // (resolveAttribution в TrackingService) для ЛЮБОГО события с известным clientId, включая
+  // Subscribe/Dialogue — поэтому здесь вся воронка берётся из TrackingEvent единообразно, без
+  // отдельного захода в Client. column — фиксированный union из вызывающего кода (не
+  // пользовательский ввод), Prisma.raw безопасен.
+  private async getEventColumnFunnel(column: 'pixelId' | 'campaignId', projectId: string, ids: string[], since: Date, until: Date) {
+    const col = Prisma.raw(`"${column}"`);
+    const [eventRows, purchaseRows] = await Promise.all([
+      this.prisma.$queryRaw<{ id: string; eventName: string; count: number }[]>`
+        SELECT ${col} as id, "eventName", COUNT(*)::int as count
+        FROM "TrackingEvent"
+        WHERE "projectId" = ${projectId} AND "eventName" IN ('PageView', 'Lead', 'Subscribe', 'Dialogue')
+          AND "createdAt" >= ${since} AND "createdAt" < ${until}
+          AND ${col} IN (${Prisma.join(ids)})
+        GROUP BY ${col}, "eventName"
+      `,
+      this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
+        SELECT c.${col} as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
+        FROM "Purchase" p
+        JOIN "Client" c ON c.id = p."clientId"
+        WHERE c.${col} IN (${Prisma.join(ids)}) AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        GROUP BY c.${col}
+      `,
+    ]);
+
+    const eventsById = this.groupEventCounts(eventRows);
+    const purchasesById = new Map(purchaseRows.map((r) => [r.id, r]));
+
+    return ids.map((id) => ({
+      id,
+      pageViews: eventsById.get(id)?.PageView ?? 0,
+      leads: eventsById.get(id)?.Lead ?? 0,
+      subscribes: eventsById.get(id)?.Subscribe ?? 0,
+      dialogues: eventsById.get(id)?.Dialogue ?? 0,
+      purchases: purchasesById.get(id)?.purchases ?? 0,
+      revenue: Number(purchasesById.get(id)?.revenue ?? 0),
+    }));
+  }
+
+  // Без PageView/Lead — атрибуция баера (Client.buyerId, скрытый buyerRef-параметр ссылки)
+  // резолвится только к моменту создания строки Client (на подписке), у TrackingEvent вообще
+  // нет колонки buyerId (см. schema.prisma) — просмотры/клики баеру принципиально не приписать,
+  // это не пробел в реализации, а честная граница того, что вообще можно посчитать.
+  private async getBuyersFunnel(ids: string[], since: Date, until: Date) {
+    const [clientRows, purchaseRows] = await Promise.all([
+      this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
+        SELECT "buyerId" as id,
+          COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+        FROM "Client"
+        WHERE "buyerId" IN (${Prisma.join(ids)}) AND "deletedAt" IS NULL
+        GROUP BY "buyerId"
+      `,
+      this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
+        SELECT c."buyerId" as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
+        FROM "Purchase" p
+        JOIN "Client" c ON c.id = p."clientId"
+        WHERE c."buyerId" IN (${Prisma.join(ids)}) AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        GROUP BY c."buyerId"
+      `,
+    ]);
+
+    const clientsById = new Map(clientRows.map((r) => [r.id, r]));
+    const purchasesById = new Map(purchaseRows.map((r) => [r.id, r]));
+
+    return ids.map((id) => ({
+      id,
+      subscribes: clientsById.get(id)?.subscribes ?? 0,
+      dialogues: clientsById.get(id)?.dialogues ?? 0,
+      purchases: purchasesById.get(id)?.purchases ?? 0,
+      revenue: Number(purchasesById.get(id)?.revenue ?? 0),
+    }));
+  }
+
+  private groupEventCounts(rows: { id: string; eventName: string; count: number }[]): Map<string, Record<string, number>> {
+    const byId = new Map<string, Record<string, number>>();
+    for (const r of rows) {
+      const m = byId.get(r.id) ?? {};
+      m[r.eventName] = r.count;
+      byId.set(r.id, m);
+    }
+    return byId;
+  }
+
   // Логи доставки в пиксели (запрос пользователя 2026-07-04) — "что отправлялось платформе
   // трафика и статус". TrackingEventDelivery уже существовал (создавался в TrackingProcessor
   // для КАЖДОЙ пары событие+пиксель), просто нигде не показывался в UI до сих пор.
-  // Показываем TrackingEvent.payload как прокси "что отправили" — сырое тело запроса к
-  // Facebook/TikTok (с access_token пикселя) нигде не персистится и не должно, чтобы секрет
-  // пикселя не осел в логах; payload — то же самое, из чего FacebookCAPIService/
-  // TikTokEventsService строят реальный запрос.
+  // requestPayload/responsePayload (запрос пользователя 2026-07-28: "сделай как у конкурентов,
+  // полностью с отчётом") — реальное тело запроса к Facebook/TikTok и реальный ответ платформы,
+  // персистятся на TrackingEventDelivery с 2026-07-28. access_token пикселя в НИХ никогда не
+  // попадает (FB: отдельное поле body, не входит в eventData; TikTok: HTTP-заголовок, не body) —
+  // но для includeCurlCommand (см. ниже) он подставляется на лету, читается из TrackingPixel
+  // напрямую, никогда не персистится вместе с логами.
+  //
+  // PageView/Lead исключены из выдачи безусловно (запрос пользователя 2026-07-29, "убери со
+  // страницы логов пикселей pageview и lead, чтобы визуально не мешали") — это самые частые
+  // события (на каждый заход на лендинг), они забивают список и прячут реально важные
+  // Subscribe/Unsubscribe/Dialogue/Purchase. Не просто фильтр по умолчанию — исключение всегда
+  // активно, независимо от filters.eventName.
   async getPixelLogs(
     id: string,
     companyId: string,
     filters: { page?: number; limit?: number; pixelId?: string; status?: string; eventName?: string },
+    includeCurlCommand = false,
   ) {
     await this.findOne(id, companyId); // проверка владения + 404
 
@@ -627,7 +846,10 @@ requests.post(
     const limit = Math.min(filters.limit || 50, 200);
 
     const where: Prisma.TrackingEventDeliveryWhereInput = {
-      event: { projectId: id, ...(filters.eventName ? { eventName: filters.eventName } : {}) },
+      event: {
+        projectId: id,
+        eventName: filters.eventName ? filters.eventName : { notIn: ['PageView', 'Lead'] },
+      },
       ...(filters.pixelId ? { pixelId: filters.pixelId } : {}),
       ...(filters.status ? { status: filters.status } : {}),
     };
@@ -644,7 +866,18 @@ requests.post(
           error: true,
           externalEventId: true,
           sentAt: true,
-          pixel: { select: { id: true, platform: true, label: true, pixelId: true } },
+          requestPayload: true,
+          responsePayload: true,
+          httpStatus: true,
+          pixel: {
+            select: {
+              id: true,
+              platform: true,
+              label: true,
+              pixelId: true,
+              ...(includeCurlCommand ? { accessToken: true, testEventCode: true } : {}),
+            },
+          },
           event: {
             select: {
               eventName: true,
@@ -661,6 +894,21 @@ requests.post(
       this.prisma.trackingEventDelivery.count({ where }),
     ]);
 
-    return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
+    // curlCommand — готовая команда с настоящим access_token, чтобы можно было вставить прямо в
+    // терминал (запрос пользователя 2026-07-29, доступ только у OWNER — includeCurlCommand
+    // приходит из контроллера уже проверенным по роли). Строится на лету из уже сохранённого
+    // requestPayload — если его нет (запись до 2026-07-28, требование логов ещё не было), curl
+    // не собрать, поле просто не добавляется.
+    const itemsWithCurl = includeCurlCommand
+      ? items.map((item) => {
+          const pixel = item.pixel as typeof item.pixel & { accessToken?: string; testEventCode?: string | null };
+          if (!item.requestPayload || !pixel.accessToken) return item;
+          const curlCommand = buildPixelCurlCommand(pixel.platform, pixel.pixelId, pixel.accessToken, item.requestPayload, pixel.testEventCode);
+          const { accessToken: _accessToken, testEventCode: _testEventCode, ...pixelWithoutToken } = pixel;
+          return { ...item, pixel: pixelWithoutToken, curlCommand };
+        })
+      : items;
+
+    return { items: itemsWithCurl, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 }

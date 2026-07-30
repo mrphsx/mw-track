@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ChannelType, Client, Prisma } from '@prisma/client';
+import { ChannelType, Client, DialogueSource, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { ClientFiltersDto } from './dto/client-filters.dto';
@@ -33,6 +33,12 @@ export interface FindOrCreateClientInput {
   phone?: string;
   ipAddress?: string;
   userAgent?: string;
+  // Advanced Matching для Facebook (запрос пользователя 2026-07-29, сверка с реальным примером
+  // конкурента) — тем же путём, что ipAddress/userAgent выше: start:<code>/landing-visit-
+  // attribution Redis-мосты → сюда → TrackingService.resolveAttribution достаёт из Client для
+  // отложенных Telegram-событий, которым неоткуда взять их "живьём".
+  fbp?: string;
+  countryCode?: string;
   utmSource?: string;
   utmMedium?: string;
   utmCampaign?: string;
@@ -110,8 +116,15 @@ export class ClientsService {
           tgPhotoUrl: data.tgPhotoUrl ?? existing.tgPhotoUrl,
           country: existing.country ?? data.country,
           utmSource: existing.utmSource ?? data.utmSource,
+          utmMedium: existing.utmMedium ?? data.utmMedium,
+          utmCampaign: existing.utmCampaign ?? data.utmCampaign,
+          utmContent: existing.utmContent ?? data.utmContent,
           fbclid: existing.fbclid ?? data.fbclid,
           ttclid: existing.ttclid ?? data.ttclid,
+          fbp: existing.fbp ?? data.fbp,
+          ipAddress: existing.ipAddress ?? data.ipAddress,
+          userAgent: existing.userAgent ?? data.userAgent,
+          countryCode: existing.countryCode ?? data.countryCode,
           landingId: existing.landingId ?? data.landingId,
           pixelId: existing.pixelId ?? data.pixelId,
           adId: existing.adId ?? data.adId,
@@ -168,6 +181,8 @@ export class ClientsService {
         utmTerm: data.utmTerm,
         fbclid: data.fbclid,
         ttclid: data.ttclid,
+        fbp: data.fbp,
+        countryCode: data.countryCode ?? geo.countryCode,
         pixelId: data.pixelId,
         adId: data.adId,
         adName: data.adName,
@@ -205,6 +220,14 @@ export class ClientsService {
     data: {
       fbclid?: string;
       ttclid?: string;
+      // Запрос пользователя 2026-07-29 — тот же баг, что нашли для findOrCreate/
+      // recordInboundMessage: этот путь (start:<code>, BOT_DIRECT/PERSONAL_DM) раньше вообще
+      // не принимал ip/userAgent/fbp/countryCode, хотя они уже есть в том же Redis-блоке
+      // рядом с fbclid — просто не были объявлены в этой сигнатуре.
+      ipAddress?: string;
+      userAgent?: string;
+      fbp?: string;
+      countryCode?: string;
       utmSource?: string;
       utmCampaign?: string;
       pixelId?: string;
@@ -227,6 +250,10 @@ export class ClientsService {
       data: {
         fbclid: data.fbclid ?? client.fbclid,
         ttclid: data.ttclid ?? client.ttclid,
+        ipAddress: data.ipAddress ?? client.ipAddress,
+        userAgent: data.userAgent ?? client.userAgent,
+        fbp: data.fbp ?? client.fbp,
+        countryCode: data.countryCode ?? client.countryCode,
         utmSource: data.utmSource ?? client.utmSource,
         utmCampaign: data.utmCampaign ?? client.utmCampaign,
         pixelId: data.pixelId ?? client.pixelId,
@@ -271,11 +298,40 @@ export class ClientsService {
   // канале другим путём (не через нашу заявку) — их уход из канала раньше безусловно ставил
   // unsubscribedAt, хотя подписки через нашу воронку у них никогда не было. Теперь трогаем
   // только тех, у кого subscribedAt реально был задан.
+  // Доп. правка 2026-07-24 (запрос пользователя: "почему нельзя отслеживать если [внешний]
+  // отписался и задать как всем дату отписки") — второй updateMany теперь пишет уход внешнего
+  // контакта из канала в отдельное externalUnsubscribedAt (НЕ в unsubscribedAt — тот статус,
+  // что чинили 2026-07-21, остаётся зарезервирован за настоящей подпиской через воронку).
   async markUnsubscribed(tgUserId: string, projectId: string) {
-    return this.prisma.client.updateMany({
-      where: { projectId, tgUserId, subscribedAt: { not: null } },
-      data: { isSubscribed: false, unsubscribedAt: new Date() },
-    });
+    const client = await this.prisma.client.findFirst({ where: { projectId, tgUserId } });
+    if (!client) return;
+    const now = new Date();
+
+    if (client.subscribedAt) {
+      await this.prisma.client.update({
+        where: { id: client.id },
+        data: { isSubscribed: false, unsubscribedAt: now },
+      });
+      // Unsubscribe-событие в Facebook/TikTok (запрос пользователя 2026-07-29: "добавь события
+      // отписки как с подпиской") — только для настоящих подписчиков воронки (у которых был
+      // Subscribe), не для внешних контактов (ветка ниже) — той же логике, что и сам Subscribe
+      // никогда не отправлялся для внешних. clientId передан явно — идёт через тот же
+      // TrackingService.resolveAttribution, что и Subscribe (fbc/fbp/ip/userAgent/countryCode
+      // подтягиваются из этого же Client), включая hasAdAttribution-гейт и
+      // disabledTrackingEvents-свитч (см. TRACKING_EVENT_TYPES).
+      await this.trackingService.recordEvent(projectId, {
+        eventName: 'Unsubscribe',
+        clientId: client.id,
+        tgUserId,
+        landingId: client.landingId ?? undefined,
+        source: 'SERVER',
+      });
+    } else if (client.externalSubscribedAt) {
+      await this.prisma.client.update({
+        where: { id: client.id },
+        data: { externalUnsubscribedAt: now },
+      });
+    }
   }
 
   // Только для GET /clients/:id/avatar (ClientsController) — не через ChannelsService
@@ -308,6 +364,30 @@ export class ClientsService {
       tgLastName?: string;
       landingId?: string;
       buyerId?: string;
+      // Полный блок атрибуции — только для случая, когда клиента ещё нет и его создаёт
+      // findOrCreate ниже (баг-репорт пользователя 2026-07-23: для BOT_DIRECT первое /start
+      // одновременно создаёт клиента И шлёт Dialogue-событие; если атрибуцию писать отдельным
+      // updateTracking ПОСЛЕ этого метода, событие уже уйдёт без неё — см. handleStart).
+      fbclid?: string;
+      ttclid?: string;
+      // Запрос пользователя 2026-07-29 — тот же гэп, что и в findOrCreate/updateTracking:
+      // ip/userAgent/fbp/countryCode доступны в том же атрибуционном блоке, но раньше не
+      // объявлялись в этой сигнатуре и терялись здесь тоже.
+      ipAddress?: string;
+      userAgent?: string;
+      fbp?: string;
+      countryCode?: string;
+      utmSource?: string;
+      utmCampaign?: string;
+      pixelId?: string;
+      adId?: string;
+      adName?: string;
+      adsetId?: string;
+      adsetName?: string;
+      campaignId?: string;
+      campaignName?: string;
+      placement?: string;
+      siteSourceName?: string;
       // Всегда false для вызовов из TelegramPersonalService (правка 2026-07-21 — у личного
       // аккаунта, включая PERSONAL_DM, нет реального понятия "подписчик", только диалог, см.
       // комментарий в telegram-personal.service.ts). Для бот-каналов первое сообщение от
@@ -335,6 +415,23 @@ export class ClientsService {
         projectId,
         landingId: data.landingId,
         buyerId: data.buyerId,
+        fbclid: data.fbclid,
+        ttclid: data.ttclid,
+        ipAddress: data.ipAddress,
+        userAgent: data.userAgent,
+        fbp: data.fbp,
+        countryCode: data.countryCode,
+        utmSource: data.utmSource,
+        utmCampaign: data.utmCampaign,
+        pixelId: data.pixelId,
+        adId: data.adId,
+        adName: data.adName,
+        adsetId: data.adsetId,
+        adsetName: data.adsetName,
+        campaignId: data.campaignId,
+        campaignName: data.campaignName,
+        placement: data.placement,
+        siteSourceName: data.siteSourceName,
         tgUserId: data.tgUserId,
         tgUsername: data.tgUsername,
         tgFirstName: data.tgFirstName,
@@ -379,7 +476,12 @@ export class ClientsService {
       }
     }
 
-    await this.applyDialogueUpdate(projectId, client, data.landingId);
+    await this.applyDialogueUpdate(
+      projectId,
+      client,
+      data.landingId,
+      data.viaBot && data.countBotAsDialogue ? 'BOT_DIRECT' : 'PERSONAL_ACCOUNT',
+    );
   }
 
   // Общий хвост "зафиксировать диалог" — вынесен из recordInboundMessage (запрос
@@ -390,7 +492,16 @@ export class ClientsService {
   // "каждый вариант должен сначала проверить... перед тем как посылать его ещё раз": все три
   // способа (бот/личный аккаунт, менеджер, кнопка в CRM) сходятся сюда, событие в Facebook/
   // TikTok уходит только один раз, за какой бы способ ни отвечало первое срабатывание.
-  private async applyDialogueUpdate(projectId: string, client: Client, landingId?: string): Promise<void> {
+  // source — Client.dialogueSource (запрос пользователя 2026-07-23: "сделай чтобы можно было
+  // технически отследить откуда зарегистрирован диалог" — баг-репорт про диалог, отмеченный у
+  // клиента, который реально не писал) — записывается только один раз, вместе с
+  // firstDialogueAt, повторные сообщения из другого источника её не переписывают.
+  private async applyDialogueUpdate(
+    projectId: string,
+    client: Client,
+    landingId: string | undefined,
+    source: DialogueSource,
+  ): Promise<void> {
     const isFirstMessage = !client.firstDialogueAt;
     const now = new Date();
     await this.prisma.client.update({
@@ -399,16 +510,22 @@ export class ClientsService {
         firstDialogueAt: client.firstDialogueAt ?? now,
         lastDialogueAt: now,
         dialogueMessageCount: { increment: 1 },
+        dialogueSource: client.dialogueSource ?? source,
       },
     });
 
     if (isFirstMessage) {
+      // forceSend: MANAGER_CONFIRM/CRM_BUTTON — сотрудник вручную зафиксировал диалог (запрос
+      // пользователя 2026-07-27: выключенный свитч "Диалог" должен гасить только автоматическое
+      // обнаружение — PERSONAL_ACCOUNT/BOT_DIRECT, реальное входящее сообщение), не ручную
+      // отправку.
       await this.trackingService.recordEvent(projectId, {
         eventName: 'Dialogue',
         clientId: client.id,
         tgUserId: client.tgUserId ?? undefined,
         landingId: client.landingId ?? landingId,
         source: 'SERVER',
+        forceSend: source === 'MANAGER_CONFIRM' || source === 'CRM_BUTTON',
       });
     }
   }
@@ -419,10 +536,10 @@ export class ClientsService {
   // "Зарегистрировать диалог" прямо в списке клиентов — для тех же случаев, но без Telegram-
   // бота вообще (клиент ведётся в другом канале целиком). projectId передан явно и
   // проверяется — защита от подделанного clientId (чужого проекта/callback_data).
-  async recordManualDialogue(clientId: string, projectId: string): Promise<void> {
+  async recordManualDialogue(clientId: string, projectId: string, source: 'MANAGER_CONFIRM' | 'CRM_BUTTON'): Promise<void> {
     const client = await this.prisma.client.findFirst({ where: { id: clientId, projectId, deletedAt: null } });
     if (!client) throw new NotFoundException('Клиент не найден');
-    await this.applyDialogueUpdate(projectId, client);
+    await this.applyDialogueUpdate(projectId, client, undefined, source);
   }
 
   // companyId передаётся явно (а не доверяется только Prisma-middleware), потому что
@@ -435,6 +552,30 @@ export class ClientsService {
     });
     if (!client) throw new NotFoundException('Клиент не найден');
     return client;
+  }
+
+  // Полная карточка клиента (запрос пользователя 2026-07-24: "нужно показать все данные чтобы
+  // баера видели, пикселя, кампании, sources все, с какого лэндинга и так далее") — buyerId/
+  // pixelId это мягкие ссылки без @relation (см. комментарий у полей в schema.prisma), поэтому
+  // имя баера/лейбл пикселя резолвятся отдельными запросами, тот же приём, что уже использует
+  // ProjectsService.getLeaderboards. Отдельный метод, а не обогащение самого findOne — тот
+  // используется ещё в десятке мест только для проверки владения перед мутацией, где эти три
+  // лишних запроса были бы не нужны.
+  async getClientDetail(id: string, companyId: string) {
+    const client = await this.findOne(id, companyId);
+
+    const [landing, buyer, pixel] = await Promise.all([
+      client.landingId ? this.prisma.landing.findUnique({ where: { id: client.landingId }, select: { name: true } }) : null,
+      client.buyerId ? this.prisma.user.findUnique({ where: { id: client.buyerId }, select: { firstName: true, lastName: true } }) : null,
+      client.pixelId ? this.prisma.trackingPixel.findUnique({ where: { id: client.pixelId }, select: { label: true, platform: true } }) : null,
+    ]);
+
+    return {
+      ...client,
+      landingName: landing?.name ?? null,
+      buyerName: buyer ? `${buyer.firstName} ${buyer.lastName}`.trim() : null,
+      pixelLabel: pixel ? pixel.label || pixel.platform : null,
+    };
   }
 
   async findMany(projectId: string, filters: ClientFiltersDto) {
@@ -557,8 +698,22 @@ export class ClientsService {
     if (typeof filters.isSubscribed === 'boolean') where.isSubscribed = filters.isSubscribed;
     if (filters.country?.length) where.country = { in: filters.country };
     if (filters.utmSource) where.utmSource = filters.utmSource;
+    if (filters.utmMedium) where.utmMedium = filters.utmMedium;
     if (filters.utmCampaign) where.utmCampaign = filters.utmCampaign;
+    if (filters.utmContent) where.utmContent = filters.utmContent;
     if (filters.landingId) where.landingId = filters.landingId;
+    // Фильтры по рекламным данным (запрос пользователя 2026-07-24: "в фильтры добавь все эти
+    // варианты фильтрации" — баер/пиксель/кампания/объявление, те же поля, что теперь
+    // показываются в карточке клиента, см. ClientsService.getClientDetail). Баер/пиксель —
+    // точное совпадение по id (реальный выпадающий список в UI, id известен заранее); кампания/
+    // объявление/группа объявлений — поиск по НАЗВАНИЮ (contains, без учёта регистра), не по
+    // внутреннему id рекламной площадки, который пользователь не знает и не вводит вручную.
+    if (filters.buyerId) where.buyerId = filters.buyerId === 'none' ? null : filters.buyerId;
+    if (filters.pixelId) where.pixelId = filters.pixelId;
+    if (filters.campaignName) where.campaignName = { contains: filters.campaignName, mode: 'insensitive' };
+    if (filters.adName) where.adName = { contains: filters.adName, mode: 'insensitive' };
+    if (filters.adsetName) where.adsetName = { contains: filters.adsetName, mode: 'insensitive' };
+    if (filters.siteSourceName) where.siteSourceName = filters.siteSourceName;
 
     if (filters.minSpent !== undefined || filters.maxSpent !== undefined) {
       where.totalSpent = {
@@ -652,18 +807,22 @@ export class ClientsService {
 
   // ip-api.com: бесплатно до 1000 запросов/мин, без ключа. Глобальный fetch (Node 20+)
   // вместо отдельной axios-зависимости — она не была установлена и не нужна для одного вызова.
-  private async getGeoByIp(ip: string): Promise<{ country?: string; city?: string }> {
+  private async getGeoByIp(ip: string): Promise<{ country?: string; city?: string; countryCode?: string }> {
     if (['127.0.0.1', '::1', 'localhost'].includes(ip) || ip.startsWith('192.168') || ip.startsWith('10.')) {
       return {};
     }
 
     try {
-      const response = await fetch(`http://ip-api.com/json/${ip}?fields=country,city,status`, {
+      // countryCode добавлен в запрос (запрос пользователя 2026-07-29) — ip-api.com отдаёт его
+      // тем же вызовом бесплатно, отдельного поля раньше просто не запрашивали. country
+      // (полное название) остаётся как есть для отображения в UI, countryCode — для Facebook
+      // Advanced Matching (см. Client.countryCode в schema.prisma).
+      const response = await fetch(`http://ip-api.com/json/${ip}?fields=country,countryCode,city,status`, {
         signal: AbortSignal.timeout(2000),
       });
-      const json = (await response.json()) as { status: string; country?: string; city?: string };
+      const json = (await response.json()) as { status: string; country?: string; countryCode?: string; city?: string };
       if (json.status === 'success') {
-        return { country: json.country, city: json.city };
+        return { country: json.country, city: json.city, countryCode: json.countryCode };
       }
     } catch (error) {
       this.logger.warn(`Geo IP lookup failed for ${ip}: ${(error as Error).message}`);
@@ -671,13 +830,21 @@ export class ClientsService {
     return {};
   }
 
+  // Баг найден 2026-07-25 (запрос пользователя: "человек отписался с канала и я удалил его с
+  // gdpr списка клиентов, он потом по рекламе тестовой подписался еще раз но не появился еще
+  // раз в списке клиентов") — без deletedAt: null здесь findOrCreate находил и обновлял ТУ ЖЕ
+  // GDPR-удалённую строку (softDelete НЕ трогает tgUserId/waPhone/igUserId, только PII-поля —
+  // см. комментарий у softDelete выше), молча дописывая новые данные подписки на строку,
+  // навсегда скрытую из выдачи (deletedAt так и оставался задан). Со стороны CRM это выглядело
+  // так, будто повторная подписка вообще не зарегистрировалась. sibling-метод findByTgId уже
+  // фильтровал deletedAt: null — расхождение между двумя путями поиска и было причиной.
   private buildIdentityWhere(
     projectId: string,
     data: Pick<FindOrCreateClientInput, 'tgUserId' | 'waPhone' | 'igUserId'>,
   ) {
-    if (data.tgUserId) return { projectId, tgUserId: data.tgUserId };
-    if (data.waPhone) return { projectId, waPhone: data.waPhone };
-    if (data.igUserId) return { projectId, igUserId: data.igUserId };
+    if (data.tgUserId) return { projectId, tgUserId: data.tgUserId, deletedAt: null };
+    if (data.waPhone) return { projectId, waPhone: data.waPhone, deletedAt: null };
+    if (data.igUserId) return { projectId, igUserId: data.igUserId, deletedAt: null };
     throw new Error('findOrCreate requires at least one channel identity (tgUserId/waPhone/igUserId)');
   }
 }

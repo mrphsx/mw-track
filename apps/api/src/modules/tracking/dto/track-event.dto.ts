@@ -3,7 +3,9 @@ import { IsDateString, IsEmail, IsIn, IsNumber, IsOptional, IsString, IsUrl } fr
 // Зеркалит значения enum TrackingEvent из packages/types (PageView/Lead/Subscribe/
 // Purchase/InitiateCheckout) + Click — отдельный пакет не подключаем ради одного
 // списка строк, чтобы не тащить в это шаг сборку @trafficcrm/types.
-const KNOWN_EVENT_NAMES = ['PageView', 'Lead', 'Subscribe', 'Purchase', 'InitiateCheckout', 'Click'];
+// Unsubscribe — запрос пользователя 2026-07-29 ("добавь события отписки как с подпиской"):
+// зеркалит Subscribe тем же путём (см. ClientsService.markUnsubscribed), не публичный SDK-вызов.
+const KNOWN_EVENT_NAMES = ['PageView', 'Lead', 'Subscribe', 'Unsubscribe', 'Purchase', 'InitiateCheckout', 'Click'];
 
 export class TrackEventDto {
   @IsIn(KNOWN_EVENT_NAMES)
@@ -16,6 +18,12 @@ export class TrackEventDto {
   @IsOptional()
   @IsString()
   ttclid?: string;
+
+  // Facebook Browser ID (_fbp cookie) — читается SDK на клике по кнопке Telegram
+  // (apps/sdk/src/browser.ts), запрос пользователя 2026-07-29.
+  @IsOptional()
+  @IsString()
+  fbp?: string;
 
   @IsOptional()
   @IsEmail()

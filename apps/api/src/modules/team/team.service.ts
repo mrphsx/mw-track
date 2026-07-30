@@ -2,7 +2,6 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { User, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
-import { isElevatedRole } from '../../common/permissions/permission.constants';
 import { CreateTeamMemberDto } from './dto/create-team-member.dto';
 import { UpdateTeamMemberDto } from './dto/update-team-member.dto';
 import { assertCanAssignRole, assertProjectsBelongToCompany } from './team-role.util';
@@ -19,7 +18,7 @@ const TEAM_MEMBER_SELECT = {
   lastLoginAt: true,
   createdAt: true,
   projectAccess: { select: { project: { select: { id: true, name: true } } } },
-  permissions: { select: { permission: true } },
+  permissions: { select: { projectId: true, permission: true } },
 } as const;
 
 @Injectable()
@@ -69,15 +68,8 @@ export class TeamService {
       },
     });
 
-    // Гранулярные права (запрос пользователя 2026-07-17) — ADMIN elevated, права не нужны.
-    // Если форма явно прислала список (даже пустой — "снять всё") — используем его; иначе
-    // засеваем дефолт по роли.
-    if (!isElevatedRole(user.role)) {
-      if (dto.permissions !== undefined) {
-        await this.permissionsService.replacePermissions(user.id, dto.permissions);
-      } else {
-        await this.permissionsService.seedDefaultsIfEmpty(user.id, user.role);
-      }
+    if (dto.role !== 'ADMIN' && dto.projectIds?.length) {
+      await this.permissionsService.applyProjectPermissions(user.id, user.role, dto.projectIds, dto.projectPermissions, dto.domainsPermissions);
     }
 
     return user;
@@ -103,12 +95,28 @@ export class TeamService {
       await assertProjectsBelongToCompany(this.prisma, companyId, dto.projectIds);
     }
 
+    const nextRole = (dto.role ?? member.role) as UserRole;
+    const becomesRestricted = nextRole !== 'ADMIN';
+
     const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.projectIds) {
-        // Полная замена набора — проще и надёжнее диффа (см. комментарий в DTO).
+        // Полная замена набора — проще и надёжнее диффа (см. комментарий в DTO). Очистка
+        // осиротевших UserPermission-строк (запрос пользователя 2026-07-28, найдено при
+        // проектировании per-project прав): без этого повторное добавление того же проекта
+        // позже тихо воскресило бы старый набор прав в обход seedDefaultsIfEmpty (тот сеет
+        // дефолт только когда строк 0 — а они не были бы 0, если бы мы их не почистили здесь).
+        const existingAccess = await tx.projectAccess.findMany({ where: { userId }, select: { projectId: true } });
+        const removedProjectIds = existingAccess.map((a) => a.projectId).filter((id) => !dto.projectIds!.includes(id));
+
         await tx.projectAccess.deleteMany({ where: { userId } });
-        if (dto.role !== 'ADMIN' && (dto.role ?? member.role) !== 'ADMIN') {
+        if (removedProjectIds.length > 0) {
+          await tx.userPermission.deleteMany({ where: { userId, projectId: { in: removedProjectIds } } });
+        }
+        if (becomesRestricted) {
           await tx.projectAccess.createMany({ data: dto.projectIds.map((projectId) => ({ userId, projectId })) });
+        } else {
+          // Переход в ADMIN — elevated, ProjectAccess/UserPermission ему не нужны вообще.
+          await tx.userPermission.deleteMany({ where: { userId } });
         }
       }
 
@@ -118,16 +126,9 @@ export class TeamService {
       });
     });
 
-    // Гранулярные права — тот же принцип, что в create(): явный список (даже пустой) —
-    // используем как есть; иначе, если это переход роли В BUYER/OPERATOR (понижение с ADMIN,
-    // или роль не менялась) — засеиваем дефолт, только если у пользователя ещё 0 строк (см.
-    // PermissionsService.seedDefaultsIfEmpty — не перетирает уже настроенное).
-    if (!isElevatedRole(updated.role)) {
-      if (dto.permissions !== undefined) {
-        await this.permissionsService.replacePermissions(userId, dto.permissions);
-      } else {
-        await this.permissionsService.seedDefaultsIfEmpty(userId, updated.role);
-      }
+    if (becomesRestricted) {
+      const projectIds = dto.projectIds ?? (await this.prisma.projectAccess.findMany({ where: { userId }, select: { projectId: true } })).map((a) => a.projectId);
+      await this.permissionsService.applyProjectPermissions(userId, updated.role, projectIds, dto.projectPermissions, dto.domainsPermissions);
     }
 
     return updated;

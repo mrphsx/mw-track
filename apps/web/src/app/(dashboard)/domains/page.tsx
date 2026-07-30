@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuthStore } from '@/store/auth.store';
-import { hasPermission } from '@/lib/permissions';
+import { hasAnyPermission } from '@/lib/permissions';
 
 type DomainStatus = 'PENDING' | 'VERIFYING' | 'ACTIVE' | 'ERROR';
 
@@ -125,14 +125,14 @@ export default function DomainsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Домены</h1>
-        {hasPermission(user, 'DOMAINS_CREATE') && (
+        {hasAnyPermission(user, 'DOMAINS_CREATE') && (
           <Button onClick={() => setShowAddModal(true)}>
             <Plus className="w-4 h-4 mr-1.5" /> Добавить домен
           </Button>
         )}
       </div>
 
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-muted-foreground">
         Домен покупаете и настраиваете вы сами (в своём Cloudflare-аккаунте или у любого другого
         регистратора/DNS-провайдера) — мы не управляем вашим DNS. Добавьте три записи по инструкции
         ниже (включая A-запись на <code className="text-xs">www</code> — сертификат выпускается сразу
@@ -144,11 +144,11 @@ export default function DomainsPage() {
         пути голый домен никуда не ведёт.
       </p>
 
-      {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!isLoading && domains?.length === 0 && (
         <Card>
-          <CardContent className="p-8 text-center text-gray-500">Доменов пока нет.</CardContent>
+          <CardContent className="p-8 text-center text-muted-foreground">Доменов пока нет.</CardContent>
         </Card>
       )}
 
@@ -182,10 +182,10 @@ export default function DomainsPage() {
                       <TableCell>
                         <Badge variant={STATUS_BADGE[d.status]}>{STATUS_LABEL[d.status]}</Badge>
                       </TableCell>
-                      <TableCell className="text-sm text-gray-500">{d.sslStatus || '—'}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{d.sslStatus || '—'}</TableCell>
                       <TableCell>
                         {d.paths.length === 0 ? (
-                          <span className="text-xs text-gray-400">Путей нет</span>
+                          <span className="text-xs text-muted-foreground">Путей нет</span>
                         ) : (
                           <div className="flex flex-col gap-0.5">
                             {d.paths.slice(0, 2).map((p) => (
@@ -194,13 +194,13 @@ export default function DomainsPage() {
                                 href={pathUrl(d.domain, p.path)}
                                 target="_blank"
                                 rel="noopener"
-                                className="text-xs font-mono text-gray-600 hover:underline truncate max-w-[220px]"
+                                className="text-xs font-mono text-muted-foreground hover:underline truncate max-w-[220px]"
                               >
                                 {p.path} → {pathTargetLabel(p)}
                               </a>
                             ))}
                             {d.paths.length > 2 && (
-                              <button type="button" onClick={() => setPathsDomainId(d.id)} className="text-xs text-gray-400 hover:underline text-left">
+                              <button type="button" onClick={() => setPathsDomainId(d.id)} className="text-xs text-muted-foreground hover:underline text-left">
                                 +{d.paths.length - 2} ещё
                               </button>
                             )}
@@ -217,7 +217,7 @@ export default function DomainsPage() {
                           <Button size="sm" variant="outline" onClick={() => setPathsDomainId(d.id)}>
                             Пути
                           </Button>
-                          {hasPermission(user, 'DOMAINS_DELETE') && (
+                          {hasAnyPermission(user, 'DOMAINS_DELETE') && (
                             <Button size="sm" variant="ghost" onClick={() => removeDomain.mutate(d.id)}>
                               <Trash2 className="w-4 h-4" />
                             </Button>
@@ -230,7 +230,7 @@ export default function DomainsPage() {
                         <TableCell colSpan={5} className="bg-amber-50">
                           <div className="space-y-2 py-2 text-sm">
                             {d.lastCheckError && <p className="text-red-600">⚠️ {d.lastCheckError}</p>}
-                            <p className="text-gray-600">Добавьте в DNS вашего домена три записи:</p>
+                            <p className="text-muted-foreground">Добавьте в DNS вашего домена три записи:</p>
                             <DnsRow label="TXT" name={d.instructions.txtName} value={d.instructions.txtValue} />
                             <DnsRow
                               label="A"
@@ -242,7 +242,7 @@ export default function DomainsPage() {
                               name={`www.${d.domain}`}
                               value={d.instructions.aRecordTarget || 'IP сервера (уточняется)'}
                             />
-                            <p className="text-xs text-gray-400">
+                            <p className="text-xs text-muted-foreground">
                               Запись на www обязательна — сертификат всегда выпускается сразу на домен и на www.
                               домен вместе.
                             </p>
@@ -335,7 +335,11 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
 
   return (
     <Dialog open={!!domain} onOpenChange={(open) => !open && close()}>
-      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+      {/* Баг-репорт пользователя 2026-07-30: "модальное окно слишком маленькое, не помещаются
+          пути" — max-w-lg (512px) было тесно и для длинных URL путей, и особенно для строки
+          "Добавить путь" (Input + 2 Select в один ряд). Расширено до max-w-3xl, форма добавления
+          получила flex-wrap на случай узких экранов. */}
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="font-mono">{domain.domain}</DialogTitle>
         </DialogHeader>
@@ -349,7 +353,7 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
 
           <div className="space-y-2">
             {domain.paths.length === 0 && (
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 Путей пока нет — голый домен (включая корень <code className="text-xs">/</code>) ни на
                 что не ведёт, пока не добавлен хотя бы один путь ниже.
               </p>
@@ -367,7 +371,7 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                     <span className="truncate min-w-0">{pathUrl(domain.domain, p.path)}</span>
                     <ExternalLink className="w-3 h-3 shrink-0" />
                   </a>
-                  <p className="text-xs text-gray-500 truncate">
+                  <p className="text-xs text-muted-foreground truncate">
                     {pathTargetSubtitle(p)} — {pathTargetLabel(p)}
                   </p>
                 </div>
@@ -380,11 +384,11 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
 
           <div className="space-y-2 border-t pt-3">
             <Label>Добавить путь</Label>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-muted-foreground">
               Путь подставляется автоматически по id проекта и лендинга — при необходимости его
               можно поправить вручную.
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Input
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
@@ -400,7 +404,7 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                   setPath('/');
                 }}
               >
-                <SelectTrigger className="flex-1 min-w-0">
+                <SelectTrigger className="flex-1 min-w-[160px]">
                   <SelectValue placeholder="Проект" />
                 </SelectTrigger>
                 <SelectContent>
@@ -420,7 +424,7 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                 }}
                 disabled={!projectId}
               >
-                <SelectTrigger className="flex-1 min-w-0">
+                <SelectTrigger className="flex-1 min-w-[160px]">
                   <SelectValue placeholder="Лендинг" />
                 </SelectTrigger>
                 <SelectContent>
@@ -453,9 +457,9 @@ function DnsRow({ label, name, value }: { label: string; name: string; value: st
   };
 
   return (
-    <div className="flex items-center gap-3 font-mono text-xs bg-white border rounded-md px-3 py-2">
+    <div className="flex items-center gap-3 font-mono text-xs bg-card border rounded-md px-3 py-2">
       <Badge variant="outline">{label}</Badge>
-      <span className="text-gray-500">{name}</span>
+      <span className="text-muted-foreground">{name}</span>
       <span className="flex-1 truncate">{value}</span>
       <Button size="icon" variant={copied ? 'default' : 'outline'} onClick={handleCopy}>
         {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}

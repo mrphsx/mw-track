@@ -12,6 +12,11 @@ import { TikTokEventsService } from './tiktok-events.service';
   imports: [BullModule.registerQueue({ name: 'tracking-events' }), ProjectsModule, AutomationsModule],
   controllers: [TrackingController],
   providers: [TrackingService, TrackingProcessor, FacebookCAPIService, TikTokEventsService],
-  exports: [TrackingService],
+  // FacebookCAPIService/TikTokEventsService экспортированы (запрос пользователя 2026-07-29,
+  // "проверка ивента" при создании пикселя) — PixelsService шлёт разовое тестовое событие тем
+  // же кодом, что и настоящая отправка, без похода через TrackingService.recordEvent (пикселя
+  // формы ещё может не существовать в БД на момент проверки, только что введённые в форме
+  // pixelId/accessToken).
+  exports: [TrackingService, FacebookCAPIService, TikTokEventsService],
 })
 export class TrackingModule {}

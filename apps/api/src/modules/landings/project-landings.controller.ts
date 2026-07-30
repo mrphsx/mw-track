@@ -3,7 +3,6 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Permission } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
 import { ProjectsService } from '../projects/projects.service';
 import { LandingsService } from './landings.service';
 import { CreateLandingFromTemplateDto } from './dto/create-landing-from-template.dto';
@@ -19,26 +18,23 @@ export class ProjectLandingsController {
   ) {}
 
   @Get()
-  @RequirePermission(Permission.LANDINGS_VIEW)
   async findAll(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_VIEW]);
     return this.landingsService.findAll(projectId, companyId);
   }
 
   @Post()
-  @RequirePermission(Permission.LANDINGS_CREATE)
   async create(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
     @Body() dto: CreateLandingFromTemplateDto,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
     return this.landingsService.createFromTemplate(projectId, companyId, dto);
   }
 
   @Post('custom')
-  @RequirePermission(Permission.LANDINGS_CREATE)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_ZIP_SIZE } }))
   async createCustom(
     @Param('projectId') projectId: string,
@@ -47,7 +43,7 @@ export class ProjectLandingsController {
     @Body() dto: UploadCustomLandingDto,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
     return this.landingsService.createCustom(projectId, companyId, dto, file);
   }
 }

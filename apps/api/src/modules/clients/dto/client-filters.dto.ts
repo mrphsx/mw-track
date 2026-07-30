@@ -101,13 +101,48 @@ export class ClientFiltersDto {
 
   @IsOptional()
   @IsString()
+  utmMedium?: string;
+
+  @IsOptional()
+  @IsString()
   utmCampaign?: string;
+
+  @IsOptional()
+  @IsString()
+  utmContent?: string;
 
   // Точная пер-лендинговая атрибуция — заполнен только для клиентов, пришедших через
   // PRIVATE_CHANNEL_REQUEST с известной invite-ссылкой лендинга (см. Client.landingId).
   @IsOptional()
   @IsString()
   landingId?: string;
+
+  // Фильтры по рекламным данным (запрос пользователя 2026-07-24) — те же поля, что теперь
+  // показываются в карточке клиента (ClientsService.getClientDetail). buyerId === 'none' —
+  // отдельный смысл, "без баера" (та же метка, что уже показывает /team, только как фильтр).
+  @IsOptional()
+  @IsString()
+  buyerId?: string;
+
+  @IsOptional()
+  @IsString()
+  pixelId?: string;
+
+  @IsOptional()
+  @IsString()
+  campaignName?: string;
+
+  @IsOptional()
+  @IsString()
+  adName?: string;
+
+  @IsOptional()
+  @IsString()
+  adsetName?: string;
+
+  @IsOptional()
+  @IsString()
+  siteSourceName?: string;
 
   @IsOptional()
   @IsString()

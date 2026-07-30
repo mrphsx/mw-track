@@ -33,6 +33,16 @@ import { Accordion, AccordionItem, AccordionTrigger, AccordionPanel } from '@/co
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
+// Автоворонки временно отключены из UI (запрос пользователя 2026-07-22, см. заглушку в
+// ../page.tsx) — прямой заход по URL тоже блокируется, раз кнопка со страницы проекта убрана.
+function AutomationsDisabledNotice() {
+  return (
+    <Card>
+      <CardContent className="p-8 text-center text-gray-500">Автоворонки временно недоступны.</CardContent>
+    </Card>
+  );
+}
+
 const STEP_TYPE_META: Record<AutomationStepType, { label: string; icon: typeof Clock }> = {
   DELAY: { label: 'Задержка', icon: Clock },
   SEND_PUSH: { label: 'Отправить сообщение', icon: Send },
@@ -111,6 +121,9 @@ export default function AutomationFlowEditorPage() {
   });
 
   if (!flow) return <p className="text-sm text-gray-500">Загрузка...</p>;
+
+  const automationsDisabled = true;
+  if (automationsDisabled) return <AutomationsDisabledNotice />;
 
   return (
     <div className="space-y-6">

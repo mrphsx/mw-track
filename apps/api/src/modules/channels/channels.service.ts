@@ -1,31 +1,16 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { Response } from 'express';
-import { BotScenarioTrigger, Channel, ChannelType, Client, Prisma } from '@prisma/client';
+import { BotScenarioTrigger, Channel, ChannelType, Client } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ChannelProvider, SendMessageOptions, SendMessageResult } from './providers/channel.provider.interface';
 import { TelegramProvider } from './providers/telegram.provider';
 import { TelegramPersonalService } from './providers/telegram-personal.service';
 import { WhatsAppProvider } from './providers/whatsapp.provider';
 import { InstagramProvider } from './providers/instagram.provider';
-import { ChannelMediaService } from './channel-media.service';
-import { VideoProcessingService } from './video-processing.service';
 import { UpdateChannelDto } from './dto/update-channel.dto';
 import { TestMessageDto } from './dto/test-message.dto';
-import { WelcomeMediaType } from './dto/upload-welcome-media.dto';
-
-const MAX_WELCOME_MEDIA_SIZE = 20 * 1024 * 1024;
-
-// Content-Type для отдачи через GET /channels/:id/welcome-media — Telegram сам смотрит на
-// байты, а не на заголовок при выборе sendPhoto/sendVideo/.../но корректный Content-Type
-// всё равно нужен для приличия (и на случай, если кто-то откроет ссылку в браузере).
-const WELCOME_MEDIA_CONTENT_TYPE: Record<WelcomeMediaType, string> = {
-  PHOTO: 'image/jpeg',
-  VIDEO: 'video/mp4',
-  VIDEO_NOTE: 'video/mp4',
-  VOICE: 'audio/ogg',
-  DOCUMENT: 'application/octet-stream',
-};
+import { renderMessagePlaceholders } from '../../common/message-placeholders.util';
 
 @Injectable()
 export class ChannelsService implements OnModuleInit {
@@ -41,8 +26,6 @@ export class ChannelsService implements OnModuleInit {
     private telegramPersonalService: TelegramPersonalService,
     private whatsAppProvider: WhatsAppProvider,
     private instagramProvider: InstagramProvider,
-    private channelMedia: ChannelMediaService,
-    private videoProcessing: VideoProcessingService,
   ) {
     this.providers = { TELEGRAM: this.telegramProvider, WHATSAPP: this.whatsAppProvider, INSTAGRAM: this.instagramProvider };
   }
@@ -106,7 +89,27 @@ export class ChannelsService implements OnModuleInit {
     }
 
     const provider = this.getProvider(client.channelType);
-    return provider.sendMessage(channelUserId, options, channel);
+    return provider.sendMessage(channelUserId, this.applyPlaceholders(options, client), channel);
+  }
+
+  // Персонализация {first_name}/{last_name}/{full_name}/{username} (запрос пользователя
+  // 2026-07-27) — единая точка для рассылок (PushesProcessor) и автоворонок
+  // (AutomationEngineService), оба зовут этот sendMessage с уже известным Client. У сценариев
+  // бота (BotScenarioEngineService) свой отдельный вызов sendMessage — Client там не всегда
+  // есть (холодные контакты), см. bot-scenario-engine.service.ts.
+  private applyPlaceholders(options: SendMessageOptions, client: Client): SendMessageOptions {
+    // WhatsApp/Instagram не дают отдельных first/last name полей (только общее имя профиля/
+    // юзернейм) — берём то, что реально есть у клиента, независимо от channelType.
+    const source = {
+      firstName: client.tgFirstName || client.waName,
+      lastName: client.tgLastName,
+      username: client.tgUsername || client.igUsername,
+    };
+    return {
+      ...options,
+      text: renderMessagePlaceholders(options.text, source),
+      buttons: options.buttons?.map((b) => ({ ...b, text: renderMessagePlaceholders(b.text, source) })),
+    };
   }
 
   // Канало-агностичная обёртка над provider.triggerScenario (см. ChannelProvider) — тот же
@@ -231,13 +234,7 @@ export class ChannelsService implements OnModuleInit {
   // изменение осело бы только в БД, реального эффекта на бота/вебхук не было бы.
   async update(id: string, companyId: string, dto: UpdateChannelDto): Promise<Channel> {
     await this.findOne(id, companyId);
-    const updated = await this.prisma.channel.update({
-      where: { id },
-      // tgWelcomeButtons — Json-колонка, class-validator-инстансы структурно не совпадают с
-      // Prisma.InputJsonValue (нет index signature) — тот же приём, что и у Push.buttons/
-      // messageMedia в PushesService.
-      data: { ...dto, tgWelcomeButtons: dto.tgWelcomeButtons !== undefined ? (dto.tgWelcomeButtons as unknown as Prisma.InputJsonValue) : undefined },
-    });
+    const updated = await this.prisma.channel.update({ where: { id }, data: dto });
     return this.tryInitialize(updated);
   }
 
@@ -328,86 +325,4 @@ export class ChannelsService implements OnModuleInit {
     }
   }
 
-  // Загрузка медиа приветственного сообщения (фото/видео/кружок/голосовое/документ) — файл
-  // приходит через multipart (см. ChannelsController.uploadWelcomeMedia), сохраняется в MinIO
-  // (ChannelMediaService, тот же бакет, что и у лендингов, префикс welcome-media/) и
-  // проставляется каналу. Старый файл (если был) удаляется — иначе в бакете копилось бы
-  // по одному "осиротевшему" объекту на каждую замену медиа.
-  async uploadWelcomeMedia(
-    id: string,
-    companyId: string,
-    mediaType: WelcomeMediaType,
-    file: Express.Multer.File,
-  ): Promise<Channel> {
-    if (!file) throw new BadRequestException('Файл не передан');
-    if (file.size > MAX_WELCOME_MEDIA_SIZE) throw new BadRequestException('Максимальный размер файла — 20MB');
-
-    const channel = await this.findOne(id, companyId);
-    if (channel.type !== 'TELEGRAM') throw new BadRequestException('Приветственное сообщение с медиа поддерживается только для Telegram');
-
-    // Кружок рендерится кругом только если видео уже квадратное (1:1) — тот же баг и фикс,
-    // что для медиа пушей (см. PushesService.uploadMedia, репорт пользователя 2026-07-17).
-    const buffer = mediaType === 'VIDEO_NOTE' ? await this.videoProcessing.ensureSquareVideoNote(file.buffer) : file.buffer;
-
-    const key = `welcome-media/${channel.id}/${Date.now()}-${file.originalname.replace(/[^\w.-]/g, '_')}`;
-    await this.channelMedia.uploadBuffer(key, buffer, file.mimetype || WELCOME_MEDIA_CONTENT_TYPE[mediaType]);
-
-    if (channel.tgWelcomeMediaKey) await this.channelMedia.removeObject(channel.tgWelcomeMediaKey);
-
-    const updated = await this.prisma.channel.update({
-      where: { id },
-      data: { tgWelcomeMediaKey: key, tgWelcomeMediaType: mediaType },
-    });
-    // Без переинициализации уже запущенный бот держит в замыкании старый Channel (см.
-    // TelegramProvider.initialize) — tgWelcomeMediaKey там остался бы null/прежним, и
-    // sendWelcomeMessage после следующего одобрения заявки молча ничего не отправил бы (баг-
-    // репорт пользователя 2026-07-21: "бот не скинул приветственное сообщение после принятия
-    // заявки"). update() уже переинициализирует по этой же причине — здесь тот же случай.
-    return this.tryInitialize(updated);
-  }
-
-  async removeWelcomeMedia(id: string, companyId: string): Promise<Channel> {
-    const channel = await this.findOne(id, companyId);
-    if (channel.tgWelcomeMediaKey) await this.channelMedia.removeObject(channel.tgWelcomeMediaKey);
-    const updated = await this.prisma.channel.update({
-      where: { id },
-      data: { tgWelcomeMediaKey: null, tgWelcomeMediaType: null },
-    });
-    return this.tryInitialize(updated);
-  }
-
-  // Публичный (без @Company) — Telegram сам обращается по этому URL, чтобы получить байты
-  // при отправке приветственного сообщения (см. TelegramProvider.sendMessage,
-  // options.mediaUrl передаётся как обычная HTTPS-ссылка, тот же приём, что и для медиа в
-  // Push-рассылках). Раскрытие содержимого без авторизации — сознательный компромисс: это
-  // ровно тот же файл, что и так уходит любому новому подписчику канала, секрета в нём нет
-  // (в отличие от avatar-эндпоинта, где закрывали не сам файл, а bot-токен в URL Telegram).
-  async streamWelcomeMedia(id: string, res: Response): Promise<void> {
-    const channel = await this.prisma.channel.findUnique({ where: { id } });
-    if (!channel?.tgWelcomeMediaKey || !channel.tgWelcomeMediaType) {
-      res.status(404).end();
-      return;
-    }
-
-    try {
-      const [stream, stat] = await Promise.all([
-        this.channelMedia.getObjectStream(channel.tgWelcomeMediaKey),
-        this.channelMedia.getStat(channel.tgWelcomeMediaKey),
-      ]);
-      res.setHeader('Content-Type', WELCOME_MEDIA_CONTENT_TYPE[channel.tgWelcomeMediaType as WelcomeMediaType]);
-      // Content-Length — без него Telegram-фетчер по ссылке иногда падает (см.
-      // pushes-media WEBPAGE_CURL_FAILED, тот же класс проблемы, здесь для консистентности).
-      if (stat?.size) res.setHeader('Content-Length', String(stat.size));
-      // no-transform — не даёт Cloudflare срезать Content-Length при проксировании публичного
-      // домена (см. push-media.controller.ts, тот же баг класс, 2026-07-17).
-      res.setHeader('Cache-Control', 'public, max-age=86400, no-transform');
-      stream.on('error', () => {
-        if (!res.headersSent) res.status(404).end();
-      });
-      stream.pipe(res);
-    } catch (error) {
-      this.logger.warn(`streamWelcomeMedia failed for channel ${id}: ${(error as Error).message}`);
-      res.status(404).end();
-    }
-  }
 }

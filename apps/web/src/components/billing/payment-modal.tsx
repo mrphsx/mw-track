@@ -90,7 +90,7 @@ export function PaymentModal({ invoiceId, onClose }: PaymentModalProps) {
         {invoice.status === 'PAID' && (
           <div className="text-center py-6 space-y-2">
             <Badge>Оплачено</Badge>
-            <p className="text-sm text-gray-500">Баланс пополнен на {invoice.paidAmount ?? invoice.amount} USDT.</p>
+            <p className="text-sm text-muted-foreground">Баланс пополнен на {invoice.paidAmount ?? invoice.amount} USDT.</p>
             <Button onClick={onClose} className="mt-2">
               Готово
             </Button>
@@ -100,7 +100,7 @@ export function PaymentModal({ invoiceId, onClose }: PaymentModalProps) {
         {expired && invoice.status !== 'PAID' && (
           <div className="text-center py-6 space-y-2">
             <Badge variant="destructive">Счёт просрочен</Badge>
-            <p className="text-sm text-gray-500">Создайте новый счёт, чтобы пополнить баланс.</p>
+            <p className="text-sm text-muted-foreground">Создайте новый счёт, чтобы пополнить баланс.</p>
           </div>
         )}
 
@@ -108,7 +108,7 @@ export function PaymentModal({ invoiceId, onClose }: PaymentModalProps) {
           <div className="space-y-4">
             <div className="text-center">
               <div className="text-2xl font-bold tabular-nums">{formatCountdown(msLeft)}</div>
-              <p className="text-xs text-gray-400">осталось на оплату</p>
+              <p className="text-xs text-muted-foreground">осталось на оплату</p>
             </div>
 
             {qrDataUrl && (
@@ -117,14 +117,14 @@ export function PaymentModal({ invoiceId, onClose }: PaymentModalProps) {
             )}
 
             <div className="space-y-1.5">
-              <div className="text-xs text-gray-500">Сумма (USDT {invoice.network})</div>
+              <div className="text-xs text-muted-foreground">Сумма (USDT {invoice.network})</div>
               <div className="font-mono font-semibold">{invoice.amount} USDT</div>
             </div>
 
             <div className="space-y-1.5">
-              <div className="text-xs text-gray-500">Адрес для перевода</div>
+              <div className="text-xs text-muted-foreground">Адрес для перевода</div>
               <div className="flex gap-2">
-                <code className="flex-1 text-xs bg-gray-50 rounded-md p-2 break-all">{invoice.paymentAddress}</code>
+                <code className="flex-1 text-xs bg-muted rounded-md p-2 break-all">{invoice.paymentAddress}</code>
                 <Button size="icon" variant="outline" onClick={() => copyToClipboard(invoice.paymentAddress || '')}>
                   <Copy className="w-4 h-4" />
                 </Button>

@@ -6,9 +6,13 @@ interface StatsCardProps {
   value: string | number;
   icon: LucideIcon;
   hint?: string;
+  // Красная подпись помельче (запрос пользователя 2026-07-24, карточка "Клиентов": "отписались...
+  // минус и число отписавшихся") — отдельно от обычного серого hint выше, для метрик со знаком
+  // "минус" (что-то ушедшее/потерянное), а не нейтрального уточнения.
+  dangerHint?: string;
 }
 
-export function StatsCard({ label, value, icon: Icon, hint }: StatsCardProps) {
+export function StatsCard({ label, value, icon: Icon, hint, dangerHint }: StatsCardProps) {
   return (
     <Card>
       <CardContent className="p-5 flex items-start justify-between">
@@ -16,6 +20,7 @@ export function StatsCard({ label, value, icon: Icon, hint }: StatsCardProps) {
           <div className="text-sm text-muted-foreground">{label}</div>
           <div className="text-2xl font-bold mt-1">{value}</div>
           {hint && <div className="text-xs text-muted-foreground mt-1">{hint}</div>}
+          {dangerHint && <div className="text-xs text-red-600 dark:text-red-400 mt-0.5">{dangerHint}</div>}
         </div>
         <div className="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950 flex items-center justify-center">
           <Icon className="w-4.5 h-4.5 text-blue-600 dark:text-blue-400" />

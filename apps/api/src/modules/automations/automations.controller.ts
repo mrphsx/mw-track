@@ -3,7 +3,6 @@ import { ModuleRef } from '@nestjs/core';
 import { Permission } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
 import { ProjectsService } from '../projects/projects.service';
 import { AutomationsService } from './automations.service';
 import { CreateAutomationFlowDto, UpdateAutomationFlowDto } from './dto/automation-flow.dto';
@@ -29,33 +28,29 @@ export class AutomationsController {
   }
 
   @Get()
-  @RequirePermission(Permission.AUTOMATIONS_VIEW)
   async findAll(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_VIEW]);
     return this.automationsService.findAllForProject(projectId);
   }
 
   @Post()
-  @RequirePermission(Permission.AUTOMATIONS_CREATE)
   async create(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
     @Body() dto: CreateAutomationFlowDto,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_CREATE]);
     return this.automationsService.create(projectId, companyId, dto);
   }
 
   @Get(':flowId')
-  @RequirePermission(Permission.AUTOMATIONS_VIEW)
   async findOne(@Param('flowId') flowId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_VIEW]);
     return this.automationsService.findOne(flowId, projectId);
   }
 
   @Patch(':flowId')
-  @RequirePermission(Permission.AUTOMATIONS_EDIT)
   async update(
     @Param('flowId') flowId: string,
     @Param('projectId') projectId: string,
@@ -63,31 +58,28 @@ export class AutomationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: UpdateAutomationFlowDto,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_EDIT]);
     return this.automationsService.update(flowId, projectId, dto);
   }
 
   @Delete(':flowId')
-  @RequirePermission(Permission.AUTOMATIONS_DELETE)
   async remove(@Param('flowId') flowId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_DELETE]);
     return this.automationsService.remove(flowId, projectId);
   }
 
   @Get(':flowId/enrollments')
-  @RequirePermission(Permission.AUTOMATIONS_VIEW)
   async getEnrollments(
     @Param('flowId') flowId: string,
     @Param('projectId') projectId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_VIEW]);
     return this.automationsService.getEnrollments(flowId, projectId);
   }
 
   @Post(':flowId/steps')
-  @RequirePermission(Permission.AUTOMATIONS_EDIT)
   async addStep(
     @Param('flowId') flowId: string,
     @Param('projectId') projectId: string,
@@ -95,12 +87,11 @@ export class AutomationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: CreateAutomationStepDto,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_EDIT]);
     return this.automationsService.addStep(flowId, projectId, dto);
   }
 
   @Patch(':flowId/steps/:stepId')
-  @RequirePermission(Permission.AUTOMATIONS_EDIT)
   async updateStep(
     @Param('flowId') flowId: string,
     @Param('stepId') stepId: string,
@@ -109,12 +100,11 @@ export class AutomationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: UpdateAutomationStepDto,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_EDIT]);
     return this.automationsService.updateStep(flowId, stepId, projectId, dto);
   }
 
   @Post(':flowId/steps/:stepId/move')
-  @RequirePermission(Permission.AUTOMATIONS_EDIT)
   async moveStep(
     @Param('flowId') flowId: string,
     @Param('stepId') stepId: string,
@@ -123,12 +113,11 @@ export class AutomationsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: MoveAutomationStepDto,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_EDIT]);
     return this.automationsService.moveStep(flowId, stepId, projectId, dto.direction);
   }
 
   @Delete(':flowId/steps/:stepId')
-  @RequirePermission(Permission.AUTOMATIONS_EDIT)
   async removeStep(
     @Param('flowId') flowId: string,
     @Param('stepId') stepId: string,
@@ -136,7 +125,7 @@ export class AutomationsController {
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
   ) {
-    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role);
+    await this.getProjectsService().assertAccess(projectId, companyId, user.userId, user.role, [Permission.AUTOMATIONS_EDIT]);
     return this.automationsService.removeStep(flowId, stepId, projectId);
   }
 }

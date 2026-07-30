@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AudienceService } from './audience.service';
@@ -21,7 +21,17 @@ export class AudienceController {
     @Param('projectBId') projectBId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.audienceService.getOverlapDetail(companyId, user.userId, user.role, projectAId, projectBId);
+    return this.audienceService.getOverlapDetail(
+      companyId,
+      user.userId,
+      user.role,
+      projectAId,
+      projectBId,
+      Number(page) || 1,
+      Math.min(Number(limit) || 20, 100),
+    );
   }
 }

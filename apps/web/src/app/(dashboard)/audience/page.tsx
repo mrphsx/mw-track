@@ -1,11 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { ClientsTable, ClientRow } from '@/components/clients/clients-table';
+import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
 
 interface OverlapMatrix {
   projects: { id: string; name: string }[];
@@ -15,12 +18,19 @@ interface OverlapMatrix {
 
 interface OverlapDetailRow {
   tgUserId: string;
-  tgFirstName: string | null;
-  tgLastName: string | null;
-  tgUsername: string | null;
-  inA: { hasPurchase: boolean; totalSpent: string; isSubscribed: boolean };
-  inB: { hasPurchase: boolean; totalSpent: string; isSubscribed: boolean };
+  clientA: ClientRow;
+  clientB: ClientRow;
 }
+
+interface OverlapDetailPage {
+  items: OverlapDetailRow[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+const PAGE_SIZE = 20;
 
 export default function AudiencePage() {
   const [detailPair, setDetailPair] = useState<{ a: { id: string; name: string }; b: { id: string; name: string } } | null>(null);
@@ -43,17 +53,17 @@ export default function AudiencePage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Пересечение аудиторий</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <p className="text-sm text-muted-foreground mt-1">
           Клиенты, которые состоят одновременно в нескольких проектах компании — сопоставление
           по Telegram user id. Диагональ — общее число идентифицированных клиентов проекта.
         </p>
       </div>
 
-      {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
       {!isLoading && (data?.projects.length ?? 0) < 2 && (
         <Card>
-          <CardContent className="p-8 text-center text-gray-500">
+          <CardContent className="p-8 text-center text-muted-foreground">
             Нужно минимум два проекта с идентифицированными Telegram-клиентами, чтобы увидеть
             пересечения.
           </CardContent>
@@ -66,7 +76,7 @@ export default function AudiencePage() {
             <table className="border-collapse">
               <thead>
                 <tr>
-                  <th className="p-2 text-left text-sm text-gray-500"></th>
+                  <th className="p-2 text-left text-sm text-muted-foreground"></th>
                   {data.projects.map((p) => (
                     <th key={p.id} className="p-2 text-sm font-medium text-left whitespace-nowrap">
                       {p.name}
@@ -91,10 +101,18 @@ export default function AudiencePage() {
                               onClick={() => setDetailPair({ a: rowProject, b: colProject })}
                               className="inline-flex"
                             >
-                              <Badge className="cursor-pointer hover:opacity-80">{count}</Badge>
+                              <Badge
+                                className={`cursor-pointer hover:opacity-80 ${
+                                  detailPair && detailPair.a.id === rowProject.id && detailPair.b.id === colProject.id
+                                    ? 'ring-2 ring-offset-1 ring-blue-500'
+                                    : ''
+                                }`}
+                              >
+                                {count}
+                              </Badge>
                             </button>
                           ) : (
-                            <span className="text-gray-300">0</span>
+                            <span className="text-muted-foreground">0</span>
                           )}
                         </td>
                       );
@@ -107,56 +125,99 @@ export default function AudiencePage() {
         </Card>
       )}
 
-      <OverlapDetailDialog pair={detailPair} onClose={() => setDetailPair(null)} />
+      {detailPair && <OverlapComparisonPanel pair={detailPair} onClose={() => setDetailPair(null)} />}
     </div>
   );
 }
 
-function OverlapDetailDialog({
+// Раньше пересечение открывалось модальным окном с одной плоской строкой на клиента (имя +
+// урезанный inA/inB текст) — запрос пользователя 2026-07-30: "начинаешь подгружать лидов в
+// форме списка с обеих аккаунтов как две колонки ниже (с пагинацией), чтобы можно было сразу
+// сравнить действие и параметры лида в обеих проектах". Теперь это инлайн-панель под таблицей
+// (не модалка) с двумя ПОЛНЫМИ ClientsTable рядом — один общий page/limit на пару (не по
+// колонке отдельно), чтобы строка N слева и строка N справа гарантированно оставались одним и
+// тем же человеком (бэкенд уже возвращает items в этом порядке, см. AudienceService.
+// getOverlapDetail). Клик по строке в любой колонке открывает обычный ClientDetailDrawer этого
+// же проекта — полная история покупок/событий доступна без ухода со страницы.
+function OverlapComparisonPanel({
   pair,
   onClose,
 }: {
-  pair: { a: { id: string; name: string }; b: { id: string; name: string } } | null;
+  pair: { a: { id: string; name: string }; b: { id: string; name: string } };
   onClose: () => void;
 }) {
-  const { data: rows, isLoading } = useQuery({
-    queryKey: ['audience-overlap-detail', pair?.a.id, pair?.b.id],
-    queryFn: async () => (await api.get<OverlapDetailRow[]>(`/audience/overlap/${pair!.a.id}/${pair!.b.id}`)).data,
-    enabled: !!pair,
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<{ projectId: string; clientId: string } | null>(null);
+
+  useEffect(() => setPage(1), [pair.a.id, pair.b.id]);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['audience-overlap-detail', pair.a.id, pair.b.id, page],
+    queryFn: async () =>
+      (
+        await api.get<OverlapDetailPage>(`/audience/overlap/${pair.a.id}/${pair.b.id}`, { params: { page, limit: PAGE_SIZE } })
+      ).data,
+    placeholderData: (prev) => prev,
   });
 
+  const clientsA = data?.items.map((i) => i.clientA) ?? [];
+  const clientsB = data?.items.map((i) => i.clientB) ?? [];
+
   return (
-    <Dialog open={!!pair} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>
-            {pair?.a.name} ∩ {pair?.b.name}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="space-y-2">
-          {isLoading && <p className="text-sm text-gray-500">Загрузка...</p>}
-          {!isLoading && rows?.length === 0 && <p className="text-sm text-gray-500">Пересечений не найдено.</p>}
-          {rows?.map((r) => (
-            <div key={r.tgUserId} className="flex items-center justify-between gap-3 border rounded-md px-3 py-2 text-sm">
-              <div className="min-w-0">
-                <div className="font-medium truncate">
-                  {r.tgFirstName} {r.tgLastName || ''} {r.tgUsername && <span className="text-gray-500">@{r.tgUsername}</span>}
-                </div>
-              </div>
-              <div className="flex gap-4 shrink-0 text-xs text-gray-500">
-                <span>
-                  {pair?.a.name}: {r.inA.isSubscribed ? 'подписан' : 'отписан'}
-                  {r.inA.hasPurchase ? ` · $${Number(r.inA.totalSpent).toFixed(2)}` : ''}
-                </span>
-                <span>
-                  {pair?.b.name}: {r.inB.isSubscribed ? 'подписан' : 'отписан'}
-                  {r.inB.hasPurchase ? ` · $${Number(r.inB.totalSpent).toFixed(2)}` : ''}
-                </span>
+    <Card>
+      <CardContent className="p-4 space-y-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h2 className="font-medium">
+            {pair.a.name} ∩ {pair.b.name}
+            {data && <span className="text-sm text-muted-foreground font-normal ml-2">{data.total} клиентов</span>}
+          </h2>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {isLoading && !data && <p className="text-sm text-muted-foreground">Загрузка...</p>}
+        {data && data.items.length === 0 && <p className="text-sm text-muted-foreground">Пересечений не найдено.</p>}
+
+        {!!data?.items.length && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="min-w-0 space-y-2">
+              <h3 className="text-sm font-medium text-muted-foreground truncate">{pair.a.name}</h3>
+              <div className="border rounded-lg bg-card overflow-x-auto">
+                <ClientsTable projectId={pair.a.id} clients={clientsA} onSelect={(clientId) => setSelected({ projectId: pair.a.id, clientId })} />
               </div>
             </div>
-          ))}
-        </div>
-      </DialogContent>
-    </Dialog>
+            <div className="min-w-0 space-y-2">
+              <h3 className="text-sm font-medium text-muted-foreground truncate">{pair.b.name}</h3>
+              <div className="border rounded-lg bg-card overflow-x-auto">
+                <ClientsTable projectId={pair.b.id} clients={clientsB} onSelect={(clientId) => setSelected({ projectId: pair.b.id, clientId })} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {data && data.totalPages > 1 && (
+          <div className="flex items-center justify-between text-sm text-muted-foreground">
+            <span>
+              Страница {data.page} из {data.totalPages}
+            </span>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                Назад
+              </Button>
+              <Button size="sm" variant="outline" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)}>
+                Вперёд
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+
+      <ClientDetailDrawer
+        projectId={selected?.projectId ?? ''}
+        clientId={selected?.clientId ?? null}
+        onClose={() => setSelected(null)}
+      />
+    </Card>
   );
 }

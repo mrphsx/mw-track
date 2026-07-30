@@ -5,7 +5,6 @@ import { Permission } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
-import { RequirePermission } from '../../common/permissions/require-permission.decorator';
 import { ProjectsService } from '../projects/projects.service';
 import { PushesService } from './pushes.service';
 
@@ -23,7 +22,6 @@ export class PushMediaController {
   ) {}
 
   @Post('projects/:projectId/pushes/media')
-  @RequirePermission(Permission.PUSHES_CREATE)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_PUSH_MEDIA_SIZE } }))
   async upload(
     @Param('projectId') projectId: string,
@@ -32,7 +30,7 @@ export class PushMediaController {
     @UploadedFile() file: Express.Multer.File,
     @Body('mediaType') mediaType?: string,
   ) {
-    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role);
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_CREATE]);
     return this.pushesService.uploadMedia(file, mediaType);
   }
 

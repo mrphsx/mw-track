@@ -89,7 +89,7 @@ export function PushAudienceStep({ value, onChange, audienceTotal, audienceReach
       <Card>
         <CardContent className="p-5 space-y-3">
           {isCalculating ? (
-            <div className="flex items-center justify-center py-8 text-gray-400">
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
               <Loader2 className="w-5 h-5 animate-spin" />
             </div>
           ) : (
@@ -114,7 +114,7 @@ export function PushAudienceStep({ value, onChange, audienceTotal, audienceReach
                 </span>
                 <span className="font-bold">{unreachable ?? '—'}</span>
               </div>
-              <p className="text-xs text-gray-400 pt-1">«Недоступны» — заблокировали бота</p>
+              <p className="text-xs text-muted-foreground pt-1">«Недоступны» — заблокировали бота</p>
             </>
           )}
         </CardContent>

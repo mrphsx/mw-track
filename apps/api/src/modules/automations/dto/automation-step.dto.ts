@@ -15,9 +15,9 @@ import {
 } from 'class-validator';
 import { AutomationStepType } from '@prisma/client';
 
-// Дублирует форму apps/api/src/modules/channels/dto/create-channel.dto.ts:WelcomeButtonDto —
-// сознательно, чтобы модуль автоворонок не тянул через себя channels/dto (см. CLAUDE.md про
-// пиксели: каждая фича — свой модуль, минимум лишних межмодульных импортов ради одной формы).
+// Та же форма {text, url}, что и у Push.buttons/BotScenarioStep.buttons — сознательно
+// дублируется в каждом модуле, а не выносится в общий пакет (см. CLAUDE.md про пиксели:
+// каждая фича — свой модуль, минимум лишних межмодульных импортов ради одной формы).
 export class AutomationButtonDto {
   @IsString()
   @IsNotEmpty()

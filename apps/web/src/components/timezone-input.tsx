@@ -19,7 +19,7 @@ export function TimezoneInput({ value, onChange, id = 'timezone' }: { value: str
           <option key={tz} value={tz} />
         ))}
       </datalist>
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-muted-foreground">
         Влияет на границы &laquo;суток&raquo; во всех дневных графиках этого проекта (подписки, диалоги,
         события) — полезно, если аудитория проекта на другом конце света.
       </p>

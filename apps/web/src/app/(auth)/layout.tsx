@@ -12,5 +12,5 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
     if (hydrated && accessToken) router.replace('/');
   }, [hydrated, accessToken, router]);
 
-  return <div className="min-h-screen flex items-center justify-center bg-gray-50">{children}</div>;
+  return <div className="min-h-screen flex items-center justify-center bg-muted">{children}</div>;
 }

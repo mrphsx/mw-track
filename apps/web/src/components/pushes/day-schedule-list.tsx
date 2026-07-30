@@ -33,14 +33,14 @@ export function DayScheduleList({
 
   return (
     <div className="min-w-[240px] flex-1 space-y-2 rounded-lg border p-3 text-sm">
-      <div className="flex items-center gap-1.5 font-medium text-gray-600">
+      <div className="flex items-center gap-1.5 font-medium text-muted-foreground">
         <CalendarClock className="h-3.5 w-3.5" />
         {format(date, 'd MMMM', { locale: ru })}
-        {!!items?.length && <span className="text-gray-400">· {items.length}</span>}
+        {!!items?.length && <span className="text-muted-foreground">· {items.length}</span>}
       </div>
 
-      {isLoading && <p className="text-xs text-gray-400">Загрузка...</p>}
-      {!isLoading && items?.length === 0 && <p className="text-xs text-gray-400">Ничего не запланировано</p>}
+      {isLoading && <p className="text-xs text-muted-foreground">Загрузка...</p>}
+      {!isLoading && items?.length === 0 && <p className="text-xs text-muted-foreground">Ничего не запланировано</p>}
 
       <ul className="space-y-1.5">
         {items?.map((item) => (
@@ -53,7 +53,7 @@ export function DayScheduleList({
                 </Link>
               )}
             </div>
-            <span className="shrink-0 text-xs text-gray-400">{format(new Date(item.scheduledAt), 'HH:mm')}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{format(new Date(item.scheduledAt), 'HH:mm')}</span>
           </li>
         ))}
       </ul>

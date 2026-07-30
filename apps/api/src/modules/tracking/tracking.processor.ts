@@ -1,6 +1,6 @@
 import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
-import { PixelPlatform } from '@prisma/client';
+import { PixelPlatform, Prisma } from '@prisma/client';
 import { Job } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FacebookCAPIService } from './facebook-capi.service';
@@ -46,6 +46,19 @@ export class TrackingProcessor {
       pixels.map(async (pixel) => {
         const provider = this.providers[pixel.platform];
         const result = await provider.sendEvent(event, pixel);
+        // warning (запрос пользователя 2026-07-28) — HTTP успешен, но платформа сигналит,
+        // что событие могло не долететь по факту (events_received: 0 у FB и т.п.); своей
+        // колонки под это в схеме нет — кладём в error с пометкой ⚠, чтобы было видно в
+        // Pixel Logs UI, не только в серверных логах, не выдавая at the same time status
+        // как настоящую ошибку (HTTP-запрос реально прошёл успешно).
+        const errorText = result.error ?? (result.warning ? `⚠ ${result.warning}` : undefined);
+        // requestPayload/responsePayload (запрос пользователя 2026-07-28: "сделай как у
+        // конкурентов, полностью с отчётом") — реальное тело запроса к платформе и реальный
+        // ответ, для показа в Pixel Logs UI (не только внутренний TrackingEvent.payload, как
+        // было раньше). Undefined -> Prisma.JsonNull, а не литеральный undefined (Prisma не
+        // принимает undefined в Json-поле update/create так же, как null).
+        const requestPayload = (result.requestPayload as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull;
+        const responsePayload = (result.responsePayload as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull;
         await this.prisma.trackingEventDelivery.upsert({
           where: { eventId_pixelId: { eventId: event.id, pixelId: pixel.id } },
           create: {
@@ -53,12 +66,18 @@ export class TrackingProcessor {
             pixelId: pixel.id,
             status: result.success ? 'sent' : 'error',
             externalEventId: result.externalEventId,
-            error: result.error,
+            error: errorText,
+            requestPayload,
+            responsePayload,
+            httpStatus: result.httpStatus,
           },
           update: {
             status: result.success ? 'sent' : 'error',
             externalEventId: result.externalEventId,
-            error: result.error,
+            error: errorText,
+            requestPayload,
+            responsePayload,
+            httpStatus: result.httpStatus,
             sentAt: new Date(),
           },
         });
