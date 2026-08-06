@@ -10,7 +10,7 @@
 PushesController
     ↓
 PushesService.create()       → Push (status: DRAFT|SCHEDULED), audienceTotal/audienceReachable
-PushesService.send()         → Push.status = SENDING, company.pushesThisMonth++
+PushesService.send()         → Push.status = SENDING, company.pushesToday++
     ↓ (по клиентам аудитории, чанками — ClientsService.getClientsForPushInChunks)
 BullMQ Queue 'push-messages' (rate limit: 30 job/sec)
     ↓
@@ -164,7 +164,7 @@ export class PushesService {
 
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { pushesThisMonth: { increment: 1 } },
+      data: { pushesToday: { increment: 1 } },
     });
 
     // Чанки по 200 клиентов — не грузим всю аудиторию в память (см. ClientsService, шаг 1.6).
@@ -298,7 +298,7 @@ POST   /api/v1/projects/:projectId/pushes/:id/recalculate-audience
 //   Пересчитать audienceTotal/audienceReachable по текущему составу клиентов.
 
 POST   /api/v1/projects/:projectId/pushes/:id/send
-//   @SubscriptionLimit('pushes') — гвард проверяет company.pushesThisMonth < maxPushesPerMonth
+//   @SubscriptionLimit('pushes') — гвард проверяет company.pushesToday < maxPushesPerDay
 //   ДО вызова сервиса. Переводит в SENDING, расставляет джобы по очереди.
 
 GET    /api/v1/projects/:projectId/pushes/:id/logs
@@ -308,21 +308,21 @@ DELETE /api/v1/projects/:projectId/pushes/:id
 //   Отмена черновика/запланированного пуша (только DRAFT/SCHEDULED).
 ```
 
-## Cron: сброс лимитов пушей каждый месяц
+## Cron: сброс лимитов пушей каждый день (было — раз в месяц, до 2026-07-30)
 
 ```typescript
 // modules/pushes/pushes.service.ts (или отдельный PushesCron)
 
 @Cron('0 0 * * *') // раз в сутки, а не раз в секунду на каждую компанию — дешевле и достаточно
-async resetMonthlyPushLimits() {
+async resetDailyPushLimits() {
   const companies = await this.prisma.company.findMany({
-    where: { pushesResetAt: { lte: subDays(new Date(), 30) } },
+    where: { pushesResetAt: { lte: subDays(new Date(), 1) } },
   });
 
   for (const company of companies) {
     await this.prisma.company.update({
       where: { id: company.id },
-      data: { pushesThisMonth: 0, pushesResetAt: new Date() },
+      data: { pushesToday: 0, pushesResetAt: new Date() },
     });
   }
 }

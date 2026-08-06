@@ -10,8 +10,8 @@ import { AbTestGroupItem, groupAutoLabel } from '@/lib/landings';
 import { STUDIO_CARD } from '../../../../ui';
 
 // Studio-версия истории A/B/n-тестов лендингов (запрос пользователя 2026-07-30: "добей остальные
-// оставшиеся страницы") — логика 1:1 с классической. Клик по карточке ведёт на классическую
-// страницу группы A/B-теста — своей Studio-версии у неё пока нет.
+// оставшиеся страницы") — логика 1:1 с классической. Клик по карточке ведёт на Studio-страницу
+// группы A/B-теста (появилась позже в тот же день).
 export default function StudioAbTestHistoryPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const router = useRouter();
@@ -33,7 +33,7 @@ export default function StudioAbTestHistoryPage() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/landings`}
+          href={`/projects/${projectId}/landings`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Лендинги
@@ -62,7 +62,7 @@ export default function StudioAbTestHistoryPage() {
           return (
             <div
               key={g.id}
-              onClick={() => router.push(`/dashboard/studio/projects/${projectId}/landings/groups/${g.id}`)}
+              onClick={() => router.push(`/projects/${projectId}/landings/groups/${g.id}`)}
               className={`${STUDIO_CARD} p-4 space-y-2 cursor-pointer hover:opacity-90 transition-opacity`}
             >
               <div className="flex items-start justify-between gap-4 flex-wrap">

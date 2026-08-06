@@ -45,6 +45,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Partial<Record<UserRole, Permission[]>> =
     Permission.CLIENTS_EDIT,
     Permission.STATS_VIEW,
   ],
+  // Оператор-админ (запрос пользователя 2026-07-30) — намеренно пустой массив, а не
+  // отсутствие ключа: роль не потребляет ресурсы проекта сама (не открывает лендинги/
+  // пиксели/клиентов и т.д.), её единственная задача — управление участниками с ролью
+  // Operator в пределах своих же проектов (см. team-role.util.ts assertOperatorAdminScope).
+  OPERATOR_ADMIN: [],
 };
 
 // DOMAINS_* — единственная группа прав, которая НЕ per-project (решение пользователя
@@ -61,7 +66,7 @@ export const DOMAIN_PERMISSIONS: Permission[] = [
 
 // Роли, которые физически проверяются по UserPermission — остальные (SUPER_ADMIN/OWNER/
 // ADMIN) elevated, безусловный полный доступ.
-export const RESTRICTED_ROLES: UserRole[] = [UserRole.BUYER, UserRole.OPERATOR];
+export const RESTRICTED_ROLES: UserRole[] = [UserRole.BUYER, UserRole.OPERATOR, UserRole.OPERATOR_ADMIN];
 
 export function isElevatedRole(role: UserRole): boolean {
   return !RESTRICTED_ROLES.includes(role);

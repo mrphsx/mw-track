@@ -71,7 +71,7 @@ export default function StudioScenarioStatsPage() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/scenarios/${scenarioId}`}
+          href={`/projects/${projectId}/scenarios/${scenarioId}`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> К сценарию

@@ -1,10 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Post, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
-import { Permission } from '@prisma/client';
+import { Permission, UserRole } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { resolveScopedBuyerId } from '../../common/buyer-scope.util';
 import { ProjectsService } from '../projects/projects.service';
 import { ClientsService } from './clients.service';
 import { ClientsRepository } from './clients.repository';
@@ -20,12 +22,20 @@ export class ClientsController {
     private purchasesService: PurchasesService,
     private projectsService: ProjectsService,
     private permissionsService: PermissionsService,
+    private prisma: PrismaService,
   ) {}
 
   @Get()
   async findMany(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() filters: ClientFiltersDto) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
-    return this.clientsService.findMany(projectId, filters);
+    const canViewCrossProject = await this.permissionsService.hasPermission(
+      user.userId,
+      projectId,
+      user.role,
+      Permission.CLIENTS_VIEW_CROSS_PROJECT,
+    );
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    return this.clientsService.findMany(projectId, filters, companyId, canViewCrossProject, scopedBuyerId);
   }
 
   @Get('stats')
@@ -36,7 +46,8 @@ export class ClientsController {
     @Query() period: StatsPeriodDto,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
-    const stats = await this.clientsRepository.getProjectStats(projectId, period);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    const stats = await this.clientsRepository.getProjectStats(projectId, period, scopedBuyerId);
 
     // Выручка (запрос пользователя 2026-07-17: "что видят в статистике а что нет") —
     // без STATS_VIEW_REVENUE денежные поля обнуляются, а не удаляются, фронт ждёт число.
@@ -60,7 +71,23 @@ export class ClientsController {
     @Query() period: StatsPeriodDto,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
-    return this.clientsRepository.getConversionFunnel(projectId, period);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    return this.clientsRepository.getConversionFunnel(projectId, period, scopedBuyerId);
+  }
+
+  // "Моя статистика" (Operator, запрос пользователя 2026-07-30) — сколько клиентов вообще на
+  // проекте + сколько депозитов ЛИЧНО зарегистрировал этот сотрудник (Purchase.registeredBy,
+  // не "клиенты назначенные оператору" — такой привязки в модели нет). STATS_VIEW переиспользован
+  // (уже в дефолтном наборе Operator), не заводим отдельное разрешение под один эндпоинт.
+  @Get('my-stats')
+  async myStats(
+    @Param('projectId') projectId: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() period: StatsPeriodDto,
+  ) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
+    return this.clientsRepository.getMyStats(projectId, user.userId, period);
   }
 
   @Get('export/lookalike')
@@ -72,7 +99,8 @@ export class ClientsController {
     @Res() res: Response,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EXPORT]);
-    const csv = await this.clientsService.exportForLookalike(projectId, onlyBuyers !== 'false');
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    const csv = await this.clientsService.exportForLookalike(projectId, onlyBuyers !== 'false', scopedBuyerId);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="lookalike_${projectId}.csv"`);
     res.send(csv);
@@ -81,7 +109,7 @@ export class ClientsController {
   @Get(':clientId')
   async findOne(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
-    return this.clientsService.getClientDetail(clientId, companyId);
+    return this.clientsService.getClientDetail(clientId, companyId, user.role !== UserRole.OPERATOR);
   }
 
   @Get(':clientId/purchases')

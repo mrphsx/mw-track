@@ -24,6 +24,11 @@ import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog, LandingDoma
 import { AbTestComparisonCard, AbTestMemberStats, LandingVariantStats } from '@/components/landings/ab-test-comparison-card';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../../../../ui';
 
+// Приглушённый текст Studio (запрос пользователя 2026-08-03: "карточки просмотров, кликов итд
+// в темной теме серые") — передаётся в StatsCard вместо дефолтного text-muted-foreground
+// (плейсхолдер-токен, см. память dark_theme_rollout), тот же цвет, что и везде на этой странице.
+const STUDIO_MUTED = 'text-[#5F6B7A] dark:text-[#92A0AF]';
+
 interface ProjectChannelInfo {
   channel: { tgChannelMembersCount: number | null } | null;
 }
@@ -145,7 +150,7 @@ export default function StudioLandingStatsPage() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/landings`}
+          href={`/projects/${projectId}/landings`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Все лендинги
@@ -168,6 +173,13 @@ export default function StudioLandingStatsPage() {
                 </a>
               )}
             </div>
+            {/* Автор (запрос пользователя 2026-08-03: "на странице лэндинга не видно кто
+                создал лэндинг") */}
+            {stats.landing.createdBy && (
+              <p className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] mt-1">
+                Создал: {stats.landing.createdBy.firstName} {stats.landing.createdBy.lastName ?? ''}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <StudioLinkButton icon={Globe} onClick={() => setShowDomainDialog(true)}>
@@ -189,27 +201,43 @@ export default function StudioLandingStatsPage() {
       </div>
 
       {stats.landing.type === 'TEMPLATE' && (
-        <LandingContentCard landingId={landingId} channelMembersCount={project?.channel?.tgChannelMembersCount ?? null} />
+        <LandingContentCard
+          landingId={landingId}
+          channelMembersCount={project?.channel?.tgChannelMembersCount ?? null}
+          containerClassName={`${STUDIO_CARD} p-5 space-y-4`}
+          titleClassName="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]"
+          mutedClassName="text-[#5F6B7A] dark:text-[#92A0AF]"
+        />
       )}
 
       <LandingOptionsCard landingId={landingId} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <StatsCard label="Просмотров" value={stats.funnel.pageViews} icon={Eye} />
+        <StatsCard label="Просмотров" value={stats.funnel.pageViews} icon={Eye} containerClassName={STUDIO_CARD} mutedClassName={STUDIO_MUTED} />
         <StatsCard
           label="Кликов на кнопку"
           value={stats.funnel.leads}
           icon={MousePointerClick}
           hint={leadRate !== null ? `${leadRate}% от просмотров` : undefined}
+          containerClassName={STUDIO_CARD}
+          mutedClassName={STUDIO_MUTED}
         />
         <StatsCard
           label="Подписчиков"
           value={stats.subscribers.total}
           icon={Users}
           hint={subscribeRate !== null ? `${subscribeRate}% от кликов` : undefined}
+          containerClassName={STUDIO_CARD}
+          mutedClassName={STUDIO_MUTED}
         />
-        <StatsCard label="Активных" value={stats.subscribers.active} icon={UserCheck} />
-        <StatsCard label="Отписалось" value={stats.subscribers.unsubscribed} icon={UserMinus} />
+        <StatsCard label="Активных" value={stats.subscribers.active} icon={UserCheck} containerClassName={STUDIO_CARD} mutedClassName={STUDIO_MUTED} />
+        <StatsCard
+          label="Отписалось"
+          value={stats.subscribers.unsubscribed}
+          icon={UserMinus}
+          containerClassName={STUDIO_CARD}
+          mutedClassName={STUDIO_MUTED}
+        />
         <StatsCard
           label="Диалогов начато"
           value={stats.dialogues.total}
@@ -217,6 +245,8 @@ export default function StudioLandingStatsPage() {
           hint={
             stats.subscribers.total > 0 ? `${Math.round((stats.dialogues.total / stats.subscribers.total) * 100)}% от подписчиков` : undefined
           }
+          containerClassName={STUDIO_CARD}
+          mutedClassName={STUDIO_MUTED}
         />
       </div>
 

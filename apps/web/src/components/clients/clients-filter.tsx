@@ -14,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { MultiSelect } from '@/components/ui/multi-select';
 
 export interface ClientsFilterState {
   channelType?: string;
@@ -23,9 +24,10 @@ export interface ClientsFilterState {
   minSpent?: string;
   landingId?: string;
   // Рекламная атрибуция (запрос пользователя 2026-07-24: "в фильтры добавь все эти варианты
-  // фильтрации" — те же поля, что теперь показываются в карточке клиента).
-  buyerId?: string;
-  pixelId?: string;
+  // фильтрации" — те же поля, что теперь показываются в карточке клиента). Мульти-выбор
+  // (запрос пользователя 2026-08-03) — массивы вместо одиночного значения.
+  buyerId?: string[];
+  pixelId?: string[];
   campaignName?: string;
   adName?: string;
   adsetName?: string;
@@ -173,55 +175,28 @@ export function ClientsFilter({ projectId, value, onChange }: ClientsFilterProps
 
           {/* Рекламная атрибуция (запрос пользователя 2026-07-24: "в фильтры добавь все эти
               варианты фильтрации" — баер/пиксель/кампания/объявление/utm, те же поля, что
-              теперь показываются в карточке клиента). Баер/пиксель — реальные выпадающие
-              списки (id известен заранее), остальное — свободный текст, как уже было у
+              теперь показываются в карточке клиента). Баер/пиксель — мульти-выбор (запрос
+              пользователя 2026-08-03), остальное — свободный текст, как уже было у
               utmSource/utmCampaign. */}
           <div className="space-y-1.5">
             <Label className="text-xs">Баер</Label>
-            <Select value={value.buyerId || 'all'} onValueChange={(v) => update({ buyerId: !v || v === 'all' ? undefined : v })}>
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {(v: string) =>
-                    v === 'all'
-                      ? 'Все'
-                      : v === 'none'
-                        ? 'Без баера'
-                        : (() => {
-                            const u = team?.find((t) => t.id === v);
-                            return u ? `${u.firstName} ${u.lastName || ''}`.trim() : v;
-                          })()
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                <SelectItem value="none">Без баера</SelectItem>
-                {team?.map((u) => (
-                  <SelectItem key={u.id} value={u.id}>
-                    {u.firstName} {u.lastName || ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <MultiSelect
+              value={value.buyerId ?? []}
+              onChange={(v) => update({ buyerId: v.length ? v : undefined })}
+              options={[
+                { value: 'none', label: 'Без баера' },
+                ...(team?.map((u) => ({ value: u.id, label: `${u.firstName} ${u.lastName || ''}`.trim() })) ?? []),
+              ]}
+            />
           </div>
 
           <div className="space-y-1.5">
             <Label className="text-xs">Пиксель</Label>
-            <Select value={value.pixelId || 'all'} onValueChange={(v) => update({ pixelId: !v || v === 'all' ? undefined : v })}>
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {(v: string) => (v === 'all' ? 'Все' : pixels.find((p) => p.id === v)?.label || pixels.find((p) => p.id === v)?.platform || v)}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                {pixels.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.label || p.platform}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <MultiSelect
+              value={value.pixelId ?? []}
+              onChange={(v) => update({ pixelId: v.length ? v : undefined })}
+              options={pixels.map((p) => ({ value: p.id, label: p.label || p.platform }))}
+            />
           </div>
 
           <div className="space-y-1.5">

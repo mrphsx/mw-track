@@ -72,6 +72,10 @@ const LANDING_WITH_CONTEXT_INCLUDE = {
   // Название группы A/B-теста (запрос пользователя 2026-07-17) — чтобы список лендингов мог
   // показать бейдж "Тест: <название>" вместо generic "A/B-тест", без отдельного запроса.
   abTestGroup: { select: { name: true } },
+  // Автор (запрос пользователя 2026-08-03) — null у лендингов без резолвящегося создателя
+  // (например, если User был бы хард-удалён, чего в этом проекте не бывает — см. инвариант в
+  // CLAUDE.md, поле просто на будущее совместимо с этим случаем).
+  createdBy: { select: { id: true, firstName: true, lastName: true } },
 } satisfies Prisma.LandingInclude;
 
 export type LandingWithContext = Prisma.LandingGetPayload<{ include: typeof LANDING_WITH_CONTEXT_INCLUDE }>;
@@ -151,7 +155,9 @@ export class LandingsService {
   // companyId приходит из контекста авторизации (контроллер передаёт его явно),
   // не из тела запроса — в доке dto.companyId был полем DTO, что позволяло бы
   // клиенту указать ЧУЖОЙ companyId и создать лендинг не в своей компании.
-  async createFromTemplate(projectId: string, companyId: string, dto: CreateLandingFromTemplateDto): Promise<Landing> {
+  // createdById — запрос пользователя 2026-08-03, тот же паттерн, что уже есть у
+  // Purchase.registeredBy (кто выполнил действие, опционально).
+  async createFromTemplate(projectId: string, companyId: string, dto: CreateLandingFromTemplateDto, createdById?: string): Promise<Landing> {
     // "Изначально стоит как в канале" (запрос пользователя 2026-07-04) — если пользователь не
     // указал число подписчиков вручную, подставляем реальное текущее число участников канала
     // (Channel.tgChannelMembersCount, подтягивается в TelegramProvider.fetchAndSaveMetadata).
@@ -169,6 +175,7 @@ export class LandingsService {
       data: {
         projectId,
         companyId,
+        createdById,
         name: dto.name,
         type: 'TEMPLATE',
         templateId: dto.templateId,
@@ -209,25 +216,43 @@ export class LandingsService {
   // проекте (ProjectAccess) — Buyer с LANDINGS_VIEW только на Проекте A всё равно видел
   // лендинги Проекта B в общем списке, если у него там просто было ProjectAccess. Теперь
   // фильтруем по конкретным projectId, где выдано именно LANDINGS_VIEW.
+  // Расширено 2026-08-03: не-элевейтед роли теперь дополнительно смотрят на
+  // User.landingsVisibilityScope — OWN_LANDINGS сужает до собственных лендингов,
+  // ALL_LANDINGS снимает фильтр по проектам совсем, PROJECT_LANDINGS = прежнее поведение (дефолт).
   async findAllForCompany(companyId: string, userId: string, role: UserRole): Promise<LandingWithContext[]> {
     const elevatedRoles: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN];
-    let projectFilter = {};
+    let scopeFilter: Prisma.LandingWhereInput = {};
     if (!elevatedRoles.includes(role)) {
-      const grants = await this.prisma.userPermission.findMany({
-        where: { userId, permission: 'LANDINGS_VIEW' },
-        select: { projectId: true },
-      });
-      projectFilter = { project: { id: { in: grants.map((g) => g.projectId) } } };
+      const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { landingsVisibilityScope: true } });
+      const scope = user?.landingsVisibilityScope ?? 'PROJECT_LANDINGS';
+
+      if (scope === 'OWN_LANDINGS') {
+        scopeFilter = { createdById: userId };
+      } else if (scope !== 'ALL_LANDINGS') {
+        const grants = await this.prisma.userPermission.findMany({
+          where: { userId, permission: 'LANDINGS_VIEW' },
+          select: { projectId: true },
+        });
+        scopeFilter = { project: { id: { in: grants.map((g) => g.projectId) } } };
+      }
     }
     return this.prisma.landing.findMany({
-      where: { companyId, deletedAt: null, ...projectFilter },
+      where: { companyId, deletedAt: null, ...scopeFilter },
       orderBy: { createdAt: 'desc' },
       include: LANDING_WITH_CONTEXT_INCLUDE,
     });
   }
 
-  async findOne(id: string, companyId: string): Promise<Landing> {
-    const landing = await this.prisma.landing.findFirst({ where: { id, companyId, deletedAt: null } });
+  // createdBy (запрос пользователя 2026-08-03) — добавлен сюда, а не только в
+  // LANDING_WITH_CONTEXT_INCLUDE, потому что findOne — единственный путь, которым страница
+  // одного лендинга (GET /landings/:id и, через getStats ниже, GET /landings/:id/stats)
+  // получает данные лендинга; остальные поля Landing, читаемые вызовами findOne по всему
+  // файлу, не задеты — include добавляет поле, не убирает и не меняет существующие.
+  async findOne(id: string, companyId: string): Promise<Landing & { createdBy: { id: string; firstName: string; lastName: string | null } | null }> {
+    const landing = await this.prisma.landing.findFirst({
+      where: { id, companyId, deletedAt: null },
+      include: { createdBy: { select: { id: true, firstName: true, lastName: true } } },
+    });
     if (!landing) throw new NotFoundException('Лендинг не найден');
     return landing;
   }
@@ -240,7 +265,14 @@ export class LandingsService {
   //
   // Вынесено в отдельный метод (Фаза 3.2, A/B-тестирование) — getStats зовёт его один раз
   // для самого лендинга и, если тот участвует в A/B-тесте, ещё раз для варианта B.
-  private async computeLandingStats(landing: Landing, timezone: string) {
+  // createdBy?: — опционально, не Landing (тип этого параметра): getStats передаёт сюда
+  // результат findOne (несёт createdBy), а getGroupStats/A/B-варианты выше передают лендинги
+  // из обычного prisma.landing.findMany без include (createdBy не нужен для строк сравнения
+  // вариантов — только для заголовка самого лендинга/группы).
+  private async computeLandingStats(
+    landing: Landing & { createdBy?: { id: string; firstName: string; lastName: string | null } | null },
+    timezone: string,
+  ) {
     const id = landing.id;
     const subscribedBucket = dailyBucketSql('subscribedAt', timezone);
     const dialogueBucket = dailyBucketSql('firstDialogueAt', timezone);
@@ -275,7 +307,7 @@ export class LandingsService {
     ]);
 
     return {
-      landing: { id: landing.id, name: landing.name, type: landing.type, status: landing.status },
+      landing: { id: landing.id, name: landing.name, type: landing.type, status: landing.status, createdBy: landing.createdBy ?? null },
       subscribers: { total, active, unsubscribed },
       funnel: { pageViews, leads, subscribes: total },
       dialogues: { total: dialogues, dailyDialogues },
@@ -398,9 +430,9 @@ export class LandingsService {
 
   // Создать новый CUSTOM-лендинг сразу из ZIP — отдельно от createFromTemplate,
   // чтобы в UI не нужен был промежуточный "создать пустой лендинг, потом загрузить в него ZIP".
-  async createCustom(projectId: string, companyId: string, dto: UploadCustomLandingDto, file: Express.Multer.File): Promise<Landing> {
+  async createCustom(projectId: string, companyId: string, dto: UploadCustomLandingDto, file: Express.Multer.File, createdById?: string): Promise<Landing> {
     const landing = await this.prisma.landing.create({
-      data: { projectId, companyId, name: dto.name, type: 'CUSTOM', status: LandingStatus.DRAFT },
+      data: { projectId, companyId, createdById, name: dto.name, type: 'CUSTOM', status: LandingStatus.DRAFT },
     });
     return this.processZipUpload(landing, file);
   }

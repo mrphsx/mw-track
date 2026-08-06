@@ -30,8 +30,8 @@ interface CompanyRow {
   maxProjects: number;
   currentClients: number;
   maxClients: number;
-  pushesThisMonth: number;
-  maxPushesPerMonth: number;
+  pushesToday: number;
+  maxPushesPerDay: number;
   createdAt: string;
 }
 
@@ -49,6 +49,7 @@ interface Stats {
 export default function CompaniesPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<CompanyRow | null>(null);
 
   const { data: stats } = useQuery({
@@ -56,9 +57,14 @@ export default function CompaniesPage() {
     queryFn: async () => (await api.get<Stats>('/admin/stats')).data,
   });
 
+  // Пагинация (аудит панели администратора 2026-07-30) — бэкенд уже поддерживал page/limit,
+  // страница их просто никогда не передавала; на 15 компаниях сейчас не кусалось, но список
+  // молча обрезался бы на 50-й компании без единого способа увидеть остальные.
   const { data: companies } = useQuery({
-    queryKey: ['admin-companies', search],
-    queryFn: async () => (await api.get<{ items: CompanyRow[]; total: number }>('/admin/companies', { params: { search: search || undefined } })).data,
+    queryKey: ['admin-companies', search, page],
+    queryFn: async () =>
+      (await api.get<{ items: CompanyRow[]; total: number; page: number; totalPages: number }>('/admin/companies', { params: { search: search || undefined, page, limit: 50 } }))
+        .data,
   });
 
   return (
@@ -85,7 +91,12 @@ export default function CompaniesPage() {
         </div>
       )}
 
-      <Input placeholder="Поиск по названию или slug..." value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-xs" />
+      <Input
+        placeholder="Поиск по названию или slug..."
+        value={search}
+        onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+        className="max-w-xs"
+      />
 
       <Card>
         <CardContent className="p-0">
@@ -98,7 +109,7 @@ export default function CompaniesPage() {
                 <TableHead>Баланс</TableHead>
                 <TableHead>Проекты</TableHead>
                 <TableHead>Клиенты</TableHead>
-                <TableHead>Пуши/мес</TableHead>
+                <TableHead>Пуши/день</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -125,7 +136,7 @@ export default function CompaniesPage() {
                     {c.currentClients}/{c.maxClients}
                   </TableCell>
                   <TableCell className="text-xs text-gray-500">
-                    {c.pushesThisMonth}/{c.maxPushesPerMonth}
+                    {c.pushesToday}/{c.maxPushesPerDay}
                   </TableCell>
                   <TableCell>
                     <Button size="sm" variant="outline" onClick={() => setEditing(c)}>
@@ -139,6 +150,20 @@ export default function CompaniesPage() {
           {companies && companies.items.length === 0 && <p className="p-4 text-sm text-gray-400">Ничего не найдено</p>}
         </CardContent>
       </Card>
+
+      {companies && companies.totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3">
+          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            Назад
+          </Button>
+          <span className="text-sm text-gray-500">
+            Страница {companies.page} из {companies.totalPages} ({companies.total} всего)
+          </span>
+          <Button variant="outline" size="sm" disabled={page >= companies.totalPages} onClick={() => setPage((p) => p + 1)}>
+            Вперёд
+          </Button>
+        </div>
+      )}
 
       {editing && (
         <SubscriptionDialog

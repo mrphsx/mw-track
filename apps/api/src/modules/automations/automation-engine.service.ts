@@ -4,6 +4,7 @@ import { ModuleRef } from '@nestjs/core';
 import { Prisma } from '@prisma/client';
 import { Queue } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkSubscriptionLimit } from '../../common/guards/subscription.util';
 import { ChannelsService } from '../channels/channels.service';
 
 // Максимум шагов без задержки, которые advance() пройдёт за один вызов — защита от
@@ -132,9 +133,26 @@ export class AutomationEngineService {
     });
   }
 
+  // checkSubscriptionLimit — единая точка "можно ли этой компании слать пуши" (см. CLAUDE.md
+  // choke-point), раньше проверялась только на ручной/отложенной отправке (SubscriptionGuard/
+  // PushesCron) — заблокированная/приостановленная супер-админом компания всё равно могла
+  // получать рассылки через автоворонки в обход этой проверки (найдено при аудите панели
+  // администратора 2026-07-30, подтверждено пользователем как реальный пробел, не только
+  // отложенная фича). Пропускаем шаг тихо (лог + return), не бросаем ошибку — воронка не должна
+  // упасть целиком из-за временной блокировки компании, следующий клиент проверится заново.
   private async sendStepMessage(clientId: string, text: string, buttons: Array<{ text: string; url: string }> | null): Promise<void> {
     const client = await this.prisma.client.findUnique({ where: { id: clientId } });
     if (!client) return;
+
+    const company = await this.prisma.company.findUnique({ where: { id: client.companyId } });
+    if (company) {
+      const { blocked, reason } = checkSubscriptionLimit(company, 'pushes');
+      if (blocked) {
+        this.logger.warn(`Automation SEND_PUSH skipped for client ${clientId}: ${reason}`);
+        return;
+      }
+    }
+
     try {
       await this.getChannelsService().sendMessage(client, { text, buttons: buttons || undefined });
     } catch (error) {

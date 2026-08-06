@@ -9,7 +9,7 @@ export interface User {
   email: string;
   firstName: string;
   lastName?: string | null;
-  role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR';
+  role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR' | 'OPERATOR_ADMIN';
   permissionsByProject: Record<string, string[]>;
 }
 

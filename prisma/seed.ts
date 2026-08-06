@@ -4,16 +4,20 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
-// Тарифные планы — хранятся как константы, не в БД
+// Тарифные планы — хранятся как константы, не в БД. Дублирует apps/api/src/modules/billing/
+// plans.ts (та же формула — ставка рассылок в день на каждый доступный проект тарифа, значения
+// синхронизированы вручную, запрос пользователя 2026-07-30: перевод лимита рассылок с
+// помесячного на дневной) — сид намеренно не импортирует его напрямую (свой ts-node-запуск,
+// не тянуть резолюцию модулей apps/api ради одной константы).
 export const PLAN_LIMITS: Record<
   SubscriptionPlan,
-  { maxProjects: number; maxClients: number; maxPushesPerMonth: number }
+  { maxProjects: number; maxClients: number; maxPushesPerDay: number }
 > = {
-  TRIAL: { maxProjects: 1, maxClients: 1000, maxPushesPerMonth: 5 },
-  STARTER: { maxProjects: 3, maxClients: 5000, maxPushesPerMonth: 10 },
-  GROWTH: { maxProjects: 10, maxClients: 25000, maxPushesPerMonth: 50 },
-  SCALE: { maxProjects: 30, maxClients: 100000, maxPushesPerMonth: 999 },
-  ENTERPRISE: { maxProjects: 999, maxClients: 999999, maxPushesPerMonth: 999 },
+  TRIAL: { maxProjects: 1, maxClients: 1000, maxPushesPerDay: 2 },
+  STARTER: { maxProjects: 5, maxClients: 5000, maxPushesPerDay: 10 },
+  GROWTH: { maxProjects: 10, maxClients: 25000, maxPushesPerDay: 50 },
+  SCALE: { maxProjects: 20, maxClients: 100000, maxPushesPerDay: 240 },
+  ENTERPRISE: { maxProjects: 50, maxClients: 999999, maxPushesPerDay: 999 },
 };
 
 async function main() {

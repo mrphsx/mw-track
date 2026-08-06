@@ -87,6 +87,8 @@ export interface LandingItem {
   // просто не были описаны в этом типе и не отображались нигде в карточке до сих пор.
   autoRedirect: boolean;
   cloakingEnabled: boolean;
+  // Автор (запрос пользователя 2026-08-03) — null у лендингов без резолвящегося создателя.
+  createdBy: { id: string; firstName: string; lastName: string | null } | null;
 }
 
 export function primaryChannel(landing: LandingItem): PrimaryChannel | null {

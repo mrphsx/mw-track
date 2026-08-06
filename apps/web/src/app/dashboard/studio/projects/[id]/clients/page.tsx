@@ -83,7 +83,12 @@ export default function StudioClientsPage() {
           {data && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] mt-1">Всего: {data.total}</p>}
         </div>
         <div className="flex gap-2">
-          <Input placeholder="Поиск..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-56 rounded-lg" />
+          <Input
+            placeholder="Имя, username, user_id..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-56 rounded-lg"
+          />
           <StudioLinkButton icon={Download} onClick={exportLookalike}>
             Экспорт
           </StudioLinkButton>

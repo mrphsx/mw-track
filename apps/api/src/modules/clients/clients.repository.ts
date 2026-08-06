@@ -1,17 +1,64 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql, resolveStatsPeriod } from '../../common/timezone.util';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
+
+export interface CrossProjectOverlapMatch {
+  projectId: string;
+  projectName: string;
+  joinedAt: Date | null;
+  hasDialogue: boolean;
+  dialogueAt: Date | null;
+}
 
 @Injectable()
 export class ClientsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  // "Ещё в проектах" (запрос пользователя 2026-07-30, список клиентов проекта) — тот же принцип
+  // tgUserId-матчинга, что AudienceService уже использует для пересечения аудиторий (Telegram
+  // only, осознанно — WhatsApp/Instagram own-identity поля не участвуют). Батч на всю страницу
+  // клиентов разом (не по одному запросу на клиента) — иначе список из 50 строк дал бы 50
+  // лишних запросов.
+  async getCrossProjectOverlap(companyId: string, projectId: string, tgUserIds: string[]): Promise<Map<string, CrossProjectOverlapMatch[]>> {
+    const result = new Map<string, CrossProjectOverlapMatch[]>();
+    if (tgUserIds.length === 0) return result;
+
+    const rows = await this.prisma.client.findMany({
+      where: { companyId, projectId: { not: projectId }, deletedAt: null, tgUserId: { in: tgUserIds } },
+      select: { tgUserId: true, projectId: true, subscribedAt: true, firstDialogueAt: true },
+    });
+    if (rows.length === 0) return result;
+
+    const otherProjectIds = [...new Set(rows.map((r) => r.projectId))];
+    const projects = await this.prisma.project.findMany({ where: { id: { in: otherProjectIds } }, select: { id: true, name: true } });
+    const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
+
+    for (const row of rows) {
+      const list = result.get(row.tgUserId!) ?? [];
+      list.push({
+        projectId: row.projectId,
+        projectName: projectNameById.get(row.projectId) ?? '—',
+        joinedAt: row.subscribedAt,
+        hasDialogue: row.firstDialogueAt !== null,
+        dialogueAt: row.firstDialogueAt,
+      });
+      result.set(row.tgUserId!, list);
+    }
+    return result;
+  }
+
   // Статистика для дашборда проекта.
   // groupBy и $queryRaw НЕ перехватываются Prisma $use middleware (оно ловит только
   // findFirst/findMany/count/aggregate/create/update/delete) — поэтому deletedAt: null
   // указан здесь явно, а не в надежде на автоскоуп.
-  async getProjectStats(projectId: string, periodQuery: StatsPeriodDto) {
+  // buyerId (запрос пользователя 2026-08-03, "только своя стата") — опционально, скоупит КАЖДУЮ
+  // метрику ниже на клиентов/события/покупки, атрибутированные именно этому баеру. Client и
+  // TrackingEvent несут buyerId своей колонкой напрямую; Purchase — нет (только clientId), для
+  // неё скоуп идёт подзапросом по Client (см. purchaseBuyerFilterSql), не через JOIN — не нужно
+  // менять алиасы в уже существующих запросах.
+  async getProjectStats(projectId: string, periodQuery: StatsPeriodDto, buyerId?: string) {
     // Часовой пояс проекта (запрос пользователя 2026-07-04) — "сутки" на дневных графиках
     // считаются по нему, не по UTC, см. common/timezone.util.ts.
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
@@ -24,6 +71,24 @@ export class ClientsRepository {
     // recordInboundMessage/findOrCreate: такие холодные контакты теперь создаются с
     // subscribedAt: null именно чтобы их можно было исключить здесь).
     const OURS_ONLY = { subscribedAt: { not: null } } as const;
+    const buyerWhere = buyerId ? { buyerId } : {};
+    const buyerFilterSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    // Запрос пользователя 2026-08-05: "выручка не должна показывать покупки внешних клиентов" —
+    // раньше этот подзапрос скоупил Purchase по баеру ТОЛЬКО когда buyerId явно задан, а
+    // "наш ли клиент" (subscribedAt IS NOT NULL, тот же критерий OURS_ONLY, что уже применяется
+    // ко всем метрикам клиентов чуть выше) вообще не проверялся — Purchase считается напрямую по
+    // projectId, без единого упоминания Client.subscribedAt. Внешние контакты (холодные, писавшие
+    // мимо воронки — см. комментарий у OURS_ONLY) с ручной покупкой (registeredBy) утекали в
+    // totalRevenue/avgOrderValue/dailyRevenue/FD-РД наравне с настоящими подписчиками. Теперь
+    // "наш клиент" — обязательное условие всегда, buyerId — опциональное дополнение поверх него.
+    // deletedAt IS NULL добавлен тем же днём отдельным баг-репортом (проект Isabella Ramirez,
+    // "выручка 99, а в топ баеров сумма 94") — покупка мягко удалённого (объединённого как
+    // дубликат, см. feedback_archived_project_webhook_hijack) клиента продолжала считаться в
+    // totalRevenue, хотя getLeaderboards уже фильтрует такие клиенты через deletedAt IS NULL на
+    // своём JOIN — то же несоответствие "разные числа в разных местах", что и с subscribedAt.
+    const purchaseBuyerFilterSql = Prisma.sql`AND "clientId" IN (
+      SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL${buyerId ? Prisma.sql` AND "buyerId" = ${buyerId}` : Prisma.empty}
+    )`;
 
     const [
       totalClients,
@@ -54,8 +119,8 @@ export class ClientsRepository {
       // /projects (ProjectsService.getClientMetricsByProject — тот же фильтр OURS_ONLY, тоже
       // всегда за всё время, там вообще нет PeriodSelector), см. баг-репорт 2026-07-17
       // "в карточке проекта пишет другие цифры клиентов, не как внутри страницы проекта".
-      this.prisma.client.count({ where: { projectId, deletedAt: null, ...OURS_ONLY } }),
-      this.prisma.client.count({ where: { projectId, deletedAt: null, isBotActive: true, ...OURS_ONLY } }),
+      this.prisma.client.count({ where: { projectId, deletedAt: null, ...OURS_ONLY, ...buyerWhere } }),
+      this.prisma.client.count({ where: { projectId, deletedAt: null, isBotActive: true, ...OURS_ONLY, ...buyerWhere } }),
       // "Активировавшие бота" — буквально те, кто реально написал/нажал Start боту в этом
       // периоде (botActivatedAt задан внутри окна), НЕ "кому можно отправить пуш прямо сейчас".
       // Раньше (2026-07-17/18, см. feedback_client_bot_activated_status) формула была
@@ -73,19 +138,19 @@ export class ClientsRepository {
       // botActivatedAt — теперь это единственный критерий, isBotActive не проверяется (сам факт
       // активации в периоде не должен исчезать из статистики, если бота потом заблокировали).
       this.prisma.client.count({
-        where: { projectId, deletedAt: null, botActivatedAt: { gte: since, lt: until } },
+        where: { projectId, deletedAt: null, botActivatedAt: { gte: since, lt: until }, ...buyerWhere },
       }),
-      this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { gte: since, lt: until }, ...buyerWhere } }),
       // Отписавшиеся за период (запрос пользователя 2026-07-24, в довесок к фиксу карточки
       // "Клиентов": "даже если человек отписался показывай его в числе подписчиков, но добавь
       // ещё одну метрику: отписались") — newClients выше намеренно не вычитает их, это просто
       // отдельная параллельная цифра для той же карточки.
-      this.prisma.client.count({ where: { projectId, deletedAt: null, unsubscribedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId, deletedAt: null, unsubscribedAt: { gte: since, lt: until }, ...buyerWhere } }),
       // clientsWithPurchase — тоже не реагировал на период (баг-репорт 2026-07-24) — заменили
       // "когда-либо был нашим" (OURS_ONLY, без дат) на "подписался именно в этом периоде" —
       // тот же критерий, что и у newClients выше (общий знаменатель для conversionRate ниже).
       this.prisma.client.count({
-        where: { projectId, deletedAt: null, hasPurchase: true, subscribedAt: { gte: since, lt: until } },
+        where: { projectId, deletedAt: null, hasPurchase: true, subscribedAt: { gte: since, lt: until }, ...buyerWhere },
       }),
       // Баг-репорт пользователя 2026-07-25: "доход неправильно считается по периоду, стоит
       // одна и та же сумма на любой период" — раньше здесь не было окна дат вообще (только
@@ -94,16 +159,24 @@ export class ClientsRepository {
       // ссылавшийся на "осознанное решение", был неверным — реальной ссылки на согласование
       // с пользователем не было, просто дальше по коду avgRevenue уже смотрело на период, а
       // totalRevenue рядом — нет). Теперь оба смотрят на одно и то же окно.
-      this.prisma.purchase.aggregate({ where: { projectId, createdAt: { gte: since, lt: until } }, _sum: { amount: true } }),
-      this.prisma.purchase.aggregate({ where: { projectId, createdAt: { gte: since, lt: until } }, _avg: { amount: true } }),
+      this.prisma.purchase.aggregate({
+        where: { projectId, createdAt: { gte: since, lt: until }, client: { subscribedAt: { not: null }, deletedAt: null, ...buyerWhere } },
+        _sum: { amount: true },
+      }),
+      this.prisma.purchase.aggregate({
+        where: { projectId, createdAt: { gte: since, lt: until }, client: { subscribedAt: { not: null }, deletedAt: null, ...buyerWhere } },
+        _avg: { amount: true },
+      }),
       // Просмотры/клики за окно (запрос пользователя 2026-07-17, "больше метрик на странице
       // проекта") — те же события, что уже считает getConversionFunnel, но здесь как
-      // самостоятельные карточки/график, а не только строки в списке воронки.
-      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'PageView', createdAt: { gte: since, lt: until } } }),
-      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'Lead', createdAt: { gte: since, lt: until } } }),
+      // самостоятельные карточки/график, а не только строки в списке воронки. buyerId — теперь
+      // реальная колонка на TrackingEvent (запрос пользователя 2026-08-03, см. TrackingService.
+      // resolveAttribution), просмотры/клики тоже атрибутируются баеру.
+      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'PageView', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
+      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'Lead', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
       this.prisma.client.groupBy({
         by: ['channelType'],
-        where: { projectId, deletedAt: null, ...OURS_ONLY },
+        where: { projectId, deletedAt: null, ...OURS_ONLY, ...buyerWhere },
         _count: { _all: true },
       }),
       this.prisma.$queryRaw<{ country: string; count: bigint }[]>`
@@ -113,6 +186,7 @@ export class ClientsRepository {
           AND "deletedAt" IS NULL
           AND "subscribedAt" IS NOT NULL
           AND country IS NOT NULL
+          ${buyerFilterSql}
         GROUP BY country
         ORDER BY count DESC
         LIMIT 10
@@ -129,6 +203,7 @@ export class ClientsRepository {
           AND "subscribedAt" >= ${since}
           AND "subscribedAt" < ${until}
           AND "deletedAt" IS NULL
+          ${buyerFilterSql}
         GROUP BY date
         ORDER BY date ASC
       `,
@@ -140,6 +215,7 @@ export class ClientsRepository {
           AND "firstDialogueAt" < ${until}
           AND "deletedAt" IS NULL
           AND "firstDialogueAt" IS NOT NULL
+          ${buyerFilterSql}
         GROUP BY date
         ORDER BY date ASC
       `,
@@ -160,19 +236,22 @@ export class ClientsRepository {
           AND "firstDialogueAt" IS NOT NULL
           AND "subscribedAt" IS NOT NULL
           AND "subscribedAt" <= "firstDialogueAt"
+          ${buyerFilterSql}
         GROUP BY date
         ORDER BY date ASC
       `,
       // Шаг 2.7 "график выручки по дням" (запрос пользователя 2026-07-15) — та же
       // tz-aware bucket-идиома, что и у dailySubscribers/dailyDialogues выше. Purchase не
       // софт-удаляется (нет deletedAt на модели — финансовая запись, не тенантная сущность
-      // в этом смысле), поэтому доп. фильтра здесь не требуется.
+      // в этом смысле), поэтому доп. фильтра здесь не требуется. purchaseBuyerFilterSql —
+      // Purchase не несёт свою колонку buyerId, скоуп идёт подзапросом по Client.clientId.
       this.prisma.$queryRaw<{ date: Date; total: string | null }[]>`
         SELECT ${createdBucket} as date, SUM(amount) as total
         FROM "Purchase"
         WHERE "projectId" = ${projectId}
           AND "createdAt" >= ${since}
           AND "createdAt" < ${until}
+          ${purchaseBuyerFilterSql}
         GROUP BY date
         ORDER BY date ASC
       `,
@@ -183,6 +262,7 @@ export class ClientsRepository {
           AND "eventName" = 'PageView'
           AND "createdAt" >= ${since}
           AND "createdAt" < ${until}
+          ${buyerFilterSql}
         GROUP BY date
         ORDER BY date ASC
       `,
@@ -193,6 +273,7 @@ export class ClientsRepository {
           AND "eventName" = 'Lead'
           AND "createdAt" >= ${since}
           AND "createdAt" < ${until}
+          ${buyerFilterSql}
         GROUP BY date
         ORDER BY date ASC
       `,
@@ -210,6 +291,7 @@ export class ClientsRepository {
             ROW_NUMBER() OVER (PARTITION BY "clientId" ORDER BY "createdAt" ASC, id ASC) as rn
           FROM "Purchase"
           WHERE "projectId" = ${projectId}
+            ${purchaseBuyerFilterSql}
         )
         SELECT
           ${createdBucket} as date,
@@ -239,6 +321,7 @@ export class ClientsRepository {
           AND "firstDialogueAt" < ${until}
           AND "subscribedAt" IS NOT NULL
           AND "subscribedAt" <= "firstDialogueAt"
+          ${buyerFilterSql}
       `,
     ]);
 
@@ -318,14 +401,24 @@ export class ClientsRepository {
   // тот же Client, что и остальная статистика проекта (deletedAt: null), не может задвоиться
   // (findOrCreate — один Client на tgUserId) и корректно перестаёт учитывать
   // soft-удалённых/загрязнённых клиентов.
-  async getConversionFunnel(projectId: string, periodQuery: StatsPeriodDto) {
+  // buyerId (запрос пользователя 2026-08-03, "только своя стата") — см. комментарий у
+  // getProjectStats выше, тот же приём.
+  async getConversionFunnel(projectId: string, periodQuery: StatsPeriodDto, buyerId?: string) {
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    const buyerWhere = buyerId ? { buyerId } : {};
+    const buyerFilterSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    // Тот же фикс, что в getProjectStats выше (запрос пользователя 2026-08-05) — ФД/РД в воронке
+    // считались по Purchase без проверки, что покупатель вообще "наш" (subscribedAt задан) и не
+    // мягко удалён (deletedAt IS NULL — второй баг-репорт того же дня, проект Isabella Ramirez).
+    const purchaseBuyerFilterSql = Prisma.sql`AND "clientId" IN (
+      SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL${buyerId ? Prisma.sql` AND "buyerId" = ${buyerId}` : Prisma.empty}
+    )`;
 
     const [pageViews, leads, subscribes, dialogueRows, deposits] = await Promise.all([
-      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'PageView', createdAt: { gte: since, lt: until } } }),
-      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'Lead', createdAt: { gte: since, lt: until } } }),
-      this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { gte: since, lt: until } } }),
+      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'PageView', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
+      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'Lead', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
+      this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { gte: since, lt: until }, ...buyerWhere } }),
       // Диалог в воронке должен идти строго ПОСЛЕ Subscribe — значит считаем только
       // "CRM-диалоги" (см. dailyCrmDialogues выше): человек уже был подписан на канал через
       // нашу воронку на момент первого сообщения. Обычный Prisma count по firstDialogueAt
@@ -344,6 +437,7 @@ export class ClientsRepository {
           AND "firstDialogueAt" < ${until}
           AND "subscribedAt" IS NOT NULL
           AND "subscribedAt" <= "firstDialogueAt"
+          ${buyerFilterSql}
       `,
       // ФД/РД (запрос пользователя 2026-07-17) вместо единой стадии "Purchase" — тот же
       // ROW_NUMBER()-подход, что и в getProjectStats.dailyDeposits (см. комментарий там), но
@@ -356,6 +450,7 @@ export class ClientsRepository {
             ROW_NUMBER() OVER (PARTITION BY "clientId" ORDER BY "createdAt" ASC, id ASC) as rn
           FROM "Purchase"
           WHERE "projectId" = ${projectId}
+            ${purchaseBuyerFilterSql}
         )
         SELECT
           COUNT(*) FILTER (WHERE rn = 1) as fd_count,
@@ -400,13 +495,40 @@ export class ClientsRepository {
     ];
   }
 
-  // Поиск клиентов для Lookalike Export
-  async getClientsForLookalikeExport(projectId: string, onlyBuyers = true) {
+  // "Моя статистика" (Operator, запрос пользователя 2026-07-30) — сколько клиентов вообще на
+  // проекте (тот же "ours only" фильтр, что getProjectStats) и сколько депозитов ЛИЧНО
+  // зарегистрировал этот сотрудник (Purchase.registeredBy, заполняется при ручном "Добавить
+  // покупку" — см. PurchasesService.create), не "клиенты назначенные ему" — такой привязки в
+  // модели нет и не создаётся (подтверждено пользователем явно).
+  async getMyStats(projectId: string, userId: string, periodQuery: StatsPeriodDto) {
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
+    const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+
+    const [totalClients, myPurchases] = await Promise.all([
+      this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { not: null } } }),
+      this.prisma.purchase.aggregate({
+        where: { projectId, registeredBy: userId, createdAt: { gte: since, lt: until } },
+        _count: true,
+        _sum: { amount: true },
+      }),
+    ]);
+
+    return {
+      totalClients,
+      myPurchasesCount: myPurchases._count,
+      myPurchasesRevenue: Number(myPurchases._sum.amount ?? 0),
+    };
+  }
+
+  // Поиск клиентов для Lookalike Export. scopedBuyerId (запрос пользователя 2026-08-03) —
+  // "только свои клиенты" для Buyer.
+  async getClientsForLookalikeExport(projectId: string, onlyBuyers = true, scopedBuyerId?: string) {
     return this.prisma.client.findMany({
       where: {
         projectId,
         deletedAt: null,
         ...(onlyBuyers ? { hasPurchase: true } : {}),
+        ...(scopedBuyerId ? { buyerId: scopedBuyerId } : {}),
         OR: [{ email: { not: null } }, { tgUserId: { not: null } }, { waPhone: { not: null } }],
       },
       select: {

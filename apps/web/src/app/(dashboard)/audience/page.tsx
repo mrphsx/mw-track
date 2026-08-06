@@ -2,13 +2,18 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { X } from 'lucide-react';
+import { Star, X } from 'lucide-react';
+import { format } from 'date-fns';
 import { api } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ClientsTable, ClientRow } from '@/components/clients/clients-table';
-import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
+import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { ClientAvatar } from '@/components/clients/client-avatar';
+import { ClientRow } from '@/components/clients/clients-table';
+import { ClientDetailContent } from '@/components/clients/client-detail-drawer';
 
 interface OverlapMatrix {
   projects: { id: string; name: string }[];
@@ -130,15 +135,17 @@ export default function AudiencePage() {
   );
 }
 
-// Раньше пересечение открывалось модальным окном с одной плоской строкой на клиента (имя +
-// урезанный inA/inB текст) — запрос пользователя 2026-07-30: "начинаешь подгружать лидов в
-// форме списка с обеих аккаунтов как две колонки ниже (с пагинацией), чтобы можно было сразу
-// сравнить действие и параметры лида в обеих проектах". Теперь это инлайн-панель под таблицей
-// (не модалка) с двумя ПОЛНЫМИ ClientsTable рядом — один общий page/limit на пару (не по
-// колонке отдельно), чтобы строка N слева и строка N справа гарантированно оставались одним и
-// тем же человеком (бэкенд уже возвращает items в этом порядке, см. AudienceService.
-// getOverlapDetail). Клик по строке в любой колонке открывает обычный ClientDetailDrawer этого
-// же проекта — полная история покупок/событий доступна без ухода со страницы.
+// История переделок этой панели за 2026-07-30 (от старой к новой): модалка с одной плоской
+// строкой на клиента → две полные ClientsTable рядом → одна карточка на клиента с 2 колонками
+// (каждая — набор бейджей) → ЭТА версия (запрос: "нужен список маленький как он сделан на
+// странице клиентов... информации не надо много... когда подписался, не статус, есть или нет
+// диалога, сумма покупок, статус бота"). Компактная таблица — один клиент на строку, 4 узких
+// колонки на каждый проект (Подписан/Диалог/Покупки/Бот), без status-бейджей — тот же принцип
+// плотности, что и обычный список клиентов, просто с двумя проекциями рядом вместо одной. Клик
+// по строке открывает ОДНУ модалку с полной карточкой клиента (запрос: "при открытии записи
+// покажет уже расширенную информацию... со всеми данными что есть в карточке клиента... вплоть
+// до данных рекламы") — сразу в двух колонках, по одной на проект, через переиспользуемый
+// ClientDetailContent (вынесен из ClientDetailDrawer тем же днём).
 function OverlapComparisonPanel({
   pair,
   onClose,
@@ -147,21 +154,24 @@ function OverlapComparisonPanel({
   onClose: () => void;
 }) {
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<{ projectId: string; clientId: string } | null>(null);
+  const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState<OverlapDetailRow | null>(null);
 
   useEffect(() => setPage(1), [pair.a.id, pair.b.id]);
+  // Смена поискового запроса сбрасывает страницу — то же поведение, что и у обычного списка
+  // клиентов (запрос пользователя 2026-07-30: "тоже нужен поиск, по имени, user_id, username").
+  useEffect(() => setPage(1), [search]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['audience-overlap-detail', pair.a.id, pair.b.id, page],
+    queryKey: ['audience-overlap-detail', pair.a.id, pair.b.id, page, search],
     queryFn: async () =>
       (
-        await api.get<OverlapDetailPage>(`/audience/overlap/${pair.a.id}/${pair.b.id}`, { params: { page, limit: PAGE_SIZE } })
+        await api.get<OverlapDetailPage>(`/audience/overlap/${pair.a.id}/${pair.b.id}`, {
+          params: { page, limit: PAGE_SIZE, search: search || undefined },
+        })
       ).data,
     placeholderData: (prev) => prev,
   });
-
-  const clientsA = data?.items.map((i) => i.clientA) ?? [];
-  const clientsB = data?.items.map((i) => i.clientB) ?? [];
 
   return (
     <Card>
@@ -171,28 +181,73 @@ function OverlapComparisonPanel({
             {pair.a.name} ∩ {pair.b.name}
             {data && <span className="text-sm text-muted-foreground font-normal ml-2">{data.total} клиентов</span>}
           </h2>
-          <Button size="icon" variant="ghost" onClick={onClose}>
-            <X className="w-4 h-4" />
-          </Button>
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Имя, username, user_id..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-56"
+            />
+            <Button size="icon" variant="ghost" onClick={onClose}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
 
         {isLoading && !data && <p className="text-sm text-muted-foreground">Загрузка...</p>}
-        {data && data.items.length === 0 && <p className="text-sm text-muted-foreground">Пересечений не найдено.</p>}
+        {data && data.items.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            {search ? 'Ничего не найдено по этому запросу.' : 'Пересечений не найдено.'}
+          </p>
+        )}
 
         {!!data?.items.length && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="min-w-0 space-y-2">
-              <h3 className="text-sm font-medium text-muted-foreground truncate">{pair.a.name}</h3>
-              <div className="border rounded-lg bg-card overflow-x-auto">
-                <ClientsTable projectId={pair.a.id} clients={clientsA} onSelect={(clientId) => setSelected({ projectId: pair.a.id, clientId })} />
-              </div>
-            </div>
-            <div className="min-w-0 space-y-2">
-              <h3 className="text-sm font-medium text-muted-foreground truncate">{pair.b.name}</h3>
-              <div className="border rounded-lg bg-card overflow-x-auto">
-                <ClientsTable projectId={pair.b.id} clients={clientsB} onSelect={(clientId) => setSelected({ projectId: pair.b.id, clientId })} />
-              </div>
-            </div>
+          <div className="border rounded-lg overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead rowSpan={2} className="align-bottom">
+                    Клиент
+                  </TableHead>
+                  <TableHead colSpan={4} className="text-center border-l">
+                    {pair.a.name}
+                  </TableHead>
+                  <TableHead colSpan={4} className="text-center border-l">
+                    {pair.b.name}
+                  </TableHead>
+                </TableRow>
+                <TableRow>
+                  <TableHead className="border-l">Подписан</TableHead>
+                  <TableHead>Диалог</TableHead>
+                  <TableHead>Покупки</TableHead>
+                  <TableHead>Бот</TableHead>
+                  <TableHead className="border-l">Подписан</TableHead>
+                  <TableHead>Диалог</TableHead>
+                  <TableHead>Покупки</TableHead>
+                  <TableHead>Бот</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.items.map((item) => (
+                  <TableRow key={item.tgUserId} className="cursor-pointer" onClick={() => setExpanded(item)}>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        <ClientAvatar
+                          projectId={pair.a.id}
+                          clientId={item.clientA.id}
+                          hasAvatar={!!item.clientA.tgPhotoUrl}
+                          fallbackLetter={item.clientA.tgFirstName || item.clientA.tgUsername || '?'}
+                        />
+                        <span className="truncate">{item.clientA.tgFirstName || item.clientA.tgUsername || '—'}</span>
+                        {item.clientA.tgIsPremium && <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />}
+                      </div>
+                    </TableCell>
+                    <OverlapCompactCells client={item.clientA} borderLeft />
+                    <OverlapCompactCells client={item.clientB} borderLeft />
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
         )}
 
@@ -213,11 +268,76 @@ function OverlapComparisonPanel({
         )}
       </CardContent>
 
-      <ClientDetailDrawer
-        projectId={selected?.projectId ?? ''}
-        clientId={selected?.clientId ?? null}
-        onClose={() => setSelected(null)}
-      />
+      <OverlapExpandedDialog item={expanded} pair={pair} onClose={() => setExpanded(null)} />
     </Card>
+  );
+}
+
+// 4 узкие колонки на один проект — только то, что попросили ("информации не надо много"): дата
+// подписки (не статус-бейдж), диалог да/нет, сумма покупок, статус бота.
+function OverlapCompactCells({ client, borderLeft }: { client: ClientRow; borderLeft?: boolean }) {
+  return (
+    <>
+      <TableCell className={`text-sm text-muted-foreground whitespace-nowrap ${borderLeft ? 'border-l' : ''}`}>
+        {client.subscribedAt ? format(new Date(client.subscribedAt), 'd MMM yyyy') : '—'}
+      </TableCell>
+      <TableCell className="text-sm">{client.firstDialogueAt ? 'Да' : '—'}</TableCell>
+      <TableCell className={`text-sm ${client.hasPurchase ? 'font-semibold text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`}>
+        ${Number(client.totalSpent).toFixed(2)}
+      </TableCell>
+      <TableCell>
+        {!client.botActivatedAt ? (
+          <Badge variant="outline">Не активирован</Badge>
+        ) : !client.isBotActive ? (
+          <Badge variant="destructive">Заблокирован</Badge>
+        ) : (
+          <Badge>Активирован</Badge>
+        )}
+      </TableCell>
+    </>
+  );
+}
+
+// Полная карточка клиента в двух колонках — по одной на проект, тот же ClientDetailContent, что
+// и обычный ClientDetailDrawer использует для одного проекта (включая блок "Источник трафика" со
+// всеми рекламными полями, финансы, историю покупок, удаление GDPR).
+function OverlapExpandedDialog({
+  item,
+  pair,
+  onClose,
+}: {
+  item: OverlapDetailRow | null;
+  pair: { a: { id: string; name: string }; b: { id: string; name: string } };
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={!!item} onOpenChange={(open) => !open && onClose()}>
+      {/* Баг-репорт пользователя 2026-07-30: "модальное окно слишком маленькое для двух
+          клиентов, ничего не помещается" — max-w-5xl (1024px) на 2 колонки с "Источником
+          трафика" (13 полей) + финансами + историей покупок было слишком тесно. Расширено до
+          почти всей ширины экрана (max-w-[95vw]), с потолком в 1600px, чтобы не растягивалось
+          абсурдно широко на ultra-wide мониторах. Заодно (тот же баг-репорт): "убери функционал
+          удаления клиента, редактирования, добавления покупок" — readOnly на обоих
+          ClientDetailContent, это сравнение для просмотра, а не форма управления. */}
+      <DialogContent className="max-w-[95vw] xl:max-w-[1600px] max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>
+            {item?.clientA.tgFirstName || item?.clientA.tgUsername || 'Клиент'} — {pair.a.name} ∩ {pair.b.name}
+          </DialogTitle>
+        </DialogHeader>
+        {item && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 divide-y md:divide-y-0 md:divide-x">
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-muted-foreground px-1 pb-2">{pair.a.name}</div>
+              <ClientDetailContent projectId={pair.a.id} clientId={item.clientA.id} onClose={onClose} readOnly />
+            </div>
+            <div className="min-w-0 md:pl-6">
+              <div className="text-xs font-medium text-muted-foreground px-1 pb-2">{pair.b.name}</div>
+              <ClientDetailContent projectId={pair.b.id} clientId={item.clientB.id} onClose={onClose} readOnly />
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

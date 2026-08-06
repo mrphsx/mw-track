@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { Plus } from 'lucide-react';
+import { Plus, Pencil, Copy } from 'lucide-react';
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -170,6 +170,7 @@ function PushLogsDialog({ projectId, pushId, onClose }: { projectId: string; pus
 
 export default function PushesPage() {
   const { id: projectId } = useParams<{ id: string }>();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const [openLogsFor, setOpenLogsFor] = useState<string | null>(null);
@@ -182,6 +183,18 @@ export default function PushesPage() {
   const cancelPush = useMutation({
     mutationFn: (pushId: string) => api.delete(`/projects/${projectId}/pushes/${pushId}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pushes', projectId] }),
+  });
+
+  // Копирование (запрос пользователя 2026-08-05: "вдруг надо будет отправить её ещё раз") —
+  // создаёт новый DRAFT на бэкенде и сразу переводит на его страницу редактирования, чтобы можно
+  // было проверить/поправить контент и расписание перед повторной отправкой, а не молча упасть
+  // в список рядом с оригиналом.
+  const duplicatePush = useMutation({
+    mutationFn: (pushId: string) => api.post<{ id: string }>(`/projects/${projectId}/pushes/${pushId}/duplicate`),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['pushes', projectId] });
+      router.push(`/projects/${projectId}/pushes/${res.data.id}/edit`);
+    },
   });
 
   return (
@@ -232,7 +245,24 @@ export default function PushesPage() {
                 <TableCell>{push.audienceReachable}</TableCell>
                 <TableCell>{push.sentCount}</TableCell>
                 <TableCell className={push.failedCount > 0 ? 'text-red-500 font-medium' : undefined}>{push.failedCount}</TableCell>
-                <TableCell onClick={(e) => e.stopPropagation()}>
+                <TableCell onClick={(e) => e.stopPropagation()} className="whitespace-nowrap">
+                  {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, projectId, 'PUSHES_CREATE') && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      nativeButton={false}
+                      render={
+                        <Link href={`/projects/${projectId}/pushes/${push.id}/edit`}>
+                          <Pencil className="w-3.5 h-3.5 mr-1" /> Изменить
+                        </Link>
+                      }
+                    />
+                  )}
+                  {hasPermission(user, projectId, 'PUSHES_CREATE') && (
+                    <Button size="sm" variant="ghost" onClick={() => duplicatePush.mutate(push.id)} disabled={duplicatePush.isPending}>
+                      <Copy className="w-3.5 h-3.5 mr-1" /> Копировать
+                    </Button>
+                  )}
                   {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, projectId, 'PUSHES_DELETE') && (
                     <Button size="sm" variant="ghost" onClick={() => cancelPush.mutate(push.id)}>
                       Отменить

@@ -16,6 +16,11 @@ const roleHierarchy: Record<UserRole, number> = {
   ADMIN: 4,
   BUYER: 1,
   OPERATOR: 1,
+  // Тот же уровень, что BUYER/OPERATOR (project-scoped, не elevated, см.
+  // permission.constants.ts RESTRICTED_ROLES) — доступ к /team даётся НЕ через этот ранг
+  // (иначе Math.min(...) в canActivate ниже тихо впустил бы и BUYER/OPERATOR), а явной
+  // проверкой роли в TeamService/TeamInvitesService, см. team-role.util.ts.
+  OPERATOR_ADMIN: 1,
 };
 
 @Injectable()

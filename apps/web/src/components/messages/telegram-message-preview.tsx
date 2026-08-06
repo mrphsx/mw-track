@@ -32,9 +32,18 @@ export function TelegramMessagePreview({ text, media = [], buttons = [], label =
   return (
     <div>
       {label && <Label className="mb-2 block">{label}</Label>}
-      <Card className="bg-[#e7f3ff] border-0">
+      {/* Имитация реального чата Telegram — цвета намеренно НЕ завязаны на тему CRM (light/
+          dark toggle приложения), а на тему самого Telegram, т.к. предпросмотр показывает, как
+          сообщение увидит получатель В TELEGRAM, а не в нашем интерфейсе. До 2026-08-05 тут был
+          только светлый вариант (bg-[#e7f3ff]/bg-white без dark:) — в тёмной теме CRM это давало
+          яркий бело-голубой прямоугольник посреди тёмной страницы (баг-репорт пользователя:
+          "не по общему дизайну"); добавлены dark:-варианты на основе реальной тёмной темы
+          Telegram Desktop (фон чата ~#0e1621, входящий пузырь ~#182533), а не просто нейтральные
+          Studio-цвета — превью остаётся честным "как это выглядит в Telegram", включая и его
+          тёмный вариант. */}
+      <Card className="bg-[#e7f3ff] dark:bg-[#0e1621] border-0">
         <CardContent className="p-4">
-          <div className="bg-white rounded-lg shadow-sm overflow-hidden max-w-sm">
+          <div className="bg-white dark:bg-[#182533] rounded-lg shadow-sm overflow-hidden max-w-sm">
             {media.length === 1 && media[0].type === 'photo' && (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={media[0].url} alt="" className="w-full max-h-48 object-cover" />
@@ -57,7 +66,7 @@ export function TelegramMessagePreview({ text, media = [], buttons = [], label =
             {isAlbum && (
               <div className="grid grid-cols-2 gap-0.5">
                 {media.slice(0, 4).map((item, i) => (
-                  <div key={i} className="relative aspect-square bg-gray-100">
+                  <div key={i} className="relative aspect-square bg-gray-100 dark:bg-gray-800">
                     {item.type === 'photo' ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={item.url} alt="" className="w-full h-full object-cover" />
@@ -76,23 +85,29 @@ export function TelegramMessagePreview({ text, media = [], buttons = [], label =
             )}
             <div className="p-3 space-y-2">
               {text ? (
-                <p className="text-sm whitespace-pre-wrap break-words" dangerouslySetInnerHTML={{ __html: renderTelegramHtml(text) }} />
+                <p
+                  className="text-sm whitespace-pre-wrap break-words text-gray-900 dark:text-gray-100"
+                  dangerouslySetInnerHTML={{ __html: renderTelegramHtml(text) }}
+                />
               ) : (
-                <p className="text-sm text-gray-400">Текст сообщения...</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500">Текст сообщения...</p>
               )}
               {!isAlbum &&
                 buttons
                   .filter((b) => b.text)
                   .map((b, i) => (
-                    <div key={i} className="border border-blue-200 text-blue-600 text-sm text-center rounded-md py-1.5">
+                    <div
+                      key={i}
+                      className="border border-blue-200 dark:border-blue-400/30 text-blue-600 dark:text-blue-400 text-sm text-center rounded-md py-1.5"
+                    >
                       {b.text}
                     </div>
                   ))}
-              <div className="text-right text-[11px] text-gray-400">12:34</div>
+              <div className="text-right text-[11px] text-gray-400 dark:text-gray-500">12:34</div>
             </div>
           </div>
           {isAlbum && (
-            <p className="text-xs text-gray-400 mt-2">
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
               Альбом: {media.length} файл(ов) — {media.map((m) => MEDIA_TYPE_LABELS[m.type]).join(', ')}
             </p>
           )}

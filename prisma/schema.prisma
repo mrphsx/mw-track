@@ -23,17 +23,21 @@ model Company {
   balance Decimal @db.Decimal(10, 2) @default(0)
 
   // Подписка
-  plan              SubscriptionPlan @default(TRIAL)
-  planExpiresAt     DateTime? // когда наступит следующее автосписание; null = тариф не продлевается автоматически (TRIAL/ENTERPRISE)
-  maxProjects       Int @default(1)
-  maxClients        Int @default(1000)
-  maxPushesPerMonth Int @default(5)
+  plan            SubscriptionPlan @default(TRIAL)
+  planExpiresAt   DateTime? // когда наступит следующее автосписание; null = тариф не продлевается автоматически (TRIAL/ENTERPRISE)
+  maxProjects     Int @default(1)
+  maxClients      Int @default(1000)
+  // Лимит рассылок был помесячным до 2026-07-30 (запрос пользователя: "поменять саму подписку,
+  // пусть будет по проектам, клиентам, рассылок В ДЕНЬ") — переведён на дневной. Значения теперь
+  // "ставка в день на каждый доступный проект" × maxProjects этого тарифа, посчитано заранее в
+  // PLANS (apps/api/src/modules/billing/plans.ts), а не хранится как отдельная формула здесь.
+  maxPushesPerDay Int @default(2)
 
   // Лимиты использования
-  currentProjects   Int @default(0)
-  currentClients    Int @default(0)
-  pushesThisMonth   Int @default(0)
-  pushesResetAt     DateTime @default(now())
+  currentProjects Int @default(0)
+  currentClients  Int @default(0)
+  pushesToday     Int @default(0)
+  pushesResetAt   DateTime @default(now())
 
   // Ручные ограничения супер-админа (Фаза 4.3D, запрос пользователя 2026-07-19) — независимы
   // от планов/лимитов подписки выше, накладываются вручную через apps/admin. isSuspended
@@ -122,6 +126,21 @@ model User {
   isActive     Boolean  @default(true)
   lastLoginAt  DateTime?
 
+  // Видимость страницы "все лендинги компании" (запрос пользователя 2026-08-03) — не
+  // per-project (в отличие от LANDINGS_VIEW), т.к. смысл ALL_LANDINGS — увидеть больше, чем
+  // выдано per-project правами; OWN_LANDINGS не завязан на права проектов вообще (свои же
+  // созданные). Дефолт PROJECT_LANDINGS = ровно текущее поведение (LandingsService.
+  // findAllForCompany, фильтр по LANDINGS_VIEW-грантам), так что существующие сотрудники не
+  // теряют и не приобретают видимость молча при миграции.
+  landingsVisibilityScope LandingsVisibilityScope @default(PROJECT_LANDINGS)
+
+  // "Только свои клиенты" для Buyer (запрос пользователя 2026-08-03, переключатель по каждому
+  // сотруднику отдельно, подтверждено AskUserQuestion) — ALL_CLIENTS = текущее поведение (все
+  // клиенты доступных по ProjectAccess проектов), OWN_CLIENTS = только Client.buyerId === он сам.
+  // Enum сознательно не переиспользует LandingsVisibilityScope — разное число вариантов и разная
+  // семантика (тут нет промежуточного "по проектам", проектный скоуп уже даёт ProjectAccess).
+  clientsVisibilityScope ClientsVisibilityScope @default(ALL_CLIENTS)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -131,8 +150,21 @@ model User {
   refreshTokens    RefreshToken[]
   permissions      UserPermission[]
   adminActions     AdminActionLog[]
+  createdLandings  Landing[]        @relation("LandingCreatedBy")
+  createdPixels    TrackingPixel[]  @relation("PixelCreatedBy")
 
   @@index([companyId])
+}
+
+enum LandingsVisibilityScope {
+  OWN_LANDINGS     // только созданные самим сотрудником (Landing.createdById = его id)
+  PROJECT_LANDINGS // только проекты, где выдан LANDINGS_VIEW — текущее поведение, дефолт
+  ALL_LANDINGS     // company-wide, без ограничения по проектам
+}
+
+enum ClientsVisibilityScope {
+  ALL_CLIENTS // текущее поведение — все клиенты доступных по ProjectAccess проектов, дефолт
+  OWN_CLIENTS // только клиенты, атрибутированные лично ему (Client.buyerId)
 }
 
 model RefreshToken {
@@ -277,6 +309,7 @@ model Project {
   automationEnrollments AutomationEnrollment[]
   abTestGroups          AbTestGroup[]
   storyPosts            StoryPost[]
+  personalBroadcasts    PersonalBroadcast[]
 
   @@index([companyId])
   @@index([publicToken])
@@ -293,6 +326,15 @@ model Channel {
   name      String
   isActive  Boolean     @default(true)
   lastError String?     // причина последней деактивации (initialize()/health-check) — показывается в UI
+  // Время последнего входящего Telegram-вебхука (запрос пользователя 2026-08-05, после реального
+  // ~20-часового инцидента: Telegram молча перестал слать вебхуки этому боту, пока другие боты
+  // получали их как обычно — ни ошибок, ни падений процесса, обнаружить можно было только по
+  // отсутствию новых Client-записей). Проставляется в TelegramProvider.handleWebhook на КАЖДЫЙ
+  // входящий апдейт, независимо от типа — единственная общая точка входа до диспетчеризации
+  // grammY по конкретным обработчикам. "Устарел ли вебхук" считается лениво при чтении
+  // (ProjectsService.sanitizeChannel), тем же приёмом, что уже computed tgPersonalConnected —
+  // не отдельный cron/сохранённый boolean, как у isActive.
+  lastWebhookAt DateTime?
 
   // Telegram специфично
   tgBotToken     String?
@@ -678,6 +720,14 @@ model Landing {
   abTestWeight  Int?
   abTestGroup   AbTestGroup? @relation(fields: [abTestGroupId], references: [id])
 
+  // Кто создал (запрос пользователя 2026-08-03) — nullable: у лендингов, созданных до этого
+  // поля, автора нет, миграция бэкфиллит его на Owner компании (см. саму миграцию), а не
+  // NOT NULL с фиктивным значением. Тот же паттерн, что уже есть у Purchase.registeredBy —
+  // "кто выполнил действие", опционально, без onDelete-каскада (пользователей никогда не
+  // хард-делят, см. инвариант в CLAUDE.md, так что ссылка не повиснет).
+  createdById String?
+  createdBy   User?   @relation("LandingCreatedBy", fields: [createdById], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -860,6 +910,13 @@ model Client {
   lastActiveAt   DateTime?
   unsubscribedAt DateTime?
 
+  // Дата последнего депозита (запрос пользователя 2026-08-06: рассылка с личного аккаунта,
+  // фильтр "по давности депозита") — Purchase полностью общий, нет отдельной сущности "депозит"
+  // (см. purchasesCount/totalSpent выше — тот же денормализованный подход), даты последнего
+  // события раньше не было нигде. Проставляется в PurchasesService.create рядом с уже
+  // существующим инкрементом totalSpent/purchasesCount.
+  lastPurchaseAt DateTime?
+
   // Вступил в приватный канал (PRIVATE_CHANNEL_REQUEST), но НЕ через нашу заявку/лендинг —
   // запрос пользователя 2026-07-21 ("внешние контакты... те кто подписался недавно, не по
   // нашей воронке"). Намеренно ОТДЕЛЬНО от subscribedAt — subscribedAt зарезервирован только
@@ -885,6 +942,7 @@ model Client {
   pushLogs  PushLog[]
   events    TrackingEvent[]
   automationEnrollments AutomationEnrollment[]
+  personalBroadcastLogs PersonalBroadcastLog[]
 
   @@index([companyId, projectId])
   @@index([tgUserId, projectId])
@@ -925,6 +983,14 @@ model TrackingEvent {
   campaignName   String?
   placement      String?
   siteSourceName String?
+  // Атрибуция баера на уровне события (запрос пользователя 2026-08-03: "почему нельзя показывать
+  // стату с личными параметрами") — тот же принцип, что pixelId/campaignId выше: SDK уже читает
+  // buyerRef из URL и шлёт его на КАЖДОМ событии (включая PageView/Lead, до создания Client), но
+  // бэкенд раньше эту колонку не сохранял, поэтому просмотры/клики нельзя было приписать баеру —
+  // не архитектурный тупик, просто недостающая проводка (см. TrackingService.resolveAttribution).
+  // NULL у всех событий ДО этой миграции — атрибуция не ретроактивна, как и у pixelId/campaignId
+  // в своё время.
+  buyerId        String?
 
   createdAt DateTime @default(now())
 
@@ -936,6 +1002,7 @@ model TrackingEvent {
   @@index([projectId, createdAt])
   @@index([projectId, campaignId])
   @@index([projectId, adId])
+  @@index([projectId, buyerId])
 }
 
 // ============================================================
@@ -955,6 +1022,12 @@ model TrackingPixel {
   testEventCode String? // только Facebook, для отладки CAPI
 
   isActive  Boolean  @default(true)
+
+  // Кто создал (запрос пользователя 2026-08-03) — тот же паттерн, что у Landing.createdById
+  // (см. её комментарий) выше по файлу.
+  createdById String?
+  createdBy   User?   @relation("PixelCreatedBy", fields: [createdById], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1090,6 +1163,83 @@ model PushLog {
 
   @@index([pushId])
   @@index([pushId, status])
+}
+
+// ============================================================
+// РАССЫЛКА С ЛИЧНОГО АККАУНТА (MTProto, запрос пользователя 2026-08-06) — параллельная
+// Push'у фича, не режим существующей: механизм отправки (GramJS через
+// TelegramPersonalService, не Bot API), модель аудитории (диалог именно с личным аккаунтом —
+// Client.dialogueSource='PERSONAL_ACCOUNT', не reachability бота) и темп отправки
+// (сконфигурированная пауза между каждым получателем, не очередь с лимитом) достаточно разные,
+// чтобы не переиспользовать Push/PushLog напрямую. Не в modelsWithCompany — тот же ручной
+// scoping через projectId + assertAccess, что уже у Push (см. CLAUDE.md choke points).
+// ============================================================
+
+model PersonalBroadcast {
+  id        String                  @id @default(cuid())
+  projectId String
+  name      String
+  status    PersonalBroadcastStatus @default(DRAFT)
+
+  // Варианты контента (запрос пользователя: "загрузить например 2 варианта, и половине
+  // аудитории отправится один вариант а второй половине второй") — массив
+  // {messageText, media?, buttons?}, а не одно сообщение, как у Push.messageText/messageMedia —
+  // получателю достаётся один вариант по round-robin (PersonalBroadcastLog.variantIndex).
+  variants Json
+
+  // Фильтр аудитории — PersonalBroadcastFilterDto, заметно богаче PushFilterDto (депозиты,
+  // давность депозита, диалог, подписки, папка Telegram) — см. модуль personal-broadcasts.
+  filter Json
+
+  // Пауза между отправками — случайный интервал [min,max], не фиксированное число: сам по себе
+  // разброс — анти-спам сигнал (запрос пользователя: "если делать очень быстро, телеграм может
+  // заблокировать за спам"). Личный аккаунт — не бот, с ним куда строже.
+  delayMinSeconds Int @default(15)
+  delayMaxSeconds Int @default(45)
+
+  scheduledAt DateTime?
+  sentAt      DateTime?
+
+  audienceTotal Int @default(0)
+  sentCount     Int @default(0)
+  failedCount   Int @default(0)
+  // Диалог не подтвердился живой проверкой прямо перед отправкой (client.getInputEntity не
+  // резолвится) — запрос пользователя: "так же проверять сразу если диалог реально есть".
+  skippedCount  Int @default(0)
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project                @relation(fields: [projectId], references: [id])
+  logs    PersonalBroadcastLog[]
+
+  @@index([projectId])
+  @@index([status, scheduledAt])
+}
+
+model PersonalBroadcastLog {
+  id           String    @id @default(cuid())
+  broadcastId  String
+  clientId     String
+  variantIndex Int
+  status       String    @default("pending") // pending, sending (claimed, in-flight), sent, failed, skipped
+  error        String?
+  sentAt       DateTime?
+
+  broadcast PersonalBroadcast @relation(fields: [broadcastId], references: [id])
+  client    Client            @relation(fields: [clientId], references: [id])
+
+  @@index([broadcastId, status])
+}
+
+enum PersonalBroadcastStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
 }
 
 // ============================================================
@@ -1332,6 +1482,11 @@ enum UserRole {
   ADMIN
   BUYER
   OPERATOR
+  // Project-scoped как BUYER/OPERATOR (не elevated, свой ProjectAccess) — запрос пользователя
+  // 2026-07-30. Единственная задача: создавать/редактировать участников с ролью OPERATOR в
+  // пределах СВОИХ проектов (см. team-role.util.ts assertOperatorAdminScope). Пустой
+  // DEFAULT_ROLE_PERMISSIONS — не потребляет ресурсы проекта сама.
+  OPERATOR_ADMIN
 }
 
 // Гранулярные права по типам ресурсов (запрос пользователя 2026-07-17) — см. UserPermission.
@@ -1374,9 +1529,24 @@ enum Permission {
   CLIENTS_EDIT
   CLIENTS_DELETE
   CLIENTS_EXPORT
+  // Видеть ТОЧНО в каких других проектах компании тоже встречается клиент этого проекта
+  // (какой канал, когда вступил, есть ли там диалог) — запрос пользователя 2026-07-30. Грант
+  // выдаётся НА ЭТОМ проекте (не на "том другом") — "если оператор работает на проекте А, на
+  // проекте А и выдаём доступ". Без этого права restricted-роль всё равно видит сам факт
+  // пересечения + было ли где-то ещё диалог, но не какой конкретно канал (см.
+  // ClientsService.findMany/ClientsRepository.getCrossProjectOverlap). Не выдаётся по
+  // умолчанию ни одной роли — чувствительные межпроектные данные, только explicit-грант.
+  CLIENTS_VIEW_CROSS_PROJECT
   STATS_VIEW
   STATS_VIEW_REVENUE
   STATS_VIEW_TEAM_LEADERBOARDS
+  // Рассылка с личного MTProto-аккаунта (запрос пользователя 2026-08-06) — отдельная от
+  // PUSHES_* группа: компания может разрешить обычные рассылки через бота, но не давать доступ
+  // к рассылке с личного аккаунта живого человека (репутационный риск на реальный номер).
+  PERSONAL_BROADCASTS_VIEW
+  PERSONAL_BROADCASTS_CREATE
+  PERSONAL_BROADCASTS_SEND
+  PERSONAL_BROADCASTS_DELETE
 }
 
 enum ChannelType {

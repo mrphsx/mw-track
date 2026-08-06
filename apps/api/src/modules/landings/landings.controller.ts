@@ -26,9 +26,14 @@ export class LandingsController {
   // Buyer/Operator видят только лендинги проектов, к которым у них есть ProjectAccess —
   // остальные роуты ниже трогают лендинг по его id напрямую, поэтому проверяем через его
   // projectId (см. LandingsService.findOne, единственный, который отдаёт projectId).
+  // allowArchived:true (запрос пользователя 2026-08-02: "лэндинги удалённого проекта не могу
+  // удалить, 404 Проект не найден") — архивация проекта не должна превращать его лендинги в
+  // навсегда неудаляемые: просмотр/редактирование/удаление лендинга архивированного проекта
+  // теперь работает так же, как и активного, единственное отличие — сам проект уже не в
+  // основных списках.
   private async assertAccess(id: string, companyId: string, user: AuthUser, requiredPermissions?: Permission[]): Promise<void> {
     const landing = await this.landingsService.findOne(id, companyId);
-    await this.projectsService.assertAccess(landing.projectId, companyId, user.userId, user.role, requiredPermissions);
+    await this.projectsService.assertAccess(landing.projectId, companyId, user.userId, user.role, requiredPermissions, { allowArchived: true });
   }
 
   @Get('templates')

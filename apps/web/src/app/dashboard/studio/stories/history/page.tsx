@@ -6,8 +6,10 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { format } from 'date-fns';
 import { ArrowLeft, History, RotateCcw, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { AccountPicker, useStoriesOverview } from '@/components/stories/account-picker';
+import { accountLabel, useStoriesOverview } from '@/components/stories/account-picker';
 import { StoryMediaThumb } from '@/components/stories/story-media-thumb';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../../ui';
 
 interface StoryPostRow {
@@ -43,8 +45,11 @@ const STATUS_HUE: Record<string, 'amber' | 'sage' | 'slate' | 'plum' | 'teal'> =
 };
 
 // Studio-версия истории публикаций историй (запрос пользователя 2026-07-30: "добей остальные
-// оставшиеся страницы") — логика 1:1 с классической. AccountPicker/StoryMediaThumb переиспользованы
-// без изменений.
+// оставшиеся страницы") — логика 1:1 с классической. StoryMediaThumb переиспользован без
+// изменений. Выбор аккаунта/проекта — СВОЙ, не общий AccountPicker (запрос пользователя
+// 2026-07-31: "дропдаун проектов не под общий дизайн сделан") — AccountPicker намеренно
+// нейтрально стилизован (общий и для classic, и для Studio), здесь используется напрямую
+// <Select> с цветами палитры Cobalt Field, как и везде в Studio.
 export default function StudioStoriesHistoryPage() {
   const { data: overview, isLoading: overviewLoading } = useStoriesOverview();
 
@@ -59,7 +64,7 @@ export default function StudioStoriesHistoryPage() {
     <div className="space-y-4">
       <div>
         <Link
-          href="/dashboard/studio/stories"
+          href="/stories"
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Истории
@@ -73,7 +78,26 @@ export default function StudioStoriesHistoryPage() {
 
       {!overviewLoading && overview && overview.connectedProjects.length > 0 && (
         <>
-          <AccountPicker projects={overview.connectedProjects} value={selectedProjectId} onChange={setSelectedProjectId} />
+          <div className="max-w-sm space-y-1.5">
+            <Label className="text-[#131A24] dark:text-[#E9EDF3]">Аккаунт</Label>
+            <Select value={selectedProjectId} onValueChange={(v) => v && setSelectedProjectId(v)}>
+              <SelectTrigger className="w-full rounded-lg border-[#DCE1E8] dark:border-white/10 bg-white dark:bg-[#171F2B] text-[#131A24] dark:text-[#E9EDF3]">
+                <SelectValue>
+                  {(v: string) => {
+                    const p = overview.connectedProjects.find((pr) => pr.id === v);
+                    return p ? accountLabel(p) : '';
+                  }}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {overview.connectedProjects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {accountLabel(p)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {selectedProjectId && <StoriesList key={selectedProjectId} projectId={selectedProjectId} />}
         </>
       )}

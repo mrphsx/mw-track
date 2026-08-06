@@ -262,10 +262,6 @@ const PLATFORM_LABEL: Record<Pixel['platform'], string> = {
 
 const TEST_EVENT_CODE_PATTERN = /^TEST\d+$/i;
 const TESTABLE_EVENT_NAMES = ['PageView', 'Lead', 'Subscribe', 'Unsubscribe', 'Dialogue', 'Purchase', 'InitiateCheckout'];
-const ACTION_SOURCE_OPTIONS: { value: 'website' | 'chat'; label: string }[] = [
-  { value: 'chat', label: 'Chat (Telegram/бот)' },
-  { value: 'website', label: 'Website (браузер)' },
-];
 
 interface PixelTestEventResult {
   success: boolean;
@@ -295,7 +291,6 @@ export function PixelsTab({
   const [accessToken, setAccessToken] = useState('');
   const [testEventCode, setTestEventCode] = useState('');
   const [testEventName, setTestEventName] = useState('Subscribe');
-  const [testActionSource, setTestActionSource] = useState<'website' | 'chat'>('chat');
   const [error, setError] = useState('');
 
   const resetForm = () => {
@@ -318,7 +313,9 @@ export function PixelsTab({
           accessToken,
           testEventCode: platform === 'FACEBOOK' ? testEventCode || undefined : undefined,
           eventName: testEventName,
-          actionSource: testActionSource,
+          // Раньше выбирался в дропдауне (Chat/Website) — запрос пользователя 2026-07-31:
+          // "для проверки убери дропдаун с chat website, пусть будет всегда website".
+          actionSource: 'website',
         })
       ).data,
   });
@@ -350,7 +347,6 @@ export function PixelsTab({
   const [editAccessToken, setEditAccessToken] = useState('');
   const [editTestEventCode, setEditTestEventCode] = useState('');
   const [editTestEventName, setEditTestEventName] = useState('Subscribe');
-  const [editTestActionSource, setEditTestActionSource] = useState<'website' | 'chat'>('chat');
 
   const startEditingPixel = (p: Pixel) => {
     setEditingPixelId(p.id);
@@ -380,7 +376,7 @@ export function PixelsTab({
           eventName: editTestEventName,
           accessToken: editAccessToken || undefined,
           testEventCode: editTestEventCode,
-          actionSource: editTestActionSource,
+          actionSource: 'website',
         })
       ).data,
   });
@@ -422,6 +418,12 @@ export function PixelsTab({
                   )}
                 </div>
               </div>
+              {/* Автор (запрос пользователя 2026-08-03) */}
+              {pixel.createdBy && (
+                <p className={`text-xs ${MUTED} mt-0.5`}>
+                  Создал: {pixel.createdBy.firstName} {pixel.createdBy.lastName ?? ''}
+                </p>
+              )}
               {editingPixelId === pixel.id && (
                 <div className="mt-2 space-y-2.5 pl-1">
                   <div className="space-y-1.5">
@@ -450,18 +452,6 @@ export function PixelsTab({
                           {TESTABLE_EVENT_NAMES.map((name) => (
                             <SelectItem key={name} value={name}>
                               {name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Select value={editTestActionSource} onValueChange={(v) => v && setEditTestActionSource(v as 'website' | 'chat')}>
-                        <SelectTrigger id={`edit-test-source-${pixel.id}`} className="w-[110px]">
-                          <SelectValue>{(v: string) => ACTION_SOURCE_OPTIONS.find((o) => o.value === v)?.label.split(' ')[0] || v}</SelectValue>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ACTION_SOURCE_OPTIONS.map((o) => (
-                            <SelectItem key={o.value} value={o.value}>
-                              {o.label}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -586,19 +576,10 @@ export function PixelsTab({
                     ))}
                   </SelectContent>
                 </Select>
-                <Select value={testActionSource} onValueChange={(v) => v && setTestActionSource(v as 'website' | 'chat')}>
-                  <SelectTrigger id="pixel-test-action-source" className="w-[110px]">
-                    <SelectValue>{(v: string) => ACTION_SOURCE_OPTIONS.find((o) => o.value === v)?.label.split(' ')[0] || v}</SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ACTION_SOURCE_OPTIONS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <StudioLinkButton onClick={() => testEvent.mutate()} disabled={!pixelId || !accessToken || testEvent.isPending}>
+                {/* size="sm" — раньше отсутствовал (запрос пользователя 2026-07-31: "кнопка
+                    отправить тест больше чем дропдауны рядом с ней"), из-за чего кнопка была
+                    заметно выше соседних <Select>, у которых высота h-8 по умолчанию. */}
+                <StudioLinkButton size="sm" onClick={() => testEvent.mutate()} disabled={!pixelId || !accessToken || testEvent.isPending}>
                   {testEvent.isPending ? 'Отправляем...' : 'Отправить тест'}
                 </StudioLinkButton>
               </div>
@@ -787,6 +768,13 @@ export function PixelLogsTab({ projectId, pixels }: { projectId: string; pixels:
 
   const resetPage = () => setPage(1);
 
+  // Цвета фильтров этой вкладки (запрос пользователя 2026-07-31: "не под наш основной дизайн,
+  // цвета другие") — базовый <SelectTrigger> использует нейтральные shadcn-токены
+  // (border-input/bg-transparent), не завязанные на палитру Cobalt Field, которой раскрашен
+  // весь остальной Studio — здесь этот класс переопределён явно, тем же набором цветов, что и у
+  // STUDIO_CARD/остальных элементов страницы.
+  const studioSelectTrigger = 'border-[#DCE1E8] dark:border-white/10 bg-white dark:bg-[#171F2B] text-[#131A24] dark:text-[#E9EDF3] rounded-lg';
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
@@ -799,7 +787,7 @@ export function PixelLogsTab({ projectId, pixels }: { projectId: string; pixels:
             }
           }}
         >
-          <SelectTrigger className="w-48">
+          <SelectTrigger className={`w-48 ${studioSelectTrigger}`}>
             <SelectValue>
               {(v: string) => {
                 if (v === ALL_VALUE) return 'Все пиксели';
@@ -826,7 +814,7 @@ export function PixelLogsTab({ projectId, pixels }: { projectId: string; pixels:
             }
           }}
         >
-          <SelectTrigger className="w-40">
+          <SelectTrigger className={`w-40 ${studioSelectTrigger}`}>
             <SelectValue>{(v: string) => STATUS_FILTER_LABEL[v] ?? v}</SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -844,7 +832,7 @@ export function PixelLogsTab({ projectId, pixels }: { projectId: string; pixels:
             }
           }}
         >
-          <SelectTrigger className="w-40">
+          <SelectTrigger className={`w-40 ${studioSelectTrigger}`}>
             <SelectValue>{(v: string) => (v === ALL_VALUE ? 'Любое событие' : v)}</SelectValue>
           </SelectTrigger>
           <SelectContent>
@@ -1147,6 +1135,139 @@ export function DangerTab({ projectId, onArchived }: { projectId: string; onArch
   );
 }
 
+interface ProjectOperator {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  email: string;
+  isActive: boolean;
+}
+
+// Studio-версия управления операторами проекта — логика 1:1 с классической (см. её комментарий
+// в apps/web/.../(dashboard)/projects/[id]/settings/tabs.tsx), только STUDIO_CARD/StudioPill/
+// StudioLinkButton вместо Card/Badge/Button.
+export function OperatorsTab({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient();
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [search, setSearch] = useState('');
+
+  const { data: operators, isLoading } = useQuery({
+    queryKey: ['project-operators', projectId],
+    queryFn: async () => (await api.get<ProjectOperator[]>(`/projects/${projectId}/operators`)).data,
+  });
+
+  const { data: candidates } = useQuery({
+    queryKey: ['project-operator-candidates', projectId],
+    queryFn: async () => (await api.get<ProjectOperator[]>(`/projects/${projectId}/operators/candidates`)).data,
+    enabled: showAddDialog,
+  });
+
+  const add = useMutation({
+    mutationFn: (userId: string) => api.post(`/projects/${projectId}/operators`, { userId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project-operators', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['project-operator-candidates', projectId] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (userId: string) => api.delete(`/projects/${projectId}/operators/${userId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project-operators', projectId] }),
+  });
+
+  const filteredCandidates = candidates?.filter((c) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return `${c.firstName} ${c.lastName ?? ''}`.toLowerCase().includes(q) || c.email.toLowerCase().includes(q);
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className={`text-sm ${MUTED}`}>
+          Операторы с доступом к клиентам этого проекта. Права фиксированные — как только
+          оператор добавлен, он сразу видит клиентов и может регистрировать депозиты.
+        </p>
+        <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowAddDialog(true)}>
+          Добавить оператора
+        </StudioLinkButton>
+      </div>
+
+      {isLoading && <p className={`text-sm ${MUTED}`}>Загрузка...</p>}
+      {!isLoading && !operators?.length && <p className={`text-sm ${MUTED}`}>Операторов пока нет.</p>}
+      {!!operators?.length && (
+        <div className={`${STUDIO_CARD} overflow-x-auto`}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className={`text-left text-xs ${MUTED} border-b border-[#DCE1E8] dark:border-white/10`}>
+                <th className="px-5 py-3 font-medium">Оператор</th>
+                <th className="px-5 py-3 font-medium">Статус</th>
+                <th className="px-5 py-3 font-medium text-right">Действия</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
+              {operators.map((op) => (
+                <tr key={op.id}>
+                  <td className="px-5 py-3">
+                    <div className={`font-medium ${FG}`}>
+                      {op.firstName} {op.lastName || ''}
+                    </div>
+                    <div className={`text-xs ${MUTED}`}>{op.email}</div>
+                  </td>
+                  <td className="px-5 py-3">
+                    {op.isActive ? <StudioPill hue="sage">Активен</StudioPill> : <StudioPill hue="slate">Отключён</StudioPill>}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <button
+                      type="button"
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        if (confirm(`Убрать оператора ${op.email} с этого проекта?`)) remove.mutate(op.id);
+                      }}
+                      className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm ${MUTED} hover:text-red-600 dark:hover:text-red-400`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Убрать
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Добавить оператора</DialogTitle>
+          </DialogHeader>
+          <Input placeholder="Имя или email..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="max-h-72 overflow-y-auto space-y-1">
+            {!filteredCandidates?.length && <p className={`text-sm ${MUTED} py-2`}>Нет доступных операторов.</p>}
+            {filteredCandidates?.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                disabled={add.isPending}
+                onClick={() => add.mutate(c.id)}
+                className="w-full flex items-center justify-between gap-2 rounded-lg border border-[#DCE1E8] dark:border-white/10 p-2.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-50"
+              >
+                <div>
+                  <div className={`font-medium ${FG}`}>
+                    {c.firstName} {c.lastName || ''}
+                  </div>
+                  <div className={`text-xs ${MUTED}`}>{c.email}</div>
+                </div>
+                <Plus className={`w-4 h-4 ${MUTED} shrink-0`} />
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 // Studio-версии BotSettingsTab/PersonalAccountConnect (запрос пользователя 2026-07-30:
 // "теперь сделай под новый дизайн и страницу проектов и настройки" — закрывает известный,
 // явно задокументированный пробел с предыдущего прохода: эти 2 компонента раньше оставались
@@ -1324,8 +1445,8 @@ function SubscribeScenarioCard({ channelId, projectId }: { channelId: string; pr
   const subscribeScenario = scenarios?.find((s) => s.triggerType === 'SUBSCRIBE');
   const configured = !!subscribeScenario && subscribeScenario.isActive && subscribeScenario.stepCount > 0;
   const href = subscribeScenario
-    ? `/dashboard/studio/projects/${projectId}/scenarios/${subscribeScenario.id}`
-    : `/dashboard/studio/projects/${projectId}/scenarios`;
+    ? `/projects/${projectId}/scenarios/${subscribeScenario.id}`
+    : `/projects/${projectId}/scenarios`;
 
   return (
     <div className={`${STUDIO_CARD} p-5 space-y-3`}>

@@ -107,6 +107,7 @@ export default function StudioAllLandingsPage() {
               hideChannelDetails
               statusDotClassName={STATUS_DOT_CLASS[l.status]}
               abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
+              containerClassName={STUDIO_CARD}
             />
           ))}
         </div>

@@ -34,12 +34,13 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="w-full max-w-md bg-card rounded-2xl shadow p-8">
-      <div className="text-center mb-6">
-        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-1">MWTRACK</div>
-        <p className="text-muted-foreground text-sm">Регистрация — 14 дней бесплатно</p>
-      </div>
-      <form onSubmit={handleSubmit} className="space-y-4">
+    <div>
+      <span className="lg:hidden text-lg font-bold tracking-tight text-[#131A24] dark:text-white">
+        MW<span className="text-[#1F4E9C] dark:text-[#7BA9EE]">TRACK</span>
+      </span>
+      <h1 className="mt-6 lg:mt-0 text-2xl font-bold tracking-tight text-[#131A24] dark:text-white">Создайте аккаунт</h1>
+      <p className="mt-1.5 text-sm text-[#5F6B7A] dark:text-[#92A0AF]">14 дней бесплатно, банковская карта не нужна</p>
+      <form onSubmit={handleSubmit} className="mt-8 space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="companyName">Название компании</Label>
           <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} required />
@@ -57,12 +58,12 @@ export default function RegisterPage() {
           <Input id="password" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
-        <Button type="submit" disabled={loading} className="w-full">
+        <Button type="submit" disabled={loading} className="w-full bg-[#1F4E9C] hover:bg-[#1F4E9C]/90 dark:bg-[#7BA9EE] dark:text-[#0F1620]">
           {loading ? 'Создаём аккаунт...' : 'Зарегистрироваться'}
         </Button>
-        <p className="text-center text-sm text-muted-foreground">
+        <p className="text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
           Уже есть аккаунт?{' '}
-          <Link href="/login" className="text-blue-600 dark:text-blue-400 hover:underline">
+          <Link href="/login" className="text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline">
             Войти
           </Link>
         </p>

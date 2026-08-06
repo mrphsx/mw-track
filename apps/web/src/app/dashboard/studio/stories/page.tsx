@@ -33,7 +33,7 @@ export default function StudioStoriesPage() {
           <Camera className="w-7 h-7" /> Истории
         </h1>
         {overview && overview.connectedProjects.length > 0 && (
-          <StudioLinkButton icon={History} size="sm" href="/dashboard/studio/stories/history">
+          <StudioLinkButton icon={History} size="sm" href="/stories/history">
             История публикаций
           </StudioLinkButton>
         )}
@@ -58,7 +58,7 @@ export default function StudioStoriesPage() {
           </p>
           <div className="flex flex-wrap gap-2">
             {overview.eligibleUnconnectedProjects.map((p) => (
-              <StudioLinkButton key={p.id} size="sm" href={`/dashboard/studio/projects/${p.id}/settings?tab=personal`}>
+              <StudioLinkButton key={p.id} size="sm" href={`/projects/${p.id}/settings?tab=personal`}>
                 Подключить: {p.name}
               </StudioLinkButton>
             ))}
@@ -73,7 +73,7 @@ export default function StudioStoriesPage() {
             режим — прямой бот, приватный канал с заявкой, публичный канал или личные сообщения) и
             подключите к нему личный Telegram-аккаунт в настройках проекта.
           </p>
-          <StudioLinkButton variant="primary" size="sm" href="/dashboard/studio/projects/new">
+          <StudioLinkButton variant="primary" size="sm" href="/projects/new">
             Создать проект
           </StudioLinkButton>
         </div>

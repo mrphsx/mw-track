@@ -34,10 +34,15 @@ export const PERMISSIONS = [
   'CLIENTS_EDIT',
   'CLIENTS_DELETE',
   'CLIENTS_EXPORT',
+  'CLIENTS_VIEW_CROSS_PROJECT',
   'STATS_VIEW',
   'STATS_VIEW_REVENUE',
   'STATS_VIEW_TEAM_LEADERBOARDS',
   'PROJECTS_EDIT',
+  'PERSONAL_BROADCASTS_VIEW',
+  'PERSONAL_BROADCASTS_CREATE',
+  'PERSONAL_BROADCASTS_SEND',
+  'PERSONAL_BROADCASTS_DELETE',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -146,6 +151,10 @@ export const PERMISSION_GROUPS: { label: string; permissions: { value: Permissio
       { value: 'CLIENTS_EDIT', label: 'Изменение' },
       { value: 'CLIENTS_DELETE', label: 'Удаление' },
       { value: 'CLIENTS_EXPORT', label: 'Экспорт' },
+      // Запрос пользователя 2026-07-30 — видеть точно в каких ЕЩЁ проектах компании
+      // встречается этот клиент (какой канал, дата вступления, диалог), не только сам факт
+      // пересечения. Выдаётся на ЭТОМ проекте, не на "том другом".
+      { value: 'CLIENTS_VIEW_CROSS_PROJECT', label: 'Детали пересечения с другими проектами' },
     ],
   },
   {
@@ -161,6 +170,18 @@ export const PERMISSION_GROUPS: { label: string; permissions: { value: Permissio
     // 2026-07-28, security-critical), сюда не входят.
     label: 'Настройки проекта',
     permissions: [{ value: 'PROJECTS_EDIT', label: 'Редактирование настроек' }],
+  },
+  {
+    // Отдельная от "Пуши" группа (запрос пользователя 2026-08-06) — компания может разрешить
+    // обычные рассылки через бота, но не давать доступ к рассылке с личного аккаунта живого
+    // человека (репутационный/аккаунт-банный риск на реальный номер).
+    label: 'Рассылка с личного аккаунта',
+    permissions: [
+      { value: 'PERSONAL_BROADCASTS_VIEW', label: 'Просмотр' },
+      { value: 'PERSONAL_BROADCASTS_CREATE', label: 'Создание' },
+      { value: 'PERSONAL_BROADCASTS_SEND', label: 'Отправка' },
+      { value: 'PERSONAL_BROADCASTS_DELETE', label: 'Удаление/отмена' },
+    ],
   },
 ];
 
@@ -199,6 +220,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, Permission[]> = {
     'CLIENTS_EDIT',
     'STATS_VIEW',
   ],
+  // Оператор-админ (запрос пользователя 2026-07-30) — намеренно пустой, зеркалит backend
+  // permission.constants.ts: единственная задача роли — управление Operator-участниками, не
+  // потребление ресурсов проекта.
+  OPERATOR_ADMIN: [],
 };
 
 // DEFAULT_ROLE_PERMISSIONS смешивает project-scoped и DOMAINS_* права в одном списке (как и

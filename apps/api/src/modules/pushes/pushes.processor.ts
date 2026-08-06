@@ -33,7 +33,7 @@ export class PushesProcessor {
     // mediaUrl/mediaType всегда дублируют первый элемент, даже когда это альбом: провайдеры
     // без поддержки mediaGroup (WhatsApp/Instagram) просто читают их и шлют один файл —
     // деградация автоматическая, без доп. кода в тех провайдерах (см. интерфейс).
-    const media = push.messageMedia as { type: 'photo' | 'video' | 'video_note'; url: string }[] | null;
+    const media = push.messageMedia as { type: 'photo' | 'video' | 'video_note' | 'voice'; url: string }[] | null;
     const mediaGroup = media && media.length > 1 ? media.map((m) => ({ type: m.type as 'photo' | 'video', url: m.url })) : undefined;
     // Прямая ссылка на кнопке (отказ от трекинг-редиректа, запрос пользователя 2026-07-17:
     // "ссылка на кнопке не та что я поставил ... лучше напрямую") — раньше URL кнопки

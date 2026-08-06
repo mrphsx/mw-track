@@ -87,7 +87,18 @@ export function GetLinkDialog({
               <Label htmlFor="get-link-pixel">Пиксель</Label>
               <Select value={pixelSelection} onValueChange={(v) => v && setPixelSelection(v)}>
                 <SelectTrigger id="get-link-pixel" className="w-full">
-                  <SelectValue />
+                  {/* Баг (6-й раз в проекте, тот же паттерн) — без children-функции Base UI
+                      показывает сырое value (id пикселя), а не название. */}
+                  <SelectValue>
+                    {(v: string) =>
+                      v === ALL_PIXELS
+                        ? 'Все активные пиксели проекта (без привязки)'
+                        : (() => {
+                            const p = pixels.find((px) => px.id === v);
+                            return p ? `${p.label || p.pixelId} (${p.platform})` : v;
+                          })()
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 {/* w-max вместо дефолтного w-(--anchor-width) (баг-репорт пользователя
                     2026-07-30: "выбор пикселя всё ещё не вмещает названия") — попап по умолчанию

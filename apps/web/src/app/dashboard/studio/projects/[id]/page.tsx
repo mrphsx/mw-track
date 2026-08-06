@@ -1,12 +1,13 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   Bot,
   ChevronDown,
   ChevronRight,
+  Contact,
   DollarSign,
   Eye,
   LayoutTemplate,
@@ -44,6 +45,7 @@ import {
   usePrototypeProjectData,
 } from '@/lib/prototype-project-data';
 import { STUDIO_HUE_HEX, STUDIO_HUES, StudioHueName } from '../../colors';
+import { StudioPill } from '../../ui';
 import { StudioClientsTable } from '../../clients-table';
 
 const FUNNEL_ICON: Record<string, LucideIcon> = {
@@ -101,7 +103,7 @@ export default function StudioProjectPage() {
   const { id } = useParams<{ id: string }>();
   const [period, setPeriod] = useState<PrototypePeriodValue>({ period: 'today' });
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
-  const { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards } =
+  const { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards, canViewPersonalBroadcasts } =
     usePrototypeProjectData(id, period);
 
   const metrics: { key: string; label: string; value: string | number; icon: LucideIcon; hue: StudioHueName; danger?: boolean }[] = [
@@ -159,6 +161,16 @@ export default function StudioProjectPage() {
   const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<LeaderboardCategory>(
     canViewTeamLeaderboards ? 'buyers' : 'pixels',
   );
+
+  // "Только свои клиенты" (запрос пользователя 2026-08-03) — см. тот же комментарий в
+  // классической версии страницы.
+  useEffect(() => {
+    if (activeLeaderboardTab === 'buyers' && leaderboards && leaderboards.buyers.length === 0) {
+      setActiveLeaderboardTab('pixels');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leaderboards]);
+
   const activeLeaderboardIds: string[] = !leaderboards
     ? []
     : activeLeaderboardTab === 'buyers'
@@ -206,17 +218,28 @@ export default function StudioProjectPage() {
               <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">{project.name}</h1>
               <StatusPill active={project.status === 'ACTIVE'} label={project.status} />
               {project.channel && <StatusPill active={project.channel.isActive} label={project.channel.type} />}
+              {/* "Молчащий" вебхук (запрос пользователя 2026-08-05) — см. классическую версию
+                  для полного комментария. */}
+              {project.channel?.webhookStale && (
+                <span title="Telegram давно не присылал вебхуки этому боту — возможно, трафик не регистрируется">
+                  <StudioPill danger>Нет вебхуков</StudioPill>
+                </span>
+              )}
               <TrackingEventsSummaryPill projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} />
             </div>
             <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] mt-1">Прототип страницы проекта · бета</p>
           </div>
         </div>
-        <Link
-          href={`/projects/${id}`}
+        {/* Раньше вело на классическую версию этой же страницы внутри одного приложения — с
+            переездом классики на old.mw-track.com (запрос пользователя 2026-07-30) это стало бы
+            бессмысленной ссылкой саму на себя, поэтому теперь обычная внешняя ссылка на другой
+            домен, а не Link. */}
+        <a
+          href={`https://old.mw-track.com/projects/${id}`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors underline-offset-4 hover:underline"
         >
           ← Обычный вид
-        </Link>
+        </a>
       </div>
 
       {/* Кнопки действий + период — один ряд с justify-between (запрос пользователя 2026-07-30:
@@ -231,25 +254,35 @@ export default function StudioProjectPage() {
               2026-07-30: "готовить все остальные страницы") — Настройки пока без Studio-
               варианта (1575-строчный файл с десятком вкладок, отложен), ведёт на классику. */}
           <Link
-            href={`/dashboard/studio/projects/${id}/pushes`}
+            href={`/projects/${id}/pushes`}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
           >
             <Send className="w-4 h-4" /> Рассылка
           </Link>
+          {/* Рассылка с личного MTProto-аккаунта (запрос пользователя 2026-08-06) — та же
+              гейтовка, что в классике: подключён личный аккаунт + право на просмотр раздела. */}
+          {project?.channel?.tgPersonalConnected && canViewPersonalBroadcasts && (
+            <Link
+              href={`/projects/${id}/personal-broadcasts`}
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            >
+              <Contact className="w-4 h-4" /> Личный аккаунт
+            </Link>
+          )}
           <Link
-            href={`/dashboard/studio/projects/${id}/landings`}
+            href={`/projects/${id}/landings`}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <LayoutTemplate className="w-4 h-4" /> Лендинги
           </Link>
           <Link
-            href={`/dashboard/studio/projects/${id}/scenarios`}
+            href={`/projects/${id}/scenarios`}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <Workflow className="w-4 h-4" /> Сценарии
           </Link>
           <Link
-            href={`/dashboard/studio/projects/${id}/settings`}
+            href={`/projects/${id}/settings`}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <Settings className="w-4 h-4" /> Настройки
@@ -407,7 +440,7 @@ export default function StudioProjectPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs text-[#5F6B7A] dark:text-[#92A0AF] border-b border-[#DCE1E8] dark:border-white/10">
-                  <th className="px-5 py-3 font-medium">Кампания / объявление</th>
+                  <th className="px-5 py-3 font-medium">Кампания</th>
                   <th className="px-5 py-3 font-medium text-right">Просмотры</th>
                   <th className="px-5 py-3 font-medium text-right">Клики</th>
                   <th className="px-5 py-3 font-medium text-right">Подписки</th>
@@ -418,9 +451,9 @@ export default function StudioProjectPage() {
               </thead>
               <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
                 {adBreakdown.slice(0, 10).map((row) => (
-                  <tr key={`${row.campaignId}-${row.adName ?? ''}`}>
+                  <tr key={row.campaignId}>
                     <td className="px-5 py-3 truncate max-w-[220px] text-[#131A24] dark:text-[#E9EDF3]">
-                      {row.adName || row.campaignName || row.campaignId}
+                      {row.campaignName || row.campaignId}
                     </td>
                     <td className="px-5 py-3 text-right text-[#5F6B7A] dark:text-[#92A0AF]">{row.pageViews}</td>
                     <td className="px-5 py-3 text-right text-[#5F6B7A] dark:text-[#92A0AF]">{row.leads}</td>
@@ -458,7 +491,10 @@ export default function StudioProjectPage() {
               топ-5 списки уже загружены одним запросом (staleTime: Infinity), здесь только
               переключение видимости + ленивая подгрузка развёрнутой воронки под элементами. */}
           <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5 mb-4">
-            {canViewTeamLeaderboards && (
+            {/* "Только свои клиенты" (запрос пользователя 2026-08-03) — та же логика, что и в
+                классической версии: бэкенд отдаёт пустой buyers[] для скоуп-баера, прячем
+                пилюлю целиком вместо пустого списка. */}
+            {canViewTeamLeaderboards && leaderboards.buyers.length > 0 && (
               <button
                 type="button"
                 onClick={() => setActiveLeaderboardTab('buyers')}
@@ -574,7 +610,7 @@ export default function StudioProjectPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">Последние клиенты</h2>
           <Link
-            href={`/dashboard/studio/projects/${id}/clients`}
+            href={`/projects/${id}/clients`}
             className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors underline-offset-4 hover:underline"
           >
             Все клиенты →
@@ -622,7 +658,7 @@ function TrackingEventsSummaryPill({ projectId, disabledTrackingEvents }: { proj
   const tooltip = TRACKING_EVENT_TYPES.map((et) => `${et.label}: ${disabledTrackingEvents.includes(et.name) ? 'выключено' : 'включено'}`).join('\n');
   return (
     <Link
-      href={`/dashboard/studio/projects/${projectId}/settings?tab=events`}
+      href={`/projects/${projectId}/settings?tab=events`}
       title={tooltip}
       className={`inline-flex items-center gap-1.5 text-[10px] font-medium px-2 py-0.5 rounded-lg transition-opacity hover:opacity-80 ${
         allEnabled ? `${STUDIO_HUES.sage.bgSoftClass} ${STUDIO_HUES.sage.textClass}` : 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400'

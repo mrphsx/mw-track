@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, Plus, Trash2 } from 'lucide-react';
@@ -9,15 +10,22 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { InviteLinkCell, ROLE_LABELS, TeamInvite, TeamMember } from './shared';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AssignOperatorProjectsDialog, InviteLinkCell, ProjectSummary, ROLE_LABELS, TeamInvite, TeamMember } from './shared';
 
 export default function TeamPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const [assigningOperator, setAssigningOperator] = useState<TeamMember | null>(null);
 
   const { data: members, isLoading } = useQuery({
     queryKey: ['team'],
     queryFn: async () => (await api.get<TeamMember[]>('/team')).data,
+  });
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: async () => (await api.get<ProjectSummary[]>('/projects')).data,
   });
 
   const { data: invites } = useQuery({
@@ -36,6 +44,12 @@ export default function TeamPage() {
   });
 
   const pendingInvites = invites?.filter((i) => !i.usedAt && new Date(i.expiresAt) > new Date());
+  // Операторы — отдельная вкладка (запрос пользователя 2026-07-31: "можно как-то разделить
+  // всех остальных работников от операторов") — состав/доступ у них меняется намного чаще
+  // (через карточку проекта или эту же вкладку), общий список Owner/Admin/Buyer/Оператор-
+  // админ не должен теряться среди них.
+  const otherMembers = members?.filter((m) => m.role !== 'OPERATOR');
+  const operators = members?.filter((m) => m.role === 'OPERATOR');
 
   return (
     <div className="space-y-6">
@@ -62,140 +76,235 @@ export default function TeamPage() {
         человек сам заведёт себе пароль по ней.
       </p>
 
-      {!!pendingInvites?.length && (
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Ссылка-приглашение</TableHead>
-                  <TableHead>Роль</TableHead>
-                  <TableHead>Действует до</TableHead>
-                  <TableHead className="text-right">Действия</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {pendingInvites.map((inv) => (
-                  <TableRow key={inv.id}>
-                    <TableCell>
-                      <InviteLinkCell token={inv.token} />
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{ROLE_LABELS[inv.role]}</Badge>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {new Date(inv.expiresAt).toLocaleDateString('ru-RU')}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        disabled={revokeInvite.isPending}
-                        onClick={() => {
-                          if (confirm('Отозвать эту ссылку-приглашение?')) revokeInvite.mutate(inv.id);
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
       {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
-      {!isLoading && !!members?.length && (
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Участник</TableHead>
-                  <TableHead>Роль</TableHead>
-                  <TableHead>Проекты</TableHead>
-                  <TableHead>Статус</TableHead>
-                  <TableHead>Последний вход</TableHead>
-                  <TableHead className="text-right">Действия</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {members.map((m) => (
-                  <TableRow key={m.id}>
-                    <TableCell>
-                      {m.id === currentUser?.id ? (
-                        <div>
-                          <div className="font-medium">
-                            {m.firstName} {m.lastName || ''}
-                          </div>
-                          <div className="text-xs text-muted-foreground">{m.email}</div>
-                        </div>
-                      ) : (
-                        <Link href={`/team/${m.id}/edit`} className="hover:underline">
-                          <div className="font-medium">
-                            {m.firstName} {m.lastName || ''}
-                          </div>
-                          <div className="text-xs text-muted-foreground">{m.email}</div>
-                        </Link>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{ROLE_LABELS[m.role]}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      {m.role === 'OWNER' || m.role === 'ADMIN' ? (
-                        <span className="text-xs text-muted-foreground">Все проекты</span>
-                      ) : m.projectAccess.length === 0 ? (
-                        <span className="text-xs text-amber-600">Нет доступных проектов</span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          {m.projectAccess.map((pa) => pa.project.name).join(', ')}
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {m.isActive ? (
-                        <Badge>Активен</Badge>
-                      ) : (
-                        <Badge variant="secondary">Отключён</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {m.lastLoginAt ? new Date(m.lastLoginAt).toLocaleDateString('ru-RU') : '—'}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1.5">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          nativeButton={false}
-                          disabled={m.id === currentUser?.id}
-                          render={<Link href={`/team/${m.id}/edit`}>Изменить</Link>}
-                        />
-                        {m.role !== 'OWNER' && m.isActive && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            disabled={m.id === currentUser?.id || removeMember.isPending}
-                            onClick={() => {
-                              if (confirm(`Отключить доступ участнику ${m.email}?`)) removeMember.mutate(m.id);
-                            }}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+      {!isLoading && (
+        <Tabs defaultValue="team">
+          <TabsList>
+            <TabsTrigger value="team">Команда</TabsTrigger>
+            <TabsTrigger value="operators">Операторы{operators?.length ? ` (${operators.length})` : ''}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="team" className="space-y-6 pt-4">
+            {!!pendingInvites?.length && (
+              <Card>
+                <CardContent className="p-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Ссылка-приглашение</TableHead>
+                        <TableHead>Роль</TableHead>
+                        <TableHead>Действует до</TableHead>
+                        <TableHead className="text-right">Действия</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pendingInvites.map((inv) => (
+                        <TableRow key={inv.id}>
+                          <TableCell>
+                            <InviteLinkCell token={inv.token} />
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{ROLE_LABELS[inv.role]}</Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {new Date(inv.expiresAt).toLocaleDateString('ru-RU')}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              disabled={revokeInvite.isPending}
+                              onClick={() => {
+                                if (confirm('Отозвать эту ссылку-приглашение?')) revokeInvite.mutate(inv.id);
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+
+            {!!otherMembers?.length && (
+              <Card>
+                <CardContent className="p-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Участник</TableHead>
+                        <TableHead>Роль</TableHead>
+                        <TableHead>Проекты</TableHead>
+                        <TableHead>Статус</TableHead>
+                        <TableHead>Последний вход</TableHead>
+                        <TableHead className="text-right">Действия</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {otherMembers.map((m) => (
+                        <TableRow key={m.id}>
+                          <TableCell>
+                            {m.id === currentUser?.id ? (
+                              <div>
+                                <div className="font-medium">
+                                  {m.firstName} {m.lastName || ''}
+                                </div>
+                                <div className="text-xs text-muted-foreground">{m.email}</div>
+                              </div>
+                            ) : (
+                              <Link href={`/team/${m.id}/edit`} className="hover:underline">
+                                <div className="font-medium">
+                                  {m.firstName} {m.lastName || ''}
+                                </div>
+                                <div className="text-xs text-muted-foreground">{m.email}</div>
+                              </Link>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{ROLE_LABELS[m.role]}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            {m.role === 'OWNER' || m.role === 'ADMIN' ? (
+                              <span className="text-xs text-muted-foreground">Все проекты</span>
+                            ) : m.projectAccess.length === 0 ? (
+                              <span className="text-xs text-amber-600">Нет доступных проектов</span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                {m.projectAccess.map((pa) => pa.project.name).join(', ')}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {m.isActive ? (
+                              <Badge>Активен</Badge>
+                            ) : (
+                              <Badge variant="secondary">Отключён</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {m.lastLoginAt ? new Date(m.lastLoginAt).toLocaleDateString('ru-RU') : '—'}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1.5">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                nativeButton={false}
+                                disabled={m.id === currentUser?.id}
+                                render={<Link href={`/team/${m.id}/edit`}>Изменить</Link>}
+                              />
+                              {m.role !== 'OWNER' && m.isActive && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  disabled={m.id === currentUser?.id || removeMember.isPending}
+                                  onClick={() => {
+                                    if (confirm(`Отключить доступ участнику ${m.email}?`)) removeMember.mutate(m.id);
+                                  }}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          <TabsContent value="operators" className="space-y-4 pt-4">
+            <p className="text-sm text-muted-foreground">
+              Операторы больше не получают проекты при создании — доступ выдаётся здесь (кнопка
+              «Проекты» на карточке) или на вкладке «Операторы» в настройках самого проекта.
+            </p>
+            {!operators?.length ? (
+              <p className="text-sm text-muted-foreground">Операторов пока нет.</p>
+            ) : (
+              <Card>
+                <CardContent className="p-0">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Участник</TableHead>
+                        <TableHead>Проекты</TableHead>
+                        <TableHead>Статус</TableHead>
+                        <TableHead>Последний вход</TableHead>
+                        <TableHead className="text-right">Действия</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {operators.map((m) => (
+                        <TableRow key={m.id}>
+                          <TableCell>
+                            <div className="font-medium">
+                              {m.firstName} {m.lastName || ''}
+                            </div>
+                            <div className="text-xs text-muted-foreground">{m.email}</div>
+                          </TableCell>
+                          <TableCell>
+                            {m.projectAccess.length === 0 ? (
+                              <span className="text-xs text-amber-600">Нет доступных проектов</span>
+                            ) : (
+                              <div className="flex flex-wrap gap-1">
+                                {m.projectAccess.map((pa) => (
+                                  <Badge key={pa.project.id} variant="secondary">
+                                    {pa.project.name}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {m.isActive ? <Badge>Активен</Badge> : <Badge variant="secondary">Отключён</Badge>}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {m.lastLoginAt ? new Date(m.lastLoginAt).toLocaleDateString('ru-RU') : '—'}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-1.5">
+                              <Button size="sm" variant="outline" onClick={() => setAssigningOperator(m)}>
+                                Проекты
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                nativeButton={false}
+                                render={<Link href={`/team/${m.id}/edit`}>Изменить</Link>}
+                              />
+                              {m.isActive && (
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  disabled={removeMember.isPending}
+                                  onClick={() => {
+                                    if (confirm(`Отключить доступ оператору ${m.email}?`)) removeMember.mutate(m.id);
+                                  }}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        </Tabs>
       )}
+
+      <AssignOperatorProjectsDialog operator={assigningOperator} projects={projects || []} onClose={() => setAssigningOperator(null)} />
 
       <TeamAnalyticsSection />
     </div>

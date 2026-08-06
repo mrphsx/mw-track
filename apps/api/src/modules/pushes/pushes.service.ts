@@ -7,6 +7,7 @@ import { subDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import type { Readable } from 'stream';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkSubscriptionLimit } from '../../common/guards/subscription.util';
 import { dailyBucketSql, hourBucketSql } from '../../common/timezone.util';
 import { ClientsService } from '../clients/clients.service';
 import { PushFilterDto } from '../clients/dto/push-filter.dto';
@@ -76,6 +77,29 @@ export class PushesService {
     return { stream, contentType: stat?.contentType, size: stat?.size };
   }
 
+  // Превращение уже загруженного обычного видео в кружок (запрос пользователя 2026-08-05:
+  // "рядом с ним можно будет выбрать оставить как просто видео или как кружок") — обрезка
+  // теперь запускается НЕ на самой загрузке (mediaType выбирался заранее, до неё), а по
+  // отдельному действию над уже загруженным файлом: единый контейнер загрузки сам определяет
+  // тип по файлу (видео = видео), а "сделать кружком" — переключатель поверх уже показанного
+  // превью. Пересжимаем и кладём под НОВЫМ ключом (не перезаписываем оригинал) — фронтенд
+  // кеширует оба URL локально, чтобы переключение туда-обратно не гоняло обрезку повторно.
+  async convertToVideoNote(key: string): Promise<{ url: string; key: string }> {
+    const stream = await this.media.getObjectStream(key);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(chunk as Buffer);
+    const buffer = await this.videoProcessing.ensureSquareVideoNote(Buffer.concat(chunks));
+    if (buffer.length > MAX_VIDEO_NOTE_SIZE) {
+      throw new BadRequestException('Видео для кружка слишком большое даже после обрезки (макс. 12MB у Telegram) — выберите файл покороче или полегче');
+    }
+
+    const noteKey = `push-media_${nanoid(16)}-video_note.mp4`;
+    await this.media.uploadBuffer(noteKey, buffer, 'video/mp4');
+
+    const apiUrl = this.config.get<string>('API_URL');
+    return { url: `${apiUrl}/api/v1/pushes-media/${noteKey}`, key: noteKey };
+  }
+
   private async previewAudience(projectId: string, filter: PushFilterDto) {
     const [audienceTotal, audienceReachable] = await Promise.all([
       this.clientsService.countAudienceTotal(projectId, filter),
@@ -84,11 +108,91 @@ export class PushesService {
     return { audienceTotal, audienceReachable };
   }
 
+  // Предпросмотр аудитории на единой странице создания рассылки (запрос пользователя
+  // 2026-08-04, редизайн мастера в одну форму) — без создания черновика Push, в отличие от
+  // previewAudience выше (которая всегда вызывается изнутри create/update/recalculateAudience
+  // и требует projectId одного проекта). Поддерживает сразу несколько projectIds — считает
+  // каждый проект отдельно (аудитория своя у каждого) и сразу суммирует для total. Имя проекта
+  // сюда намеренно не подтягивается — вызывающая сторона (PushComposer) уже держит полный
+  // список проектов из GET /projects и сама сопоставляет id → имя, не нужен лишний JOIN здесь.
+  async previewAudienceForProjects(projectIds: string[], filter: PushFilterDto) {
+    const byProject = await Promise.all(
+      projectIds.map(async (projectId) => ({
+        projectId,
+        ...(await this.previewAudience(projectId, filter)),
+      })),
+    );
+    const total = byProject.reduce(
+      (acc, p) => ({ audienceTotal: acc.audienceTotal + p.audienceTotal, audienceReachable: acc.audienceReachable + p.audienceReachable }),
+      { audienceTotal: 0, audienceReachable: 0 },
+    );
+    return { total, byProject };
+  }
+
+  // Общий список рассылок компании (запрос пользователя 2026-08-04: страница "Рассылки" вместо
+  // "Календарь рассылок" — под календарём должен быть подробный список ВСЕХ рассылок) — тот же
+  // принцип, что и LandingsService.findAllForCompany: один findMany с projectId IN (...), не
+  // цикл по проектам. projectIds уже отфильтрован вызывающей стороной
+  // (ProjectsService.getAccessibleProjectIds).
+  //
+  // scope (запрос пользователя 2026-08-04, тот же день): страница по умолчанию должна показывать
+  // только ожидающие рассылки, история — отдельным табом, подгружаемым лениво по клику, а не
+  // всегда вместе с pending — 'pending' и 'history' поэтому два РАЗНЫХ запроса (разные query key
+  // на фронте), не единый список с последующей фильтрацией на клиенте, иначе страница тянула бы
+  // всю историю компании при каждом визите, что этот запрос явно просит избежать.
+  async findAllForCompany(
+    projectIds: string[],
+    scope: 'pending' | 'history',
+  ): Promise<(Push & { project: { id: string; name: string } })[]> {
+    if (projectIds.length === 0) return [];
+    const statuses: PushStatus[] = scope === 'pending' ? [PushStatus.DRAFT, PushStatus.SCHEDULED] : [PushStatus.SENDING, PushStatus.SENT, PushStatus.FAILED];
+    return this.prisma.push.findMany({
+      where: { projectId: { in: projectIds }, status: { in: statuses } },
+      include: { project: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // Мульти-проектное создание (запрос пользователя 2026-08-04) — Push.projectId обязательное
+  // одиночное поле в схеме, M2M-связи с проектами нет, поэтому фан-аут на обычный create() для
+  // каждого projectId, а не одна вставка. Не в транзакции — send() ставит сообщения в BullMQ
+  // (побочный эффект вне БД), откатить которую транзакцией нельзя; частичный сбой (например
+  // упёрлись в дневной лимит на 2-м из 3 проектов) не должен отменять уже созданные и
+  // отправленные пуши — каждый результат идёт с собственным sendError, ничего не проглатывается
+  // молча. Проверка лимита — ровно тот же паттерн, что уже использует PushesCron.fireScheduledPushes
+  // (свежий Company + checkSubscriptionLimit(company, 'pushes') перед каждым send), а не новая
+  // проверка — единая точка решения "можно ли слать пуши" (см. CLAUDE.md).
+  async createForProjects(
+    projectIds: string[],
+    dto: CreatePushDto,
+    sendNow: boolean | undefined,
+    companyId: string,
+  ): Promise<{ projectId: string; push: Push; sendError?: string }[]> {
+    const results: { projectId: string; push: Push; sendError?: string }[] = [];
+    for (const projectId of projectIds) {
+      const push = await this.create(projectId, dto);
+      let sendError: string | undefined;
+      if (sendNow) {
+        const company = await this.prisma.company.findUniqueOrThrow({ where: { id: companyId } });
+        const { blocked, reason } = checkSubscriptionLimit(company, 'pushes');
+        if (blocked) {
+          sendError = reason;
+        } else {
+          await this.send(push.id, projectId, companyId);
+        }
+      }
+      results.push({ projectId, push, sendError });
+    }
+    return results;
+  }
+
   // Bot API sendMediaGroup не принимает video_note (кружки идут только одиночным
   // sendVideoNote) — при 2+ элементах ни один не может быть кружком.
+  // video_note и voice — оба "одиночные" типы у Bot API: sendMediaGroup не принимает ни кружок,
+  // ни голосовое сообщение (запрос пользователя 2026-08-05 добавил voice как второй такой тип).
   private assertValidMedia(media?: { type: string; url: string }[]) {
-    if (media && media.length > 1 && media.some((m) => m.type === 'video_note')) {
-      throw new BadRequestException('Кружок нельзя отправить вместе с другими медиафайлами в одной рассылке');
+    if (media && media.length > 1 && media.some((m) => m.type === 'video_note' || m.type === 'voice')) {
+      throw new BadRequestException('Кружок и голосовое нельзя отправить вместе с другими медиафайлами в одной рассылке');
     }
   }
 
@@ -114,6 +218,23 @@ export class PushesService {
 
   async findAll(projectId: string): Promise<Push[]> {
     return this.prisma.push.findMany({ where: { projectId }, orderBy: { createdAt: 'desc' } });
+  }
+
+  // Копирование рассылки (запрос пользователя 2026-08-05: "вдруг надо будет отправить её ещё
+  // раз") — новый DRAFT со скопированным контентом/фильтром, БЕЗ scheduledAt исходного и без
+  // статуса/счётчиков отправки (sentCount/failedCount/sentAt и т.д. — свойства конкретного
+  // прогона, не шаблона). Через тот же create(), что и обычное создание — не отдельный insert —
+  // чтобы аудитория пересчиталась заново (состав клиентов мог измениться с момента исходной
+  // рассылки), а не скопировалась как устаревший снимок.
+  async duplicate(id: string, projectId: string): Promise<Push> {
+    const push = await this.findOne(id, projectId);
+    return this.create(projectId, {
+      name: `${push.name} (копия)`,
+      messageText: push.messageText,
+      messageMedia: push.messageMedia as unknown as CreatePushDto['messageMedia'],
+      buttons: push.buttons as unknown as CreatePushDto['buttons'],
+      filter: push.filter as unknown as PushFilterDto,
+    });
   }
 
   async findOne(id: string, projectId: string): Promise<Push> {
@@ -277,7 +398,7 @@ export class PushesService {
 
     await this.prisma.company.update({
       where: { id: companyId },
-      data: { pushesThisMonth: { increment: 1 } },
+      data: { pushesToday: { increment: 1 } },
     });
 
     // Аудитория с нулевым размером — сразу SENT, иначе процессор никогда не увидит
@@ -364,17 +485,21 @@ export class PushesService {
     };
   }
 
-  // Раз в сутки, не на каждую компанию по отдельному таймеру — "скользящие 30 дней
-  // от последнего сброса", не календарный месяц: проще и без эффектов часового пояса
-  async resetMonthlyPushLimits(): Promise<void> {
+  // Лимит переведён с помесячного на дневной (запрос пользователя 2026-07-30) — было
+  // "скользящие 30 дней от последнего сброса", теперь то же самое, просто окно в 1 день вместо
+  // 30: "скользящие сутки от последнего сброса", не календарный день — проще и без эффектов
+  // часового пояса, тот же приём, что и раньше, просто короче окно. Крон по-прежнему тикает
+  // раз в сутки (см. PushesCron), просто теперь каждый тик реально попадает в окно сброса для
+  // всех компаний (раньше сбрасывал только те, что не сбрасывались 30 тиков подряд).
+  async resetDailyPushLimits(): Promise<void> {
     const companies = await this.prisma.company.findMany({
-      where: { pushesResetAt: { lte: subDays(new Date(), 30) } },
+      where: { pushesResetAt: { lte: subDays(new Date(), 1) } },
     });
 
     for (const company of companies) {
       await this.prisma.company.update({
         where: { id: company.id },
-        data: { pushesThisMonth: 0, pushesResetAt: new Date() },
+        data: { pushesToday: 0, pushesResetAt: new Date() },
       });
     }
   }

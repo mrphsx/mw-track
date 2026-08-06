@@ -25,6 +25,7 @@ const ROLE_LABELS: Record<string, string> = {
   ADMIN: 'Администратор',
   BUYER: 'Байер',
   OPERATOR: 'Оператор',
+  OPERATOR_ADMIN: 'Оператор-админ',
 };
 
 export default function SettingsPage() {

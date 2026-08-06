@@ -15,7 +15,7 @@ function greeting(): string {
   return 'Добрый вечер';
 }
 
-// Прототип "Studio" — доступ/сайдбар/шапка в apps/web/src/app/dashboard/studio/layout.tsx,
+// Прототип "Studio" — доступ/сайдбар/шапка в apps/web/src/app/layout.tsx,
 // эта страница — только контент. Пользователь решил дальше дорабатывать именно этот вариант
 // (2026-07-28: "давай остановимся пока на studio"), остальные два (Control Room/Ledger)
 // заморожены как есть. Правки этого раунда: (1) у каждой метрики свой оттенок вместо
@@ -39,7 +39,9 @@ export default function StudioDashboardPage() {
         <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">
           {greeting()}, {user?.firstName}
         </h1>
-        <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] mt-1.5">Прототип нового дизайна · бета, видно только владельцам компании</p>
+        {/* Раньше "видно только владельцам компании" — с 2026-07-30 Studio основной дизайн для
+            всех ролей (см. project_dashboard_redesign_exploration), эта строка была неверной. */}
+        <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] mt-1.5">Studio · бета</p>
       </div>
 
       {warning && (
@@ -75,7 +77,7 @@ export default function StudioDashboardPage() {
         )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {projects?.map((project) => (
-            <Link key={project.id} href={`/dashboard/studio/projects/${project.id}`}>
+            <Link key={project.id} href={`/projects/${project.id}`}>
               <div className="rounded-xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm hover:shadow-md transition-shadow p-4">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5 min-w-0">

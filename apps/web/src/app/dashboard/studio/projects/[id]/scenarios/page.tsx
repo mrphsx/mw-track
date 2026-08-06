@@ -85,7 +85,7 @@ export default function StudioScenariosPage() {
       (await api.post(`/channels/${channelId}/scenarios`, dto)).data as { id: string },
     onSuccess: (scenario) => {
       queryClient.invalidateQueries({ queryKey: ['channel', channelId, 'scenarios'] });
-      router.push(`/dashboard/studio/projects/${projectId}/scenarios/${scenario.id}`);
+      router.push(`/projects/${projectId}/scenarios/${scenario.id}`);
     },
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось создать сценарий'),
   });
@@ -109,7 +109,7 @@ export default function StudioScenariosPage() {
         </div>
         {hasEndedAbTestGroups && (
           <Link
-            href={`/dashboard/studio/projects/${projectId}/scenarios/history`}
+            href={`/projects/${projectId}/scenarios/history`}
             className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1.5"
           >
             <History className="w-3.5 h-3.5" /> История A/B-тестов
@@ -272,14 +272,14 @@ function StudioScenarioCard({
           </div>
 
           <Switch checked={scenario.isActive} onCheckedChange={onToggle} className="shrink-0" />
-          <StudioLinkButton size="sm" icon={Settings} onClick={() => router.push(`/dashboard/studio/projects/${projectId}/scenarios/${scenario.id}`)}>
+          <StudioLinkButton size="sm" icon={Settings} onClick={() => router.push(`/projects/${projectId}/scenarios/${scenario.id}`)}>
             Настроить
           </StudioLinkButton>
-          <StudioLinkButton size="sm" icon={BarChart3} onClick={() => router.push(`/dashboard/studio/projects/${projectId}/scenarios/${scenario.id}/stats`)}>
+          <StudioLinkButton size="sm" icon={BarChart3} onClick={() => router.push(`/projects/${projectId}/scenarios/${scenario.id}/stats`)}>
             Статистика
           </StudioLinkButton>
           {scenario.abTestGroupId && !scenario.abTestEndedAt && (
-            <StudioLinkButton size="sm" icon={FlaskConical} onClick={() => router.push(`/dashboard/studio/projects/${projectId}/scenarios/${scenario.id}/ab-test`)}>
+            <StudioLinkButton size="sm" icon={FlaskConical} onClick={() => router.push(`/projects/${projectId}/scenarios/${scenario.id}/ab-test`)}>
               A/B
             </StudioLinkButton>
           )}

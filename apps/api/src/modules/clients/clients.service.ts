@@ -4,7 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { ClientFiltersDto } from './dto/client-filters.dto';
 import { PushFilterDto } from './dto/push-filter.dto';
-import { ClientsRepository } from './clients.repository';
+import { ClientsRepository, CrossProjectOverlapMatch } from './clients.repository';
 
 export class ClientLimitReachedException extends Error {
   constructor() {
@@ -561,7 +561,9 @@ export class ClientsService {
   // ProjectsService.getLeaderboards. Отдельный метод, а не обогащение самого findOne — тот
   // используется ещё в десятке мест только для проверки владения перед мутацией, где эти три
   // лишних запроса были бы не нужны.
-  async getClientDetail(id: string, companyId: string) {
+  // canViewTrafficSource — Operator не видит рекламную атрибуцию (запрос пользователя
+  // 2026-07-30) — сервер отдаёт флаг, фронт (client-detail-drawer.tsx) прячет секцию целиком.
+  async getClientDetail(id: string, companyId: string, canViewTrafficSource: boolean) {
     const client = await this.findOne(id, companyId);
 
     const [landing, buyer, pixel] = await Promise.all([
@@ -575,11 +577,19 @@ export class ClientsService {
       landingName: landing?.name ?? null,
       buyerName: buyer ? `${buyer.firstName} ${buyer.lastName}`.trim() : null,
       pixelLabel: pixel ? pixel.label || pixel.platform : null,
+      canViewTrafficSource,
     };
   }
 
-  async findMany(projectId: string, filters: ClientFiltersDto) {
-    const where = this.buildClientFilterWhere(projectId, filters);
+  // canViewCrossProject — запрос пользователя 2026-07-30: у каждого клиента показываем метку
+  // "есть ли он ещё в каком-то нашем проекте". С правом CLIENTS_VIEW_CROSS_PROJECT (на ЭТОМ
+  // проекте, не на "том другом") — точно какие каналы, дата вступления, диалог там или нет.
+  // Без права — только сам факт пересечения + было ли где-то диалог и когда (без имён
+  // проектов/каналов). Elevated-роли (Owner/Admin) всегда видят полную деталь — companyId и
+  // canViewCrossProject уже решены вызывающим контроллером (hasPermission сама бывает elevated
+  // bypass), сюда приходит готовый bool.
+  async findMany(projectId: string, filters: ClientFiltersDto, companyId: string, canViewCrossProject: boolean, scopedBuyerId?: string) {
+    const where = this.buildClientFilterWhere(projectId, filters, scopedBuyerId);
 
     let orderBy: Prisma.ClientOrderByWithRelationInput = { createdAt: 'desc' };
     if (filters.sortBy === 'totalSpent') orderBy = { totalSpent: 'desc' };
@@ -600,7 +610,36 @@ export class ClientsService {
       this.prisma.client.count({ where }),
     ]);
 
-    return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
+    const tgUserIds = items.map((c) => c.tgUserId).filter((id): id is string => id !== null);
+    const overlapMap = await this.repository.getCrossProjectOverlap(companyId, projectId, tgUserIds);
+
+    const enrichedItems = items.map((client) => ({
+      ...client,
+      crossProjectOverlap: this.buildCrossProjectOverlapField(client.tgUserId, overlapMap, canViewCrossProject),
+    }));
+
+    return { items: enrichedItems, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  private buildCrossProjectOverlapField(
+    tgUserId: string | null,
+    overlapMap: Map<string, CrossProjectOverlapMatch[]>,
+    canViewCrossProject: boolean,
+  ) {
+    if (!tgUserId) return null;
+    const matches = overlapMap.get(tgUserId);
+    if (!matches || matches.length === 0) return null;
+
+    if (canViewCrossProject) {
+      return { visible: true as const, projects: matches };
+    }
+
+    // Без права — только факт + было ли где-то диалог и самая свежая дата, без имён проектов.
+    const withDialogue = matches.filter((m) => m.hasDialogue);
+    const latestDialogueAt = withDialogue.length
+      ? withDialogue.reduce((latest, m) => (!latest || m.dialogueAt! > latest ? m.dialogueAt! : latest), null as Date | null)
+      : null;
+    return { visible: false as const, hasDialogue: withDialogue.length > 0, dialogueAt: latestDialogueAt };
   }
 
   // Сколько клиентов реально получат пуш (подписаны + бот не заблокирован)
@@ -640,8 +679,8 @@ export class ClientsService {
   }
 
   // CSV для Facebook Custom Audience (Lookalike)
-  async exportForLookalike(projectId: string, onlyBuyers: boolean): Promise<string> {
-    const clients = await this.repository.getClientsForLookalikeExport(projectId, onlyBuyers);
+  async exportForLookalike(projectId: string, onlyBuyers: boolean, scopedBuyerId?: string): Promise<string> {
+    const clients = await this.repository.getClientsForLookalikeExport(projectId, onlyBuyers, scopedBuyerId);
 
     const headers = ['email', 'phone', 'country'];
     const rows = clients.map((c) => [c.email || '', c.waPhone || c.phone || '', c.country || '']);
@@ -688,7 +727,10 @@ export class ClientsService {
     });
   }
 
-  private buildClientFilterWhere(projectId: string, filters: ClientFiltersDto): Prisma.ClientWhereInput {
+  // scopedBuyerId (запрос пользователя 2026-08-03, "только свои клиенты") — жёстко перекрывает
+  // любой buyerId, который мог прислать сам мульти-select-фильтр выше: скоуп-баер не может
+  // обойти собственное ограничение, выбрав в фильтре кого-то другого.
+  private buildClientFilterWhere(projectId: string, filters: ClientFiltersDto, scopedBuyerId?: string): Prisma.ClientWhereInput {
     const where: Prisma.ClientWhereInput = { projectId, deletedAt: null };
 
     if (filters.channelType?.length) where.channelType = { in: filters.channelType };
@@ -708,8 +750,21 @@ export class ClientsService {
     // точное совпадение по id (реальный выпадающий список в UI, id известен заранее); кампания/
     // объявление/группа объявлений — поиск по НАЗВАНИЮ (contains, без учёта регистра), не по
     // внутреннему id рекламной площадки, который пользователь не знает и не вводит вручную.
-    if (filters.buyerId) where.buyerId = filters.buyerId === 'none' ? null : filters.buyerId;
-    if (filters.pixelId) where.pixelId = filters.pixelId;
+    // Мульти-выбор (запрос пользователя 2026-08-03) — buyerId/pixelId теперь массивы. where.AND
+    // (не where.OR напрямую) для "баер+без баера" вместе — ниже filters.search безусловно
+    // присваивает where.OR, который затёр бы OR отсюда, если бы использовали то же поле.
+    if (filters.pixelId?.length) where.pixelId = { in: filters.pixelId };
+    if (filters.buyerId?.length) {
+      const ids = filters.buyerId.filter((v) => v !== 'none');
+      const includeNone = filters.buyerId.includes('none');
+      if (includeNone && ids.length) {
+        where.AND = [{ OR: [{ buyerId: { in: ids } }, { buyerId: null }] }];
+      } else if (includeNone) {
+        where.buyerId = null;
+      } else {
+        where.buyerId = { in: ids };
+      }
+    }
     if (filters.campaignName) where.campaignName = { contains: filters.campaignName, mode: 'insensitive' };
     if (filters.adName) where.adName = { contains: filters.adName, mode: 'insensitive' };
     if (filters.adsetName) where.adsetName = { contains: filters.adsetName, mode: 'insensitive' };
@@ -746,8 +801,16 @@ export class ClientsService {
         { waPhone: { contains: filters.search } },
         { email: { contains: filters.search, mode: 'insensitive' } },
         { waName: { contains: filters.search, mode: 'insensitive' } },
+        // tgUserId (запрос пользователя 2026-07-30: "поиск по имени, user_id, username итд" —
+        // раньше отсутствовал вообще, хотя это единственное реально уникальное и надёжное
+        // поле для Telegram-клиента, как раз то, по чему пересечение аудиторий сопоставляет
+        // клиентов между проектами). Числовая строка, contains без mode — регистронезависимость
+        // тут не нужна и не имеет смысла для цифр.
+        { tgUserId: { contains: filters.search } },
       ];
     }
+
+    if (scopedBuyerId) where.buyerId = scopedBuyerId;
 
     return where;
   }
@@ -781,9 +844,19 @@ export class ClientsService {
     //    здесь — оно общее на бота И личный аккаунт, и второй раунд этого же бага (массовые
     //    "chat not found") случился именно из-за того, что firstDialogueAt мог прийти
     //    исключительно от личного аккаунта, с которым у бота никогда не было чата.
+    //
+    // Баг-репорт пользователя 2026-08-05 ("По фильтру" на странице создания рассылки показывал
+    // "очень много клиентов... беруться все клиенты, нужно выбирать только из тех что пришли с
+    // нашей платформы") — условие 2 (subscribedAt/botActivatedAt) раньше было завязано на тот же
+    // `if (reachableOnly !== false)`, что и isBotActive, поэтому countAudienceTotal
+    // (reachableOnly:false, "По фильтру") вообще не фильтровал по нему и включал холодных
+    // внешних контактов (никогда не подписывались и не писали боту — subscribedAt И
+    // botActivatedAt оба null). Это два независимых условия: "принадлежит нашей воронке"
+    // (subscribedAt/botActivatedAt) — всегда обязательно; "технически доступен прямо сейчас"
+    // (isBotActive) — только для reachableOnly.
+    where.OR = [{ subscribedAt: { not: null } }, { botActivatedAt: { not: null } }];
     if (opts.reachableOnly !== false) {
       where.isBotActive = true;
-      where.OR = [{ subscribedAt: { not: null } }, { botActivatedAt: { not: null } }];
     }
 
     if (filters.channelTypes?.length) where.channelType = { in: filters.channelTypes };

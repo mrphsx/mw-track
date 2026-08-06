@@ -14,7 +14,7 @@ interface ProjectChannel {
 
 // Studio-версия сравнительной статистики A/B-теста сценариев (запрос пользователя 2026-07-30:
 // "добей остальные оставшиеся страницы") — логика 1:1 с классической. Ссылки "К сценарию"/
-// "настроить" по-прежнему ведут на классический редактор сценария.
+// "настроить" ведут на Studio-редактор сценария (появился позже в тот же день).
 export default function StudioScenarioAbTestStatsPage() {
   const { id: projectId, scenarioId } = useParams<{ id: string; scenarioId: string }>();
 
@@ -43,7 +43,7 @@ export default function StudioScenarioAbTestStatsPage() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/scenarios/${scenarioId}`}
+          href={`/projects/${projectId}/scenarios/${scenarioId}`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> К сценарию
@@ -77,7 +77,7 @@ export default function StudioScenarioAbTestStatsPage() {
                     <div className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] font-normal mt-0.5">
                       вес {v.weight}%
                       {v.scenarioId !== scenarioId && (
-                        <Link href={`/dashboard/studio/projects/${projectId}/scenarios/${v.scenarioId}`} className="ml-2 inline-flex items-center gap-0.5 hover:underline">
+                        <Link href={`/projects/${projectId}/scenarios/${v.scenarioId}`} className="ml-2 inline-flex items-center gap-0.5 hover:underline">
                           <Settings className="w-3 h-3" /> настроить
                         </Link>
                       )}

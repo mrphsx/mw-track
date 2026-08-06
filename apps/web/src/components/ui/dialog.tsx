@@ -53,7 +53,24 @@ function DialogContent({
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // max-w-sm БЕЗ префикса sm: (было sm:max-w-sm) — баг-репорт пользователя 2026-07-30
+          // про DomainPathsDialog: "пути не помещаются в модальное окно" оказался НЕ проблемой
+          // конкретного диалога, а системным багом самого DialogContent. cn() = twMerge(clsx()),
+          // и twMerge НЕ считает `sm:max-w-sm` конфликтующим с обычным `max-w-3xl` (разные
+          // варианты/breakpoint-скоуп) — обе утилиты остаются в итоговом списке классов
+          // (проверено напрямую: twMerge('...sm:max-w-sm', 'max-w-3xl') → обе строки в выводе).
+          // В скомпилированном Tailwind v4 CSS `.sm\:max-w-sm` физически идёт ПОСЛЕ `.max-w-3xl`
+          // (медиа-блок брейкпоинтов всегда после базовых утилит) — при равной специфичности
+          // побеждает то правило, что позже в стилях, т.е. `sm:max-w-sm` бьёт ЛЮБОЙ безпрефиксный
+          // max-w-* оверрайд на любом экране ≥640px (де-факто везде, кроме настоящего мобильного).
+          // Значит КАЖДЫЙ Dialog в проекте, где className задаёт max-w-* без sm:-префикса (а таких
+          // 100% — ни один вызов в кодовой базе не использует sm:max-w-*), реально рендерился
+          // максимум в 384px на десктопе, независимо от того, какое число стояло в max-w-*.
+          // Фикс здесь, в общем компоненте, чинит это сразу для всех диалогов приложения, а не
+          // точечно для одного — предыдущие раунды "расширил диалог X" (get-link-dialog,
+          // create-landing-dialog, аудитория, домены) технически не могли сработать на десктопе,
+          // раз в className каждый раз передавался безпрефиксный max-w-*.
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className
         )}
         {...props}

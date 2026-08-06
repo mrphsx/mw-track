@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'crypto';
 import { addDays } from 'date-fns';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
+import { PLANS } from '../billing/plans';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { JwtPayload } from './types/jwt-payload.interface';
@@ -27,14 +28,18 @@ export class AuthService {
       throw new ForbiddenException('Email уже занят');
     }
 
+    // Лимиты берутся из PLANS.TRIAL, а не дублируются числами здесь — раньше были захардкожены
+    // отдельно от plans.ts (найдено при переводе лимита рассылок на дневной, 2026-07-30: это был
+    // один из нескольких мест с независимой копией тарифных чисел, реальный риск разъехаться).
+    const trialLimits = PLANS.TRIAL;
     const company = await this.prisma.company.create({
       data: {
         name: dto.companyName,
         slug: await this.generateUniqueSlug(dto.companyName),
         plan: SubscriptionPlan.TRIAL,
-        maxProjects: 1,
-        maxClients: 1000,
-        maxPushesPerMonth: 5,
+        maxProjects: trialLimits.maxProjects,
+        maxClients: trialLimits.maxClients,
+        maxPushesPerDay: trialLimits.maxPushesPerDay,
         planExpiresAt: addDays(new Date(), 7), // 7 дней триала
       },
     });

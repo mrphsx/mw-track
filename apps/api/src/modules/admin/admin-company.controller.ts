@@ -56,6 +56,11 @@ export class AdminCompanyController {
     return this.adminCompanyService.getDomains(id);
   }
 
+  @Get('invoices')
+  getInvoices(@Param('id') id: string) {
+    return this.adminCompanyService.getInvoices(id);
+  }
+
   @Get('team')
   getTeam(@Param('id') id: string) {
     return this.adminCompanyService.getTeam(id);

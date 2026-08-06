@@ -1,6 +1,6 @@
 'use client';
 
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useQuery, type Query } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
@@ -55,7 +55,18 @@ export interface PrototypeProject {
   id: string;
   name: string;
   status: string;
-  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null } | null;
+  channel: {
+    id: string;
+    type: string;
+    isActive: boolean;
+    tgAvatarFileId: string | null;
+    tgPersonalConnected: boolean;
+    // Запрос пользователя 2026-08-05 — см. ProjectsService.sanitizeChannel для полного
+    // комментария: true, если от Telegram давно не приходило вообще никаких вебхуков для
+    // этого канала, хотя раньше они были (реальный ~20-часовой инцидент, обнаруженный только
+    // постфактум по логам nginx).
+    webhookStale?: boolean;
+  } | null;
   disabledTrackingEvents: string[];
 }
 
@@ -108,7 +119,6 @@ export function mergeDailySeries(a?: { date: string; count: number }[], b?: { da
 export interface PrototypeAdRow {
   campaignId: string;
   campaignName: string | null;
-  adName: string | null;
   pageViews: number;
   leads: number;
   subscribes: number;
@@ -157,10 +167,27 @@ export function isSingleDayPeriod(periodValue: PrototypePeriodValue): boolean {
   return periodValue.period === 'today' || periodValue.period === 'yesterday';
 }
 
+// Баг-репорт пользователя 2026-08-05 (расхождение выручки/лидербордов на странице проекта —
+// баер с $701/11 покупками, реально принадлежащими ДВУМ его проектам суммарно, показывался на
+// странице ОДНОГО проекта, где у него на деле $129/1 покупка) — root cause: `keepPreviousData`
+// применялся ко всем query ниже без разбора, ЧТО именно изменилось в queryKey. При смене
+// периода (тот же проект) старые данные как временная заглушка — нормально и то, для чего это
+// изначально просили. При смене САМОГО ПРОЕКТА (навигация между /projects/:id) — тоже применялся
+// keepPreviousData, и старые (чужого проекта) деньги/имена баеров повисали на экране без какого-
+// либо признака, что это не текущий проект, пока не подгрузится настоящий ответ. Для
+// финансовых цифр это не косметическая, а вводящая в заблуждение утечка данных между проектами.
+// Фикс: placeholder остаётся только если id предыдущего запроса совпадает с текущим — то есть
+// только на смену периода, не проекта.
+function samePlaceholderProject<T>(id: string) {
+  return (previousData: T | undefined, previousQuery: Query<T> | undefined): T | undefined =>
+    previousQuery?.queryKey[1] === id ? previousData : undefined;
+}
+
 export function usePrototypeProjectData(id: string, periodValue: PrototypePeriodValue) {
   const user = useAuthStore((s) => s.user);
   const canViewRevenue = hasPermission(user, id, 'STATS_VIEW_REVENUE');
   const canViewTeamLeaderboards = hasPermission(user, id, 'STATS_VIEW_TEAM_LEADERBOARDS');
+  const canViewPersonalBroadcasts = hasPermission(user, id, 'PERSONAL_BROADCASTS_VIEW');
 
   // Кастомный период шлём на бэк только когда обе даты выбраны — иначе остаёмся на
   // предыдущих данных вместо запроса с половиной диапазона (тот же принцип, что в
@@ -174,21 +201,23 @@ export function usePrototypeProjectData(id: string, periodValue: PrototypePeriod
     queryFn: async () => (await api.get<PrototypeProject>(`/projects/${id}`)).data,
   });
 
-  // placeholderData: keepPreviousData везде ниже (запрос пользователя 2026-07-28: "дизайн...
-  // сильно прыгает при изменении вкладки или периода... пока блок подгружается его нет") —
-  // старые данные остаются на экране до готовности новых, без пустого промежуточного кадра.
+  // placeholderData: samePlaceholderProject(id) везде ниже (запрос пользователя 2026-07-28:
+  // "дизайн... сильно прыгает при изменении вкладки или периода... пока блок подгружается его
+  // нет") — старые данные остаются на экране до готовности новых, без пустого промежуточного
+  // кадра, НО только при смене периода на этом же проекте (см. комментарий у функции выше) —
+  // при переходе на другой проект показывается обычное состояние загрузки.
   const { data: stats } = useQuery({
     queryKey: ['project', id, 'stats', periodParams],
     queryFn: async () => (await api.get<PrototypeProjectStats>(`/projects/${id}/clients/stats`, { params: periodParams })).data,
     enabled: periodReady,
-    placeholderData: keepPreviousData,
+    placeholderData: samePlaceholderProject(id),
   });
 
   const { data: funnel } = useQuery({
     queryKey: ['project', id, 'funnel', periodParams],
     queryFn: async () => (await api.get<PrototypeFunnelStage[]>(`/projects/${id}/clients/funnel`, { params: periodParams })).data,
     enabled: periodReady,
-    placeholderData: keepPreviousData,
+    placeholderData: samePlaceholderProject(id),
   });
 
   // Полный ClientRow (та же форма, что у /projects/[id]/clients через ClientsTable) — запрос
@@ -197,14 +226,14 @@ export function usePrototypeProjectData(id: string, periodValue: PrototypePeriod
   const { data: recentClients } = useQuery({
     queryKey: ['project', id, 'recent-clients', 10],
     queryFn: async () => (await api.get<{ items: ClientRow[] }>(`/projects/${id}/clients`, { params: { limit: 10 } })).data.items,
-    placeholderData: keepPreviousData,
+    placeholderData: samePlaceholderProject(id),
   });
 
   const { data: adBreakdown } = useQuery({
     queryKey: ['project', id, 'ad-breakdown', periodParams],
     queryFn: async () => (await api.get<PrototypeAdRow[]>(`/projects/${id}/ad-breakdown`, { params: periodParams })).data,
     enabled: periodReady,
-    placeholderData: keepPreviousData,
+    placeholderData: samePlaceholderProject(id),
   });
 
   const { data: leaderboards } = useQuery({
@@ -212,10 +241,10 @@ export function usePrototypeProjectData(id: string, periodValue: PrototypePeriod
     queryFn: async () => (await api.get<PrototypeLeaderboards>(`/projects/${id}/leaderboards`, { params: periodParams })).data,
     enabled: periodReady,
     staleTime: Infinity,
-    placeholderData: keepPreviousData,
+    placeholderData: samePlaceholderProject(id),
   });
 
-  return { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards };
+  return { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards, canViewPersonalBroadcasts };
 }
 
 // GET /landings/:id/preview требует JWT — обычный <a href> не сработает, фетчим через

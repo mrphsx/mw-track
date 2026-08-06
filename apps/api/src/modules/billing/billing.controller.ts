@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, Param, Post } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -6,6 +6,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { BillingService } from './billing.service';
 import { CreateTopUpDto } from './dto/create-topup.dto';
 import { CreateHeleketTopUpDto } from './dto/create-heleket-topup.dto';
+import { CreateNowPaymentsTopUpDto } from './dto/create-nowpayments-topup.dto';
 import { SelectPlanDto } from './dto/select-plan.dto';
 import { PAYMENT_NETWORKS } from './providers/payment-network.provider.interface';
 
@@ -83,6 +84,24 @@ export class BillingController {
   @Post('webhooks/heleket')
   async heleketWebhook(@Body() payload: Record<string, unknown>) {
     await this.billingService.handleHeleketWebhook(payload);
+    return { ok: true };
+  }
+
+  // Подключено 2026-07-30 (реальные ключи в .env.prod) — NOWPayments отдаёт адрес напрямую
+  // через /v1/payment (см. NowPaymentsGatewayProvider), сеть обязательна в отличие от Heleket.
+  @Post('topup/nowpayments')
+  createNowPaymentsTopUp(@Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: CreateNowPaymentsTopUpDto) {
+    this.assertOwner(user);
+    return this.billingService.createNowPaymentsTopUp(companyId, dto.amount, dto.network);
+  }
+
+  // Запрос от серверов NOWPayments — подпись приходит заголовком x-nowpayments-sig, не
+  // полем тела (в отличие от Heleket), поэтому подмешиваем её в payload перед проверкой
+  // (NowPaymentsGatewayProvider.verifyWebhookSignature ожидает её именно там).
+  @Public()
+  @Post('webhooks/nowpayments')
+  async nowPaymentsWebhook(@Body() payload: Record<string, unknown>, @Headers('x-nowpayments-sig') signature: string) {
+    await this.billingService.handleNowPaymentsWebhook({ ...payload, 'x-nowpayments-sig': signature });
     return { ok: true };
   }
 }

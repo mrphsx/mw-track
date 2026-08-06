@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -24,6 +24,7 @@ import {
   Bot,
   RefreshCw,
   Timer,
+  Contact,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
@@ -44,7 +45,15 @@ interface Project {
   id: string;
   name: string;
   status: string;
-  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null } | null;
+  channel: {
+    id: string;
+    type: string;
+    isActive: boolean;
+    tgAvatarFileId: string | null;
+    tgPersonalConnected: boolean;
+    // Запрос пользователя 2026-08-05 — см. полный комментарий в apps/web/src/app/(dashboard)/projects/page.tsx.
+    webhookStale?: boolean;
+  } | null;
   disabledTrackingEvents: string[];
 }
 
@@ -117,8 +126,6 @@ function mergeDailySeries(a?: { date: string; count: number }[], b?: { date: str
 interface AdBreakdownRow {
   campaignId: string;
   campaignName: string | null;
-  adId: string | null;
-  adName: string | null;
   pageViews: number;
   leads: number;
   subscribes: number;
@@ -445,6 +452,16 @@ export default function ProjectOverviewPage() {
   // (лидерборды почти всегда закрыты) вообще не платит за эти доп. запросы к БД.
   const [activeLeaderboardTab, setActiveLeaderboardTab] = useState<LeaderboardCategory>(canViewTeamLeaderboards ? 'buyers' : 'pixels');
 
+  // "Только свои клиенты" (запрос пользователя 2026-08-03) — вкладку "buyers" не знаем заранее
+  // (нужен ответ бэкенда), поэтому если пользователь по умолчанию открылся на ней, а лидерборды
+  // загрузились пустыми (скоуп-баер), переключаемся на первую реально видимую вкладку.
+  useEffect(() => {
+    if (activeLeaderboardTab === 'buyers' && leaderboards && leaderboards.buyers.length === 0) {
+      setActiveLeaderboardTab('pixels');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leaderboards]);
+
   const activeLeaderboardIds: string[] = !leaderboards
     ? []
     : activeLeaderboardTab === 'buyers'
@@ -488,6 +505,15 @@ export default function ProjectOverviewPage() {
               <Badge variant={project.channel.isActive ? 'outline' : 'destructive'} className="text-xs">
                 {project.channel.type}
               </Badge>
+              {/* "Молчащий" вебхук (запрос пользователя 2026-08-05, после реального ~20-часового
+                  инцидента — Telegram молча перестал слать вебхуки боту, узнали постфактум по
+                  логам nginx) — отдельно от isActive: бот технически жив, просто Telegram не
+                  присылает апдейты. */}
+              {project.channel.webhookStale && (
+                <Badge variant="destructive" className="text-xs" title="Telegram давно не присылал вебхуки этому боту — возможно, трафик не регистрируется">
+                  Нет вебхуков
+                </Badge>
+              )}
             </div>
           )}
         </div>
@@ -505,6 +531,22 @@ export default function ProjectOverviewPage() {
               </Link>
             }
           />
+          {/* Рассылка с личного MTProto-аккаунта (запрос пользователя 2026-08-06) — отдельная от
+              обычной "Рассылка" (та идёт через бота), нет company-wide/мульти-проектного смысла
+              как у Push (у каждого проекта свой личный аккаунт-персона), поэтому это кнопка на
+              странице проекта, а не пункт сайдбара. Видна только когда личный аккаунт подключён
+              и есть право на просмотр раздела. */}
+          {project.channel?.tgPersonalConnected && hasPermission(user, id, 'PERSONAL_BROADCASTS_VIEW') && (
+            <Button
+              variant="outline"
+              nativeButton={false}
+              render={
+                <Link href={`/projects/${id}/personal-broadcasts`}>
+                  <Contact className="w-4 h-4 mr-1.5" /> Личный аккаунт
+                </Link>
+              }
+            />
+          )}
           <Button
             variant="outline"
             nativeButton={false}
@@ -780,7 +822,6 @@ export default function ProjectOverviewPage() {
                 <thead>
                   <tr className="text-left text-muted-foreground border-b">
                     <th className="py-1.5 pr-3 font-medium">Кампания</th>
-                    <th className="py-1.5 pr-3 font-medium">Объявление</th>
                     <th className="py-1.5 pr-3 font-medium text-right">Просмотры</th>
                     <th className="py-1.5 pr-3 font-medium text-right">Клики</th>
                     <th className="py-1.5 pr-3 font-medium text-right">Подписки</th>
@@ -791,9 +832,8 @@ export default function ProjectOverviewPage() {
                 </thead>
                 <tbody>
                   {adBreakdown.map((row) => (
-                    <tr key={`${row.campaignId}::${row.adId ?? ''}`} className="border-b last:border-0">
+                    <tr key={row.campaignId} className="border-b last:border-0">
                       <td className="py-1.5 pr-3">{row.campaignName || row.campaignId}</td>
-                      <td className="py-1.5 pr-3">{row.adName || row.adId || '—'}</td>
                       <td className="py-1.5 pr-3 text-right">{row.pageViews}</td>
                       <td className="py-1.5 pr-3 text-right">{row.leads}</td>
                       <td className="py-1.5 pr-3 text-right">{row.subscribes}</td>
@@ -815,7 +855,11 @@ export default function ProjectOverviewPage() {
       <Tabs value={activeLeaderboardTab} onValueChange={(v) => v && setActiveLeaderboardTab(v as LeaderboardCategory)}>
         <div className="flex items-center justify-between gap-2">
           <TabsList>
-            {canViewTeamLeaderboards && <TabsTrigger value="buyers">Топ баеров</TabsTrigger>}
+            {/* "Только свои клиенты" (запрос пользователя 2026-08-03) — бэкенд возвращает
+                пустой buyers[] для скоуп-баера (ProjectsController.getLeaderboards), ранжировать
+                одного человека против самого себя бессмысленно — прячем вкладку целиком вместо
+                показа пустого списка. */}
+            {canViewTeamLeaderboards && (leaderboards?.buyers?.length ?? 0) > 0 && <TabsTrigger value="buyers">Топ баеров</TabsTrigger>}
             <TabsTrigger value="pixels">Топ пикселей</TabsTrigger>
             <TabsTrigger value="landings">Топ лэндингов</TabsTrigger>
             <TabsTrigger value="campaigns">Топ кампаний</TabsTrigger>

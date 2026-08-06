@@ -34,6 +34,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
   Select,
   SelectContent,
@@ -56,6 +57,8 @@ export interface Pixel {
   // есть — запрос пользователя 2026-07-29: нужен для индикатора "тестовый режим" и редактирования
   // (раньше после создания пикселя изменить/убрать его было вообще неоткуда через интерфейс).
   testEventCode: string | null;
+  // Автор (запрос пользователя 2026-08-03) — null у пикселей без резолвящегося создателя.
+  createdBy: { id: string; firstName: string; lastName: string | null } | null;
 }
 
 export interface ChannelSummary {
@@ -102,7 +105,8 @@ export interface Project {
 
 // Все возможные значения вкладки — используется и для валидации ?tab= из URL (запрос
 // пользователя 2026-07-27: "при обновлении страницы слетает вкладка"), и как fallback.
-export const SETTINGS_TABS = ['general', 'channels', 'bot', 'personal', 'pixels', 'pixel-logs', 'events', 'integration', 'danger'] as const;
+// 'operators' — 2026-07-31, см. OperatorsTab ниже.
+export const SETTINGS_TABS = ['general', 'channels', 'bot', 'personal', 'pixels', 'pixel-logs', 'events', 'integration', 'operators', 'danger'] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export function readTabFromSearchParams(params: URLSearchParams): SettingsTab {
@@ -370,14 +374,9 @@ const TEST_EVENT_CODE_PATTERN = /^TEST\d+$/i;
 // пакета между apps/web и apps/api в этом монорепо, тот же принцип, что у tracking-events.ts).
 const TESTABLE_EVENT_NAMES = ['PageView', 'Lead', 'Subscribe', 'Unsubscribe', 'Dialogue', 'Purchase', 'InitiateCheckout'];
 
-// Зеркалит TESTABLE_ACTION_SOURCES того же DTO (запрос пользователя 2026-07-30: "сделай выборку
-// в тесте для type, website, chat") — в реальной отправке это автовывод из payload.source, но
-// тестовое событие собирается вручную, значение выбирается явно, дефолт 'chat' совпадает с тем,
-// что было раньше (буквально единственный вариант до этого изменения).
-const ACTION_SOURCE_OPTIONS: { value: 'website' | 'chat'; label: string }[] = [
-  { value: 'chat', label: 'Chat (Telegram/бот)' },
-  { value: 'website', label: 'Website (браузер)' },
-];
+// Дропдаун Chat/Website убран (запрос пользователя 2026-07-31: "для проверки убери дропдаун с
+// chat website, пусть будет всегда website") — actionSource теперь всегда захардкожен как
+// 'website' в обеих мутациях (testEvent/editTestEvent) ниже.
 
 interface PixelTestEventResult {
   success: boolean;
@@ -413,7 +412,6 @@ export function PixelsTab({
   const [accessToken, setAccessToken] = useState('');
   const [testEventCode, setTestEventCode] = useState('');
   const [testEventName, setTestEventName] = useState('Subscribe');
-  const [testActionSource, setTestActionSource] = useState<'website' | 'chat'>('chat');
   const [error, setError] = useState('');
 
   const resetForm = () => {
@@ -436,7 +434,7 @@ export function PixelsTab({
           accessToken,
           testEventCode: platform === 'FACEBOOK' ? testEventCode || undefined : undefined,
           eventName: testEventName,
-          actionSource: testActionSource,
+          actionSource: 'website',
         })
       ).data,
   });
@@ -477,7 +475,6 @@ export function PixelsTab({
   const [editAccessToken, setEditAccessToken] = useState('');
   const [editTestEventCode, setEditTestEventCode] = useState('');
   const [editTestEventName, setEditTestEventName] = useState('Subscribe');
-  const [editTestActionSource, setEditTestActionSource] = useState<'website' | 'chat'>('chat');
 
   const startEditingPixel = (p: Pixel) => {
     setEditingPixelId(p.id);
@@ -513,7 +510,7 @@ export function PixelsTab({
           eventName: editTestEventName,
           accessToken: editAccessToken || undefined,
           testEventCode: editTestEventCode,
-          actionSource: editTestActionSource,
+          actionSource: 'website',
         })
       ).data,
   });
@@ -566,6 +563,12 @@ export function PixelsTab({
                     )}
                   </div>
                 </div>
+                {/* Автор (запрос пользователя 2026-08-03) */}
+                {pixel.createdBy && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Создал: {pixel.createdBy.firstName} {pixel.createdBy.lastName ?? ''}
+                  </p>
+                )}
                 {editingPixelId === pixel.id && (
                   <div className="mt-2 space-y-2.5 pl-1">
                     <div className="space-y-1.5">
@@ -602,18 +605,6 @@ export function PixelsTab({
                             {TESTABLE_EVENT_NAMES.map((name) => (
                               <SelectItem key={name} value={name}>
                                 {name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select value={editTestActionSource} onValueChange={(v) => v && setEditTestActionSource(v as 'website' | 'chat')}>
-                          <SelectTrigger id={`edit-test-source-${pixel.id}`} className="w-[110px]">
-                            <SelectValue>{(v: string) => ACTION_SOURCE_OPTIONS.find((o) => o.value === v)?.label.split(' ')[0] || v}</SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ACTION_SOURCE_OPTIONS.map((o) => (
-                              <SelectItem key={o.value} value={o.value}>
-                                {o.label}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -780,19 +771,10 @@ export function PixelsTab({
                       ))}
                     </SelectContent>
                   </Select>
-                  <Select value={testActionSource} onValueChange={(v) => v && setTestActionSource(v as 'website' | 'chat')}>
-                    <SelectTrigger id="pixel-test-action-source" className="w-[110px]">
-                      <SelectValue>{(v: string) => ACTION_SOURCE_OPTIONS.find((o) => o.value === v)?.label.split(' ')[0] || v}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ACTION_SOURCE_OPTIONS.map((o) => (
-                        <SelectItem key={o.value} value={o.value}>
-                          {o.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {/* size="sm" — раньше отсутствовал (запрос пользователя 2026-07-31: "кнопка
+                      отправить тест больше чем дропдауны рядом с ней"). */}
                   <Button
+                    size="sm"
                     variant="outline"
                     onClick={() => testEvent.mutate()}
                     disabled={!pixelId || !accessToken || testEvent.isPending}
@@ -1487,5 +1469,145 @@ export function DangerTab({ projectId, onArchived }: { projectId: string; onArch
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+interface ProjectOperator {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  email: string;
+  isActive: boolean;
+}
+
+// Управление операторами проекта (запрос пользователя 2026-07-31: "админ операторов,
+// администратор либо овнер может зайти на проект и добавить активных операторов туда, и пока
+// они добавлены в проект как операторы они имеют доступ к их клиентам") — новый
+// GET/POST/DELETE /projects/:id/operators на бэкенде, права всегда фиксированный
+// DEFAULT_ROLE_PERMISSIONS.OPERATOR (seedDefaultsIfEmpty), без ручной настройки. Видимость
+// вкладки самой по себе гейтится в page.tsx (OWNER/ADMIN/OPERATOR_ADMIN/SUPER_ADMIN) — здесь
+// уже предполагается, что у пользователя есть доступ.
+export function OperatorsTab({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient();
+  const [showAddDialog, setShowAddDialog] = useState(false);
+  const [search, setSearch] = useState('');
+
+  const { data: operators, isLoading } = useQuery({
+    queryKey: ['project-operators', projectId],
+    queryFn: async () => (await api.get<ProjectOperator[]>(`/projects/${projectId}/operators`)).data,
+  });
+
+  // Company-wide (не сужено до "пересекается с моими проектами") — подтверждено
+  // AskUserQuestion 2026-07-31: иначе Оператор-админу неоткуда было бы взять только что
+  // созданного оператора с 0 проектов.
+  const { data: candidates } = useQuery({
+    queryKey: ['project-operator-candidates', projectId],
+    queryFn: async () => (await api.get<ProjectOperator[]>(`/projects/${projectId}/operators/candidates`)).data,
+    enabled: showAddDialog,
+  });
+
+  const add = useMutation({
+    mutationFn: (userId: string) => api.post(`/projects/${projectId}/operators`, { userId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project-operators', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['project-operator-candidates', projectId] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (userId: string) => api.delete(`/projects/${projectId}/operators/${userId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project-operators', projectId] }),
+  });
+
+  const filteredCandidates = candidates?.filter((c) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return `${c.firstName} ${c.lastName ?? ''}`.toLowerCase().includes(q) || c.email.toLowerCase().includes(q);
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          Операторы с доступом к клиентам этого проекта. Права фиксированные — как только
+          оператор добавлен, он сразу видит клиентов и может регистрировать депозиты.
+        </p>
+        <Button size="sm" onClick={() => setShowAddDialog(true)} className="shrink-0">
+          <Plus className="w-4 h-4 mr-1.5" /> Добавить оператора
+        </Button>
+      </div>
+
+      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
+      {!isLoading && !operators?.length && <p className="text-sm text-muted-foreground">Операторов пока нет.</p>}
+      {!!operators?.length && (
+        <Card>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Оператор</TableHead>
+                  <TableHead>Статус</TableHead>
+                  <TableHead className="text-right">Действия</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {operators.map((op) => (
+                  <TableRow key={op.id}>
+                    <TableCell>
+                      <div className="font-medium">
+                        {op.firstName} {op.lastName || ''}
+                      </div>
+                      <div className="text-xs text-muted-foreground">{op.email}</div>
+                    </TableCell>
+                    <TableCell>{op.isActive ? <Badge>Активен</Badge> : <Badge variant="secondary">Отключён</Badge>}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={remove.isPending}
+                        onClick={() => {
+                          if (confirm(`Убрать оператора ${op.email} с этого проекта?`)) remove.mutate(op.id);
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4 mr-1.5" /> Убрать
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Добавить оператора</DialogTitle>
+          </DialogHeader>
+          <Input placeholder="Имя или email..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="max-h-72 overflow-y-auto space-y-1">
+            {!filteredCandidates?.length && <p className="text-sm text-muted-foreground py-2">Нет доступных операторов.</p>}
+            {filteredCandidates?.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                disabled={add.isPending}
+                onClick={() => add.mutate(c.id)}
+                className="w-full flex items-center justify-between gap-2 rounded-md border p-2.5 text-left text-sm hover:bg-muted/50 disabled:opacity-50"
+              >
+                <div>
+                  <div className="font-medium">
+                    {c.firstName} {c.lastName || ''}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{c.email}</div>
+                </div>
+                <Plus className="w-4 h-4 text-muted-foreground shrink-0" />
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

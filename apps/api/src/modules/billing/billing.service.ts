@@ -3,6 +3,7 @@ import { BalanceTransaction, Invoice } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CryptoPaymentService } from './crypto-payment.service';
 import { HeleketService } from './heleket.service';
+import { NowPaymentsService } from './nowpayments.service';
 import { PLANS, PURCHASABLE_PLANS, PurchasablePlan } from './plans';
 import { PaymentNetwork } from './providers/payment-network.provider.interface';
 
@@ -12,6 +13,7 @@ export class BillingService {
     private prisma: PrismaService,
     private cryptoPayment: CryptoPaymentService,
     private heleket: HeleketService,
+    private nowPayments: NowPaymentsService,
   ) {}
 
   // Инвойс пополняет баланс — он больше не привязан к конкретному тарифу
@@ -78,6 +80,50 @@ export class BillingService {
 
     // order_id — это invoice.id, переданный при createHeleketTopUp; status=PENDING защищает
     // от повторной обработки одного и того же вебхука (Heleket может присылать его повторно).
+    const invoice = await this.prisma.invoice.findUnique({ where: { id: result.orderId } });
+    if (!invoice || invoice.status !== 'PENDING') return;
+
+    await this.creditBalance(invoice.id, result.txHash ?? result.gatewayUuid, result.paidAmount);
+  }
+
+  // Подключено 2026-07-30 по реальным ключам пользователя (NOWPAYMENTS_API_KEY/IPN_SECRET
+  // в .env.prod). Та же модель, что и Heleket: NOWPayments сам мониторит блокчейн и шлёт
+  // IPN на нашу сторону — нет BullMQ-мониторинга/свипа, средства оседают на их меречант-балансе.
+  async createNowPaymentsTopUp(companyId: string, amount: number, network: string): Promise<Invoice> {
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+    const invoice = await this.prisma.invoice.create({
+      data: { companyId, amount, currency: 'USDT', provider: 'NOWPAYMENTS', network, expiresAt, status: 'PENDING' },
+    });
+
+    let gw;
+    try {
+      gw = await this.nowPayments.createInvoice(invoice.id, amount, network);
+    } catch (error) {
+      // Не оставляем инвойс висеть в PENDING до истечения 30 минут, если NOWPayments
+      // так и не выдал адрес — та же защита, что и у createHeleketTopUp.
+      await this.prisma.invoice.update({ where: { id: invoice.id }, data: { status: 'EXPIRED' } });
+      throw error;
+    }
+
+    return this.prisma.invoice.update({
+      where: { id: invoice.id },
+      data: { paymentAddress: gw.paymentAddress, gatewayUuid: gw.gatewayUuid },
+    });
+  }
+
+  // POST /billing/webhooks/nowpayments — публичный эндпоинт, запрос от серверов NOWPayments.
+  // Подпись (x-nowpayments-sig) приходит HTTP-заголовком, не полем в теле (в отличие от
+  // Heleket) — контроллер подмешивает её в payload под ключом 'x-nowpayments-sig' перед
+  // вызовом, см. BillingController.nowPaymentsWebhook.
+  async handleNowPaymentsWebhook(payload: Record<string, unknown>): Promise<void> {
+    if (!this.nowPayments.verifyWebhookSignature(payload)) {
+      throw new ForbiddenException('Неверная подпись вебхука NOWPayments');
+    }
+
+    const result = this.nowPayments.parseWebhook(payload);
+    if (!result.isPaid) return;
+
     const invoice = await this.prisma.invoice.findUnique({ where: { id: result.orderId } });
     if (!invoice || invoice.status !== 'PENDING') return;
 
@@ -192,7 +238,7 @@ export class BillingService {
         planExpiresAt: new Date(Date.now() + config.durationDays * 24 * 60 * 60 * 1000),
         maxProjects: config.maxProjects,
         maxClients: config.maxClients,
-        maxPushesPerMonth: config.maxPushesPerMonth,
+        maxPushesPerDay: config.maxPushesPerDay,
         balance: { decrement: config.priceUsdt },
       },
     });
@@ -223,7 +269,7 @@ export class BillingService {
         planExpiresAt: null, // не продлевается автоматически — крон больше не выберет эту компанию
         maxProjects: limits.maxProjects,
         maxClients: limits.maxClients,
-        maxPushesPerMonth: limits.maxPushesPerMonth,
+        maxPushesPerDay: limits.maxPushesPerDay,
       },
     });
 
@@ -285,8 +331,8 @@ export class BillingService {
         currentProjects: true,
         maxClients: true,
         currentClients: true,
-        maxPushesPerMonth: true,
-        pushesThisMonth: true,
+        maxPushesPerDay: true,
+        pushesToday: true,
       },
     });
   }

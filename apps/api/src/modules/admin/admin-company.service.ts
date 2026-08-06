@@ -48,6 +48,18 @@ export class AdminCompanyService {
     const company = await this.prisma.company.findUnique({ where: { id: companyId } });
     if (!company) throw new NotFoundException('Компания не найдена');
 
+    // Аудит read-доступа (найдено при аудите панели администратора 2026-07-30: AdminActionLog
+    // раньше писался только для МУТИРУЮЩИХ действий — не было ни следа того, кто и когда
+    // просто ПРОСМОТРЕЛ данные другой компании через runAsCompany, хотя именно это открывает
+    // доступ к чужому PII). Пишем один раз на открытие карточки компании (getOverview —
+    // единственный вызов, который срабатывает при каждом заходе на /companies/:id), не на
+    // каждую под-вкладку (projects/landings/domains/team отдельно залогировали бы 5-6 строк на
+    // один визит админа — шум, не сигнал). Fire-and-forget: не блокируем и не роняем сам
+    // overview, если запись лога почему-то не удалась.
+    this.prisma.adminActionLog
+      .create({ data: { adminUserId, companyId, action: 'COMPANY_VIEWED', previousValue: {}, newValue: {} } })
+      .catch(() => {});
+
     // User/Domain вне modelsWithCompany — считаются напрямую, без runAsCompany.
     // role: {not: SUPER_ADMIN} — тот же фильтр, что уже у TeamService.findAll (вкладка
     // "Команда" не показывает SUPER_ADMIN-аккаунты), иначе для компании, в которой живёт сам
@@ -107,7 +119,9 @@ export class AdminCompanyService {
 
   async getProjectClients(companyId: string, adminUserId: string, projectId: string, filters: ClientFiltersDto) {
     await this.assertProjectInCompany(companyId, adminUserId, projectId);
-    return runAsCompany(companyId, adminUserId, () => this.getClientsService().findMany(projectId, filters));
+    // Платформенный SUPER_ADMIN — полная деталь пересечения (canViewCrossProject: true), не
+    // сужается до чьей-то per-project видимости, тот же принцип, что и TeamService.findAll выше.
+    return runAsCompany(companyId, adminUserId, () => this.getClientsService().findMany(projectId, filters, companyId, true));
   }
 
   async getProjectPushes(companyId: string, adminUserId: string, projectId: string) {
@@ -132,8 +146,21 @@ export class AdminCompanyService {
     return this.domainsService.findAll(companyId);
   }
 
+  // Реальная история крипто-платежей (запрос пользователя 2026-07-30, аудит панели
+  // администратора — раньше супер-админ видел только материализованный Company.balance и
+  // собственные ADMIN_CREDIT-записи, не то, откуда баланс компании реально взялся). Invoice не
+  // входит в modelsWithCompany — прямой запрос с явным companyId уже безопасен, runAsCompany
+  // не нужен (тот же случай, что Domain/Push/User).
+  async getInvoices(companyId: string) {
+    return this.prisma.invoice.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' } });
+  }
+
+  // Платформенный SUPER_ADMIN смотрит на команду ЛЮБОЙ компании целиком (не сужается до
+  // OPERATOR_ADMIN'овской зоны — тот особый случай специфичен для реальных участников этой
+  // конкретной компании, не для платформенного администратора). requesterId не используется
+  // TeamService.findAll ни для одной ветки кроме OPERATOR_ADMIN, поэтому пустая строка безопасна.
   async getTeam(companyId: string) {
-    return this.teamService.findAll(companyId);
+    return this.teamService.findAll(companyId, '', UserRole.SUPER_ADMIN);
   }
 
   // Пополнение баланса компании (Фаза 4.3C, запрос пользователя 2026-07-19) — без верхней

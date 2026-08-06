@@ -23,6 +23,7 @@ export class AudienceController {
     @CurrentUser() user: AuthUser,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('search') search?: string,
   ) {
     return this.audienceService.getOverlapDetail(
       companyId,
@@ -32,6 +33,7 @@ export class AudienceController {
       projectBId,
       Number(page) || 1,
       Math.min(Number(limit) || 20, 100),
+      search,
     );
   }
 }

@@ -2,7 +2,7 @@
 
 ## Зачем
 
-Подписка компании (`Company.plan`) даёт доступ к фичам и лимитам (`maxProjects`/`maxClients`/`maxPushesPerMonth`,
+Подписка компании (`Company.plan`) даёт доступ к фичам и лимитам (`maxProjects`/`maxClients`/`maxPushesPerDay`,
 проверяются `SubscriptionGuard`, см. [04_BACKEND_CORE.md](04_BACKEND_CORE.md)). Оплата устроена в два независимых шага:
 
 1. **Пополнение баланса** — крипто-инвойс на произвольную сумму, не привязанную ни к какому тарифу, в одной
@@ -155,11 +155,11 @@ function deriveIndex(invoiceId: string): number {
 
 ```typescript
 export const PLANS: Record<SubscriptionPlan, PlanConfig> = {
-  TRIAL:      { priceUsdt: 0,   durationDays: 14, maxProjects: 1,   maxClients: 1000,   maxPushesPerMonth: 5   },
-  STARTER:    { priceUsdt: 49,  durationDays: 30, maxProjects: 3,   maxClients: 5000,   maxPushesPerMonth: 10  },
-  GROWTH:     { priceUsdt: 149, durationDays: 30, maxProjects: 10,  maxClients: 25000,  maxPushesPerMonth: 50  },
-  SCALE:      { priceUsdt: 399, durationDays: 30, maxProjects: 30,  maxClients: 100000, maxPushesPerMonth: 999 },
-  ENTERPRISE: { priceUsdt: 0,   durationDays: 30, maxProjects: 999, maxClients: 999999, maxPushesPerMonth: 999 },
+  TRIAL:      { priceUsdt: 0,   durationDays: 14, maxProjects: 1,  maxClients: 1000,   maxPushesPerDay: 2   },
+  STARTER:    { priceUsdt: 49,  durationDays: 30, maxProjects: 5,  maxClients: 5000,   maxPushesPerDay: 10  },
+  GROWTH:     { priceUsdt: 149, durationDays: 30, maxProjects: 10, maxClients: 25000,  maxPushesPerDay: 50  },
+  SCALE:      { priceUsdt: 399, durationDays: 30, maxProjects: 20, maxClients: 100000, maxPushesPerDay: 240 },
+  ENTERPRISE: { priceUsdt: 0,   durationDays: 30, maxProjects: 50, maxClients: 999999, maxPushesPerDay: 999 },
 };
 
 export const PURCHASABLE_PLANS = ['STARTER', 'GROWTH', 'SCALE'] as const;
@@ -330,7 +330,7 @@ export class BillingService {
         planExpiresAt: new Date(Date.now() + config.durationDays * 24 * 60 * 60 * 1000),
         maxProjects: config.maxProjects,
         maxClients: config.maxClients,
-        maxPushesPerMonth: config.maxPushesPerMonth,
+        maxPushesPerDay: config.maxPushesPerDay,
         balance: { decrement: config.priceUsdt },
       },
     });
@@ -346,7 +346,7 @@ export class BillingService {
     const limits = PLANS.TRIAL;
     const company = await this.prisma.company.update({
       where: { id: companyId },
-      data: { plan: 'TRIAL', planExpiresAt: null, maxProjects: limits.maxProjects, maxClients: limits.maxClients, maxPushesPerMonth: limits.maxPushesPerMonth },
+      data: { plan: 'TRIAL', planExpiresAt: null, maxProjects: limits.maxProjects, maxClients: limits.maxClients, maxPushesPerDay: limits.maxPushesPerDay },
     });
     await this.prisma.balanceTransaction.create({
       data: { companyId, type: 'DOWNGRADE', amount: 0, balanceAfter: company.balance, plan: 'TRIAL' },
@@ -389,7 +389,7 @@ export class BillingService {
     return this.prisma.company.findUniqueOrThrow({
       where: { id: companyId },
       select: { plan: true, planExpiresAt: true, balance: true, maxProjects: true, currentProjects: true,
-        maxClients: true, currentClients: true, maxPushesPerMonth: true, pushesThisMonth: true },
+        maxClients: true, currentClients: true, maxPushesPerDay: true, pushesToday: true },
     });
   }
 }
@@ -434,6 +434,9 @@ export class PaymentMonitoringProcessor {
 - `POST /billing/topup/heleket` — создать инвойс через Heleket `{ amount, network? }` (готовится к
   интеграции, см. ниже — без ключей в `.env` вернёт 500)
 - `POST /billing/webhooks/heleket` — `@Public()`, вебхук от серверов Heleket (не от пользователя)
+- `POST /billing/topup/nowpayments` — создать инвойс через NOWPayments `{ amount, network }` (сеть
+  обязательна, в отличие от Heleket) — **подключено 2026-07-30, реальные ключи, см. ниже**
+- `POST /billing/webhooks/nowpayments` — `@Public()`, IPN от серверов NOWPayments
 
 ## Кроны
 
@@ -520,3 +523,58 @@ JSON с экранированными `/` как `\/` (PHP `json_encode`-сти
 - Нет вывода средств с меречант-баланса Heleket — это отдельный API (payout), не входит в этот шаг.
 - Нет повторного запроса статуса инвойса (`GET .../payment/info`) — рассчитываем только на вебхук;
   стоит добавить как подстраховку (по аналогии с `expireStaleInvoices`), когда появятся ключи.
+
+## NOWPayments — хостед-гейтвей (подключён 2026-07-30, реальные ключи)
+
+Та же модель, что и Heleket (мы не держим ключей/не свипаем — NOWPayments сам мониторит блокчейн и
+шлёт IPN), но с одним архитектурным отличием: вместо хостед-страницы (`/v1/invoice`) используется
+их `/v1/payment` API, которое сразу отдаёт `pay_address` для конкретной монеты — это позволило
+переиспользовать существующий `PaymentModal` (QR + адрес) без изменений, вместо добавления нового
+redirect/iframe-флоу. Плата за это — `network` обязателен в `CreateNowPaymentsTopUpDto` (NOWPayments
+не даёt выбрать сеть постфактум, как хостед-страница Heleket).
+
+```
+POST /billing/topup/nowpayments {amount, network}
+        |
+        v
+BillingService.createNowPaymentsTopUp()
+        |  создаёт Invoice(provider=NOWPAYMENTS, status=PENDING) до вызова NOWPayments,
+        |  id передаётся как order_id
+        v
+NowPaymentsGatewayProvider.createInvoice() — POST https://api.nowpayments.io/v1/payment
+        |  network (TRC20/ERC20/BEP20) -> pay_currency (usdttrc20/usdterc20/usdtbsc)
+        v
+Invoice.paymentAddress/gatewayUuid обновлены из ответа (pay_address/payment_id)
+        |
+        v
+(пользователь платит по адресу — мы тут не участвуем)
+        |
+        v
+POST /billing/webhooks/nowpayments  (от серверов NOWPayments, @Public(), без JWT)
+        |
+        v
+BillingService.handleNowPaymentsWebhook()
+        |  verifyWebhookSignature() — ОБЯЗАТЕЛЬНО, как и у Heleket
+        |
+        +-- payment_status не confirmed/finished --> игнорируем
+        |
+        +-- confirmed/finished --> найти Invoice по id (=order_id), status уже не
+            PENDING --> игнорируем (идемпотентность), иначе creditBalance()
+```
+
+**Подпись IPN — отличие от Heleket**: NOWPayments шлёт подпись HTTP-заголовком `x-nowpayments-sig`,
+не полем в теле. Формула: `HMAC-SHA512(JSON.stringify(sortKeysDeep(payload)), IPN_SECRET)`, hex.
+`BillingController.nowPaymentsWebhook` подмешивает заголовок в payload под ключом
+`'x-nowpayments-sig'` перед вызовом `handleNowPaymentsWebhook`, чтобы не менять форму
+`PaymentGatewayProvider.verifyWebhookSignature(payload)` (общий интерфейс с Heleket, где подпись —
+поле тела, не заголовок).
+
+**IPN URL, указанный в кабинете NOWPayments**: `https://api.mw-track.com/api/v1/billing/webhooks/nowpayments`.
+
+**Проверено вживую 2026-07-30** (в отличие от Heleket) — реальный вызов `/v1/payment` с настоящими
+`NOWPAYMENTS_API_KEY`/`NOWPAYMENTS_IPN_SECRET` вернул настоящий TRC-20 адрес и `payment_id`.
+Минимальная сумма: NOWPayments отклонил `$10` на TRC20 как "less than minimal" (комиссия сети
+съедает мелкую сумму) — `$50` прошёл. Минимум зависит от сети/текущих комиссий, не захардкожен.
+IPN-вебхук (реальное зачисление после оплаты) **не протестирован живым платежом** — для этого
+нужна настоящая крипто-транзакция; это следующий шаг перед тем, как убирать кнопку из "черновой"
+категории в голове.

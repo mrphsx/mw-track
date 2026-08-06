@@ -1084,6 +1084,17 @@ export class TelegramProvider implements ChannelProvider {
 
   // Вызывается из WebhooksController
   async handleWebhook(channelId: string, update: object): Promise<void> {
+    // Запрос пользователя 2026-08-05 (после реального ~20-часового инцидента — Telegram молча
+    // перестал слать вебхуки одному боту, пока остальные получали их как обычно, обнаружить
+    // получилось только постфактум по логам nginx) — фиксируем сам факт "что-то от Telegram
+    // дошло" на КАЖДЫЙ входящий апдейт, до диспетчеризации grammY по типу. Fire-and-forget:
+    // ответ Telegram на вебхук не должен ждать лишний DB-запрос, а отсутствие инстанса бота
+    // ниже (например сразу после рестарта процесса, до ленивой регидратации) не должно мешать
+    // зафиксировать сам факт получения апдейта.
+    void this.prisma.channel
+      .update({ where: { id: channelId }, data: { lastWebhookAt: new Date() } })
+      .catch((error) => this.logger.warn(`lastWebhookAt update failed for channel ${channelId}: ${(error as Error).message}`));
+
     const bot = this.bots.get(channelId);
     if (!bot) {
       this.logger.warn(`handleWebhook: no bot instance for channel ${channelId}`);

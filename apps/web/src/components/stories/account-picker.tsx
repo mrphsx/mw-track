@@ -47,7 +47,11 @@ export function AccountPicker({
     <div className="max-w-sm space-y-1.5">
       <Label>Аккаунт</Label>
       <Select value={value} onValueChange={(v) => onChange(v ?? '')}>
-        <SelectTrigger className="w-full">
+        {/* bg-card — базовый <SelectTrigger> по умолчанию bg-transparent (запрос пользователя
+            2026-07-31: "он прозрачный, не под общий дизайн") — на голой странице это было
+            незаметно (страница и так белая), но фон всё равно не подставлялся под полем на
+            самом деле, только визуально совпадал с ней случайно. */}
+        <SelectTrigger className="w-full bg-card">
           <SelectValue>
             {() => {
               const p = projects.find((pr) => pr.id === value);

@@ -34,8 +34,9 @@ export function checkSubscriptionLimit(company: Company, limit: string): { block
       if (company.pushesBlocked) {
         return { blocked: true, reason: 'Рассылки для этой компании заблокированы администратором' };
       }
-      if (company.pushesThisMonth >= company.maxPushesPerMonth) {
-        return { blocked: true, reason: 'Достигнут лимит рассылок в этом месяце' };
+      // Дневной лимит (запрос пользователя 2026-07-30) — был помесячным, см. plans.ts.
+      if (company.pushesToday >= company.maxPushesPerDay) {
+        return { blocked: true, reason: 'Достигнут дневной лимит рассылок для вашего плана' };
       }
       break;
   }

@@ -85,6 +85,14 @@ export class PushesController {
     return this.pushesService.update(id, projectId, dto);
   }
 
+  // Копирование (запрос пользователя 2026-08-05) — создаёт новый DRAFT, поэтому та же проверка
+  // прав, что и обычное создание (PUSHES_CREATE), а не PUSHES_VIEW.
+  @Post(':id/duplicate')
+  async duplicate(@Param('id') id: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_CREATE]);
+    return this.pushesService.duplicate(id, projectId);
+  }
+
   @Post(':id/recalculate-audience')
   async recalculateAudience(
     @Param('id') id: string,

@@ -41,7 +41,11 @@ export function ScheduleCalendar({ projectId, selectedDate, onSelectDate }: Sche
   });
 
   return (
-    <div className="flex flex-wrap items-start gap-4">
+    // Календарь сверху во всю ширину, список дня — под ним (запрос пользователя 2026-08-05:
+    // "растяни сам календарь на всю ширину своей карточки") — раньше стояли рядом (flex-row),
+    // из-за чего календарь держался у фиксированной компактной ширины независимо от того,
+    // насколько широка сама карточка "Расписание" в композере.
+    <div className="space-y-4">
       <div className="rounded-lg border p-3">
         <CalendarGrid
           compact

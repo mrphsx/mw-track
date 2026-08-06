@@ -88,7 +88,7 @@ export default function StudioScenarioEditorPage() {
 
   const removeScenario = useMutation({
     mutationFn: () => api.delete(`/channels/${channelId}/scenarios/${scenarioId}`),
-    onSuccess: () => router.push(`/dashboard/studio/projects/${projectId}/scenarios`),
+    onSuccess: () => router.push(`/projects/${projectId}/scenarios`),
   });
 
   const [justCreated, setJustCreated] = useState<{ elementId: string; type: ElementContentType } | null>(null);
@@ -115,7 +115,7 @@ export default function StudioScenarioEditorPage() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/scenarios`}
+          href={`/projects/${projectId}/scenarios`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Все сценарии
@@ -131,7 +131,7 @@ export default function StudioScenarioEditorPage() {
               <Label className="text-sm text-[#131A24] dark:text-[#E9EDF3]">Активен</Label>
               <Switch checked={scenario.isActive} onCheckedChange={(checked) => toggleActive.mutate(checked)} />
             </div>
-            <StudioLinkButton size="sm" icon={BarChart3} onClick={() => router.push(`/dashboard/studio/projects/${projectId}/scenarios/${scenarioId}/stats`)}>
+            <StudioLinkButton size="sm" icon={BarChart3} onClick={() => router.push(`/projects/${projectId}/scenarios/${scenarioId}/stats`)}>
               Статистика
             </StudioLinkButton>
             <StudioLinkButton size="sm" icon={Trash2} onClick={() => confirm('Удалить сценарий?') && removeScenario.mutate()}>
@@ -430,7 +430,7 @@ function AbTestSection({
     mutationFn: () => api.post<{ id: string }>(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/variant`),
     onSuccess: (res) => {
       onChanged();
-      router.push(`/dashboard/studio/projects/${projectId}/scenarios/${res.data.id}`);
+      router.push(`/projects/${projectId}/scenarios/${res.data.id}`);
     },
   });
 
@@ -482,7 +482,7 @@ function AbTestSection({
           </StudioPill>
         </p>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/scenarios/history`}
+          href={`/projects/${projectId}/scenarios/history`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1"
         >
           <History className="w-3.5 h-3.5" /> Смотреть в истории
@@ -501,7 +501,7 @@ function AbTestSection({
           <StudioLinkButton size="sm" icon={FlaskConical} onClick={() => addVariant.mutate()} disabled={addVariant.isPending}>
             Ещё вариант
           </StudioLinkButton>
-          <StudioLinkButton size="sm" icon={BarChart3} onClick={() => router.push(`/dashboard/studio/projects/${projectId}/scenarios/${scenarioId}/ab-test`)}>
+          <StudioLinkButton size="sm" icon={BarChart3} onClick={() => router.push(`/projects/${projectId}/scenarios/${scenarioId}/ab-test`)}>
             Подробная статистика
           </StudioLinkButton>
           <StudioLinkButton
@@ -535,7 +535,7 @@ function AbTestSection({
             {v.scenarioId === scenarioId ? (
               <StudioPill hue="slate">Открыт сейчас</StudioPill>
             ) : (
-              <StudioLinkButton size="sm" onClick={() => router.push(`/dashboard/studio/projects/${projectId}/scenarios/${v.scenarioId}`)}>
+              <StudioLinkButton size="sm" onClick={() => router.push(`/projects/${projectId}/scenarios/${v.scenarioId}`)}>
                 Настроить →
               </StudioLinkButton>
             )}

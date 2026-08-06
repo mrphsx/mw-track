@@ -114,6 +114,7 @@ export class TrackingService {
           campaignName: attribution.campaignName,
           placement: attribution.placement,
           siteSourceName: attribution.siteSourceName,
+          buyerId: attribution.buyerId,
         },
       });
     } catch (error) {
@@ -219,6 +220,14 @@ export class TrackingService {
       // свой ISO-код) — только через Client, поэтому explicit.countryCode всегда undefined тут.
       fbp: dto.fbp,
       countryCode: undefined as string | undefined,
+      // Атрибуция баера на уровне события (запрос пользователя 2026-08-03) — dto.buyerRef уже
+      // реально долетает сюда от SDK (та же сессионная механика, что pixelId/campaignId, см.
+      // link-params.const.ts), просто раньше нигде не читался: поле было добавлено в DTO
+      // 2026-07-21 только чтобы ValidationPipe не отклонял запрос, реальная атрибуция Client.
+      // buyerId шла отдельным Redis-мостом (LandingRendererService). Теперь это первый настоящий
+      // потребитель значения — просмотры/клики лендинга (PageView/Lead), которые происходят ДО
+      // создания Client, наконец тоже получают атрибуцию баера.
+      buyerId: dto.buyerRef,
     };
     const fbclidCapturedAt: Date | undefined = dto.fbclid ? new Date() : undefined;
 
@@ -245,12 +254,14 @@ export class TrackingService {
         fbp: true,
         countryCode: true,
         firstSeenAt: true,
+        buyerId: true,
       },
     });
     if (!client) return { ...explicit, fbclidCapturedAt };
 
     return {
       pixelId: explicit.pixelId ?? client.pixelId ?? undefined,
+      buyerId: explicit.buyerId ?? client.buyerId ?? undefined,
       adId: explicit.adId ?? client.adId ?? undefined,
       adName: explicit.adName ?? client.adName ?? undefined,
       adsetId: explicit.adsetId ?? client.adsetId ?? undefined,

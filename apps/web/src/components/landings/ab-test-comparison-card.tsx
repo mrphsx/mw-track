@@ -10,7 +10,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { LandingStatus, LandingType } from '@/lib/landings';
 
 export interface LandingVariantStats {
-  landing: { id: string; name: string; type: LandingType; status: LandingStatus };
+  landing: {
+    id: string;
+    name: string;
+    type: LandingType;
+    status: LandingStatus;
+    // Автор (запрос пользователя 2026-08-03) — null у лендингов без резолвящегося создателя.
+    createdBy: { id: string; firstName: string; lastName: string | null } | null;
+  };
   subscribers: { total: number; active: number; unsubscribed: number };
   funnel: { pageViews: number; leads: number; subscribes: number };
   dialogues: { total: number; dailyDialogues: { date: string; count: number }[] };

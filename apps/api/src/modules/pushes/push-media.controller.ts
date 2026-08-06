@@ -34,6 +34,20 @@ export class PushMediaController {
     return this.pushesService.uploadMedia(file, mediaType);
   }
 
+  // Переключатель "сделать кружком" поверх уже загруженного видео (запрос пользователя
+  // 2026-08-05) — единый контейнер загрузки сам определяет тип по файлу при самой загрузке
+  // (видео = видео), обрезка в квадрат теперь отдельное действие ПОСЛЕ, не выбор типа заранее.
+  @Post('projects/:projectId/pushes/media/:key/to-video-note')
+  async toVideoNote(
+    @Param('projectId') projectId: string,
+    @Param('key') key: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_CREATE]);
+    return this.pushesService.convertToVideoNote(key);
+  }
+
   @Public()
   @Get('pushes-media/:key')
   async stream(@Param('key') key: string, @Res() res: Response) {

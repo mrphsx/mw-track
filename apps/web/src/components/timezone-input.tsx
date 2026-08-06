@@ -9,20 +9,32 @@ import { Label } from '@/components/ui/label';
 
 const TIMEZONES: string[] = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : ['UTC'];
 
-export function TimezoneInput({ value, onChange, id = 'timezone' }: { value: string; onChange: (v: string) => void; id?: string }) {
+export function TimezoneInput({
+  value,
+  onChange,
+  id = 'timezone',
+  label = 'Часовой пояс проекта',
+  hint = 'Влияет на границы «суток» во всех дневных графиках этого проекта (подписки, диалоги, события) — полезно, если аудитория проекта на другом конце света.',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  id?: string;
+  // label/hint — опциональные (запрос пользователя 2026-08-05: тот же инпут переиспользован для
+  // часового пояса отправки рассылки, где текст должен быть другим) — дефолт сохраняет исходный
+  // текст для уже существующих вызовов (настройки проекта, создание проекта).
+  label?: string;
+  hint?: string;
+}) {
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={id}>Часовой пояс проекта</Label>
+      <Label htmlFor={id}>{label}</Label>
       <Input id={id} list={`${id}-options`} value={value} onChange={(e) => onChange(e.target.value)} placeholder="UTC" />
       <datalist id={`${id}-options`}>
         {TIMEZONES.map((tz) => (
           <option key={tz} value={tz} />
         ))}
       </datalist>
-      <p className="text-xs text-muted-foreground">
-        Влияет на границы &laquo;суток&raquo; во всех дневных графиках этого проекта (подписки, диалоги,
-        события) — полезно, если аудитория проекта на другом конце света.
-      </p>
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   );
 }

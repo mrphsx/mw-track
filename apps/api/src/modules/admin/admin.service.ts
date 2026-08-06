@@ -43,8 +43,8 @@ export class AdminService {
           maxProjects: true,
           currentClients: true,
           maxClients: true,
-          pushesThisMonth: true,
-          maxPushesPerMonth: true,
+          pushesToday: true,
+          maxPushesPerDay: true,
           createdAt: true,
         },
         orderBy: { createdAt: 'desc' },
@@ -54,7 +54,7 @@ export class AdminService {
       this.prisma.company.count({ where }),
     ]);
 
-    return { items, total, page: Math.max(page, 1), limit: take };
+    return { items, total, page: Math.max(page, 1), limit: take, totalPages: Math.ceil(total / take) };
   }
 
   async getStats() {
@@ -85,7 +85,7 @@ export class AdminService {
     if (!company) throw new NotFoundException('Компания не найдена');
 
     const nextExpiresAt = dto.planExpiresAt === undefined ? company.planExpiresAt : dto.planExpiresAt ? new Date(dto.planExpiresAt) : null;
-    // Лимиты (maxProjects/maxClients/maxPushesPerMonth) материализованы прямо на Company —
+    // Лимиты (maxProjects/maxClients/maxPushesPerDay) материализованы прямо на Company —
     // checkSubscriptionLimit сравнивает current* с ними напрямую, а не пересчитывает план на
     // лету. Смена plan без пересчёта лимитов из PLANS оставляет старые значения нетронутыми
     // (тот же паттерн уже соблюдается в BillingService.chargeForPlan/downgradeToTrial).
@@ -99,7 +99,7 @@ export class AdminService {
           planExpiresAt: nextExpiresAt,
           maxProjects: limits.maxProjects,
           maxClients: limits.maxClients,
-          maxPushesPerMonth: limits.maxPushesPerMonth,
+          maxPushesPerDay: limits.maxPushesPerDay,
         },
       }),
       this.prisma.adminActionLog.create({
@@ -132,7 +132,7 @@ export class AdminService {
       this.prisma.errorLog.count({ where }),
     ]);
 
-    return { items, total, page: Math.max(page, 1), limit: take };
+    return { items, total, page: Math.max(page, 1), limit: take, totalPages: Math.ceil(total / take) };
   }
 
   async getActions(companyId: string | undefined, page: number, limit: number) {
@@ -151,6 +151,6 @@ export class AdminService {
       this.prisma.adminActionLog.count({ where }),
     ]);
 
-    return { items, total, page: Math.max(page, 1), limit: take };
+    return { items, total, page: Math.max(page, 1), limit: take, totalPages: Math.ceil(total / take) };
   }
 }

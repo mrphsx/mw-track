@@ -93,7 +93,7 @@ export class AuthService {
         plan: 'TRIAL',
         maxProjects: 1,
         maxClients: 1000,
-        maxPushesPerMonth: 5,
+        maxPushesPerDay: 2,
         planExpiresAt: addDays(new Date(), 7), // 7 дней триала
       }
     });
@@ -340,8 +340,8 @@ export class SubscriptionGuard implements CanActivate {
         }
         break;
       case 'pushes':
-        if (company.pushesThisMonth >= company.maxPushesPerMonth) {
-          throw new ForbiddenException(`Достигнут лимит рассылок в этом месяце`);
+        if (company.pushesToday >= company.maxPushesPerDay) {
+          throw new ForbiddenException(`Достигнут дневной лимит рассылок`);
         }
         break;
     }

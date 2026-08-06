@@ -1,6 +1,6 @@
 import { ArrayMinSize, IsArray, IsEnum, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { Permission } from '@prisma/client';
+import { ClientsVisibilityScope, LandingsVisibilityScope, Permission } from '@prisma/client';
 import { CREATABLE_ROLES, CreatableRole, ProjectPermissionsDto } from './create-team-member.dto';
 
 export class CreateInviteDto {
@@ -27,4 +27,14 @@ export class CreateInviteDto {
   @IsArray()
   @IsEnum(Permission, { each: true })
   domainsPermissions?: Permission[];
+
+  // См. комментарий в CreateTeamMemberDto.
+  @IsOptional()
+  @IsEnum(LandingsVisibilityScope)
+  landingsVisibilityScope?: LandingsVisibilityScope;
+
+  // См. комментарий в CreateTeamMemberDto.
+  @IsOptional()
+  @IsEnum(ClientsVisibilityScope)
+  clientsVisibilityScope?: ClientsVisibilityScope;
 }

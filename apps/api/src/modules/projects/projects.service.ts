@@ -1,13 +1,16 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Permission, Prisma, UserRole } from '@prisma/client';
 import { subDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql, resolveStatsPeriod } from '../../common/timezone.util';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
+import { PermissionsService } from '../../common/permissions/permissions.service';
 import { ChannelsService } from '../channels/channels.service';
+import { TelegramPersonalService } from '../channels/providers/telegram-personal.service';
 import { LINK_PARAM_KEYS, LINK_PARAM_NAME_REGEX } from '../tracking/link-params.const';
 import { buildPixelCurlCommand } from '../tracking/curl-command.util';
+import { assertCanAccessTeamManagement, assertOperatorAdminScope } from '../team/team-role.util';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 
@@ -15,9 +18,13 @@ const ELEVATED_ROLES: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUP
 
 @Injectable()
 export class ProjectsService {
+  private readonly logger = new Logger(ProjectsService.name);
+
   constructor(
     private prisma: PrismaService,
     private channelsService: ChannelsService,
+    private permissionsService: PermissionsService,
+    private telegramPersonalService: TelegramPersonalService,
   ) {}
 
   // Проект сам "становится" каналом (1:1 с 2026-07-02) — тип и конфигурация канала
@@ -110,7 +117,7 @@ export class ProjectsService {
       ? await this.prisma.project.findMany({
           where: { companyId, deletedAt: null },
           include: {
-            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgAvatarFileId: true, tgSessionEncrypted: true } },
+            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgAvatarFileId: true, tgSessionEncrypted: true, lastWebhookAt: true } },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
             _count: { select: { pushes: true } },
           },
@@ -120,7 +127,7 @@ export class ProjectsService {
         await this.prisma.project.findMany({
           where: { companyId, deletedAt: null, projectAccess: { some: { userId } } },
           include: {
-            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgSessionEncrypted: true } },
+            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgSessionEncrypted: true, lastWebhookAt: true } },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
             _count: { select: { pushes: true } },
           },
@@ -139,14 +146,28 @@ export class ProjectsService {
     }));
   }
 
+  // "Молчащий" вебхук (запрос пользователя 2026-08-05, после реального ~20-часового инцидента —
+  // Telegram молча перестал слать вебхуки одному боту, обнаружилось только постфактум по логам
+  // nginx, деньги/трафик утекали незаметно) — намеренно щедрый порог: у разных каналов сильно
+  // разная частота трафика (от ~15 до ~800+ вебхуков/сутки в проде), при агрессивном пороге
+  // низкотрафичные каналы ложно светились бы "сломанными" в спокойные часы. 6 часов полной
+  // тишины для КАНАЛА, У КОТОРОГО вебхуки уже случались хотя бы раз (lastWebhookAt не null) —
+  // достаточно редкий случай для настоящей проблемы и достаточно долгий, чтобы не шуметь по
+  // мелочи. Совсем свежеподключённый канал без единого вебхука пока не считается "молчащим" —
+  // это норма, не инцидент.
+  private static readonly WEBHOOK_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+
   // Убираем зашифрованную MTProto-сессию из ответа (тот же приём, что и в
   // ChannelsController.sanitizeChannel) — карточке/странице проекта достаточно знать сам факт
   // подключения личного аккаунта (запрос пользователя 2026-07-21: "значок если добавлен личный
-  // аккаунт телеграм"), показывать ciphertext незачем.
-  private sanitizeChannel<T extends { tgSessionEncrypted?: string | null } | null>(channel: T) {
+  // аккаунт телеграм"), показывать ciphertext незачем. webhookStale считается лениво прямо
+  // здесь, при каждом чтении (тот же приём, что уже даёт tgPersonalConnected — вычисляемое
+  // поле, не отдельный сохранённый boolean/cron, в отличие от isActive).
+  private sanitizeChannel<T extends { tgSessionEncrypted?: string | null; lastWebhookAt?: Date | null } | null>(channel: T) {
     if (!channel) return channel;
     const { tgSessionEncrypted, ...safe } = channel;
-    return { ...safe, tgPersonalConnected: !!tgSessionEncrypted };
+    const webhookStale = !!channel.lastWebhookAt && Date.now() - channel.lastWebhookAt.getTime() > ProjectsService.WEBHOOK_STALE_THRESHOLD_MS;
+    return { ...safe, tgPersonalConnected: !!tgSessionEncrypted, webhookStale };
   }
 
   // Карточка проекта (список проектов + главная страница) раньше считала клиентов иначе,
@@ -214,6 +235,7 @@ export class ProjectsService {
             tgChannelMembersCount: true,
             tgAvatarFileId: true,
             tgSessionEncrypted: true,
+            lastWebhookAt: true,
           },
         },
         // testEventCode (запрос пользователя 2026-07-29: "проверь ещё раз создание пикселя...
@@ -222,7 +244,8 @@ export class ProjectsService {
         // отдаём как есть — нужен фронтенду, чтобы показать индикатор "тестовый режим" и дать
         // отредактировать/убрать его перед запуском реальной рекламы (раньше такой возможности
         // не было вообще — единственный способ был удалить пиксель и создать заново).
-        pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true, testEventCode: true } },
+        // createdBy — запрос пользователя 2026-08-03, показать в UI, кто добавил пиксель.
+        pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true, testEventCode: true, createdBy: { select: { id: true, firstName: true, lastName: true } } } },
         _count: { select: { pushes: true } },
       },
     });
@@ -256,8 +279,34 @@ export class ProjectsService {
   // поэтому проверка разрешения переехала сюда же, а не осталась отдельным гвардом. DOMAINS_*
   // сюда НЕ передаются никогда (решение пользователя — домены не привязаны к одному проекту,
   // остаются общим правом на пользователя, см. PermissionsService.hasAnyProjectPermission).
-  async assertAccess(projectId: string, companyId: string, userId: string, role: UserRole, requiredPermissions?: Permission[]): Promise<void> {
-    await this.findOne(projectId, companyId); // бросит 404, если проект не в этой компании
+  // allowArchived (запрос пользователя 2026-08-02: "лэндинги удалённого проекта не могу
+  // удалить, 404 Проект не найден") — по умолчанию false, поведение всех существующих вызовов
+  // не меняется. Нужен там, где действие — уборка/просмотр уже существующих дочерних сущностей
+  // архивированного проекта (например, удаление его лендингов), которая не должна упираться в
+  // то, что сам проект уже архивирован.
+  async assertAccess(
+    projectId: string,
+    companyId: string,
+    userId: string,
+    role: UserRole,
+    requiredPermissions?: Permission[],
+    options?: { allowArchived?: boolean },
+  ): Promise<void> {
+    if (options?.allowArchived) {
+      // Тенантный $use-middleware (prisma.service.ts) безусловно форсирует deletedAt:null на
+      // ЛЮБОЙ project.findFirst/findMany внутри активного companyStorage-контекста (то есть
+      // всегда, во время обычного HTTP-запроса) — просто не передать deletedAt в where не
+      // помогает, middleware затирает его поверх любого переданного значения. В обход —
+      // единственное место в проекте, где реально нужно "тот же проект, но не важно,
+      // архивирован ли он", поэтому сырой SQL в обход query-builder'а, а не борьба с
+      // AsyncLocalStorage-контекстом ради одной проверки существования.
+      const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+        SELECT id FROM "Project" WHERE id = ${projectId} AND "companyId" = ${companyId} LIMIT 1
+      `;
+      if (rows.length === 0) throw new NotFoundException('Проект не найден');
+    } else {
+      await this.findOne(projectId, companyId); // бросит 404, если проект не в этой компании
+    }
 
     if (role === UserRole.OWNER || role === UserRole.ADMIN || role === UserRole.SUPER_ADMIN) return;
 
@@ -345,6 +394,50 @@ export class ProjectsService {
       where: { id: companyId },
       data: { currentProjects: { decrement: 1 } },
     });
+
+    // Снимаем доступ Buyer/Operator/Оператор-админа к архивированному проекту (баг-репорт
+    // пользователя 2026-07-31: "архивировал проект и хотел поменять доступы баеров... Один или
+    // несколько проектов не найдены") — ProjectAccess не чистился сам по себе при архивации,
+    // но продолжал попадать в форму редактирования участника (вложенный `project: {select}` в
+    // TeamService не проходит через tenant-scoping middleware — тот фильтрует только
+    // ТОП-уровневые запросы к модели Project, не вложенные include/select у другой модели), и
+    // при следующем сохранении assertProjectsBelongToCompany (которая явно фильтрует
+    // deletedAt:null) отклоняла весь набор проектов, включая ещё активные. Та же дисциплина
+    // очистки, что уже используется в TeamService.update/ProjectsService.removeOperatorFromProject
+    // при снятии доступа вручную — здесь просто применяется автоматически при архивации.
+    await this.prisma.$transaction([
+      this.prisma.projectAccess.deleteMany({ where: { projectId: id } }),
+      this.prisma.userPermission.deleteMany({ where: { projectId: id } }),
+    ]);
+
+    // Отключаем канал/бота/личный аккаунт (реальный инцидент 2026-08-05: архивированный проект
+    // держал живой Telegram-бот с зарегистрированным вебхуком; тот же токен бота позже
+    // переиспользовали в новом проекте — Telegram позволяет боту только ОДНУ активную
+    // вебхук-ссылку разом, и она осталась висеть на уже архивированном, невидимом проекте.
+    // Реальный трафик/деньги новой заявки утекали туда, в CRM ничего не появлялось). Раньше
+    // Channel.isActive при архивации проекта не трогался вообще — теперь архивация каскадно
+    // отключает и бот-вебхук (ChannelsService.deactivate — тот же метод, что и ручное
+    // отключение канала в настройках, вызывает bot.api.deleteWebhook()), и личный MTProto-
+    // аккаунт (TelegramPersonalService.disconnect — LogOut + очистка сессии), если они были
+    // подключены. Best-effort: ошибка здесь не должна блокировать саму архивацию (проект уже
+    // помечен ARCHIVED выше) — канал, к которому Telegram недоступен, всё равно достаточно
+    // безопасно оставить как есть, залогировав предупреждение.
+    const channel = await this.prisma.channel.findFirst({ where: { projectId: id } });
+    if (channel) {
+      try {
+        if (channel.type === 'TELEGRAM' && channel.tgSessionEncrypted) {
+          await this.telegramPersonalService.disconnect(channel);
+        }
+        if (channel.isActive) {
+          await this.channelsService.deactivate(channel.id, companyId);
+        }
+      } catch (error) {
+        // best-effort — сам факт архивации проекта важнее, чем гарантированная отписка от
+        // Telegram (если бот уже недоступен/токен отозван, deleteWebhook и так ни на что не
+        // повлияет).
+        this.logger.warn(`Не удалось отключить канал ${channel.id} при архивации проекта ${id}: ${(error as Error).message}`);
+      }
+    }
   }
 
   async getSnippet(id: string, companyId: string) {
@@ -488,32 +581,43 @@ requests.post(
   // feedback_conversion_funnel_subscribe_bug — только эти два события пишутся в двух местах
   // и рискуют задвоиться, Purchase так не пишется, поэтому остаётся TrackingEvent-based, как
   // и в самой воронке).
-  async getAdBreakdown(id: string, companyId: string, periodQuery: StatsPeriodDto) {
+  // buyerId (запрос пользователя 2026-08-03, "только своя стата") — комбинации кампании и все
+  // метрики внутри цикла ниже скоупятся: без этого скоуп-баер видел бы чужие кампании с честными
+  // нулями по всем полям, а не своих.
+  // Группировка ПО КАМПАНИИ, не по кампания+объявление (запрос пользователя 2026-08-04:
+  // "должен показывать только имя кампании, не все объявления") — раньше одна кампания с
+  // несколькими объявлениями превращалась в N строк, что на практике читалось как "слишком
+  // много строк, не видно общей картины по кампании". adId/adName полностью убраны из
+  // discovery/scope/ответа этого метода — единственные два потребителя (classic/Studio
+  // страница проекта) больше нигде их не используют.
+  async getAdBreakdown(id: string, companyId: string, periodQuery: StatsPeriodDto, buyerId?: string) {
     const project = await this.findOne(id, companyId); // проверка владения + 404
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    const buyerWhere = buyerId ? { buyerId } : {};
 
-    const [eventCombos, clientCombos] = await Promise.all([
+    const [eventCampaigns, clientCampaigns] = await Promise.all([
       this.prisma.trackingEvent.findMany({
-        where: { projectId: id, campaignId: { not: null } },
-        select: { campaignId: true, campaignName: true, adId: true, adName: true },
-        distinct: ['campaignId', 'adId'],
+        where: { projectId: id, campaignId: { not: null }, ...buyerWhere },
+        select: { campaignId: true, campaignName: true },
+        distinct: ['campaignId'],
       }),
       this.prisma.client.findMany({
-        where: { projectId: id, deletedAt: null, campaignId: { not: null } },
-        select: { campaignId: true, campaignName: true, adId: true, adName: true },
-        distinct: ['campaignId', 'adId'],
+        where: { projectId: id, deletedAt: null, campaignId: { not: null }, ...buyerWhere },
+        select: { campaignId: true, campaignName: true },
+        distinct: ['campaignId'],
       }),
     ]);
 
-    const combos = new Map<string, { campaignId: string; campaignName: string | null; adId: string | null; adName: string | null }>();
-    for (const c of [...eventCombos, ...clientCombos]) {
-      const key = `${c.campaignId}::${c.adId ?? ''}`;
-      if (!combos.has(key)) combos.set(key, c as { campaignId: string; campaignName: string | null; adId: string | null; adName: string | null });
+    const campaigns = new Map<string, { campaignId: string; campaignName: string | null }>();
+    for (const c of [...eventCampaigns, ...clientCampaigns]) {
+      if (!campaigns.has(c.campaignId!)) campaigns.set(c.campaignId!, c as { campaignId: string; campaignName: string | null });
     }
 
     const breakdown = await Promise.all(
-      Array.from(combos.values()).map(async (combo) => {
-        const scope = { campaignId: combo.campaignId, adId: combo.adId };
+      Array.from(campaigns.values()).map(async (campaign) => {
+        // buyerId в scope покрывает разом trackingEvent.count (PageView/Lead/Purchase) и
+        // client.count (subscribes) — обе модели несут свою колонку buyerId напрямую.
+        const scope = { campaignId: campaign.campaignId, ...buyerWhere };
         const [pageViews, leads, subscribes, dialogueRows, purchases] = await Promise.all([
           this.prisma.trackingEvent.count({ where: { projectId: id, eventName: 'PageView', createdAt: { gte: since, lt: until }, ...scope } }),
           this.prisma.trackingEvent.count({ where: { projectId: id, eventName: 'Lead', createdAt: { gte: since, lt: until }, ...scope } }),
@@ -528,22 +632,20 @@ requests.post(
             FROM "Client"
             WHERE "projectId" = ${id}
               AND "deletedAt" IS NULL
-              AND "campaignId" = ${combo.campaignId}
-              AND "adId" IS NOT DISTINCT FROM ${combo.adId}
+              AND "campaignId" = ${campaign.campaignId}
               AND "firstDialogueAt" >= ${since}
               AND "firstDialogueAt" < ${until}
               AND "subscribedAt" IS NOT NULL
               AND "subscribedAt" <= "firstDialogueAt"
+              ${buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty}
           `,
           this.prisma.trackingEvent.count({ where: { projectId: id, eventName: 'Purchase', createdAt: { gte: since, lt: until }, ...scope } }),
         ]);
         const dialogues = Number(dialogueRows[0]?.count ?? 0);
 
         return {
-          campaignId: combo.campaignId,
-          campaignName: combo.campaignName,
-          adId: combo.adId,
-          adName: combo.adName,
+          campaignId: campaign.campaignId,
+          campaignName: campaign.campaignName,
           pageViews,
           leads,
           subscribes,
@@ -574,9 +676,16 @@ requests.post(
   // считался БЕЗ фильтра по периоду (в отличие от landings.subscribers, который period-scoped) —
   // теперь везде одинаково: "clients"/"subscribers" = новые подписчики ИМЕННО за period, а не
   // все подписчики за всё время.
-  async getLeaderboards(id: string, companyId: string, periodQuery: StatsPeriodDto) {
+  // buyerId (запрос пользователя 2026-08-03, "только своя стата") — скоупит pixels/landings/
+  // campaigns на клиентов ИМЕННО этого баера ("какие из МОИХ лендингов/пикселей/кампаний
+  // конвертят лучше" — реально полезная информация, не заглушка). "buyers" (ранжирование ПРОТИВ
+  // других баеров) при активном скоупе всегда обнуляется контроллером — см.
+  // ProjectsController.getLeaderboards — ранжировать одного человека относительно самого себя
+  // бессмысленно, поэтому здесь она считается как обычно (просто не используется в этом случае).
+  async getLeaderboards(id: string, companyId: string, periodQuery: StatsPeriodDto, buyerId?: string) {
     const project = await this.findOne(id, companyId); // проверка владения + 404
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    const buyerFilterSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
 
     const [buyerRows, users, pixelRows, landingRows, campaignRows] = await Promise.all([
       this.prisma.$queryRaw<{ buyerId: string; clients: bigint; revenue: string | null }[]>`
@@ -596,7 +705,7 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "TrackingPixel" tp
-        LEFT JOIN "Client" c ON c."pixelId" = tp.id AND c."deletedAt" IS NULL
+        LEFT JOIN "Client" c ON c."pixelId" = tp.id AND c."deletedAt" IS NULL ${buyerFilterSql}
         LEFT JOIN "Purchase" p ON p."clientId" = c.id
         WHERE tp."projectId" = ${id}
         GROUP BY tp.id, tp.label, tp.platform
@@ -608,7 +717,7 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as subscribers,
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Landing" l
-        LEFT JOIN "Client" c ON c."landingId" = l.id AND c."deletedAt" IS NULL
+        LEFT JOIN "Client" c ON c."landingId" = l.id AND c."deletedAt" IS NULL ${buyerFilterSql}
         LEFT JOIN "Purchase" p ON p."clientId" = c.id
         WHERE l."projectId" = ${id} AND l."deletedAt" IS NULL
         GROUP BY l.id, l.name
@@ -622,6 +731,7 @@ requests.post(
         FROM "Client" c
         LEFT JOIN "Purchase" p ON p."clientId" = c.id
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."campaignId" IS NOT NULL
+          ${buyerFilterSql}
         GROUP BY c."campaignId"
         ORDER BY revenue DESC, clients DESC
         LIMIT 5
@@ -676,15 +786,16 @@ requests.post(
     category: 'buyers' | 'pixels' | 'landings' | 'campaigns',
     ids: string[],
     periodQuery: StatsPeriodDto,
+    buyerId?: string,
   ) {
     const project = await this.findOne(id, companyId); // проверка владения + 404
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
     if (ids.length === 0) return { items: [] };
 
-    if (category === 'landings') return { items: await this.getLandingsFunnel(id, ids, since, until) };
-    if (category === 'pixels') return { items: await this.getEventColumnFunnel('pixelId', id, ids, since, until) };
-    if (category === 'campaigns') return { items: await this.getEventColumnFunnel('campaignId', id, ids, since, until) };
-    return { items: await this.getBuyersFunnel(ids, since, until) };
+    if (category === 'landings') return { items: await this.getLandingsFunnel(id, ids, since, until, buyerId) };
+    if (category === 'pixels') return { items: await this.getEventColumnFunnel('pixelId', id, ids, since, until, buyerId) };
+    if (category === 'campaigns') return { items: await this.getEventColumnFunnel('campaignId', id, ids, since, until, buyerId) };
+    return { items: await this.getBuyersFunnel(id, ids, since, until) };
   }
 
   // PageView/Lead лендинга живут только в TrackingEvent.payload (JSON, см. computeLandingStats
@@ -692,7 +803,12 @@ requests.post(
   // лендинга). Subscribe/Dialogue надёжнее брать из Client.landingId напрямую: TrackingEvent на
   // Subscribe несёт landingId только для PRIVATE_CHANNEL_REQUEST (см. RecordEventDto.landingId),
   // а Client.landingId проставляется единообразно для всех режимов канала.
-  private async getLandingsFunnel(projectId: string, ids: string[], since: Date, until: Date) {
+  private async getLandingsFunnel(projectId: string, ids: string[], since: Date, until: Date, buyerId?: string) {
+    // payload->>'landingId' — PageView/Lead ещё не несли buyerId колонкой (только payload) до
+    // 2026-08-03; теперь buyerId — реальная колонка TrackingEvent, фильтруем ей напрямую.
+    const eventBuyerSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    const clientBuyerSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    const purchaseBuyerSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
     const [eventRows, clientRows, purchaseRows] = await Promise.all([
       this.prisma.$queryRaw<{ id: string; eventName: string; count: number }[]>`
         SELECT payload->>'landingId' as id, "eventName", COUNT(*)::int as count
@@ -700,6 +816,7 @@ requests.post(
         WHERE "projectId" = ${projectId} AND "eventName" IN ('PageView', 'Lead')
           AND "createdAt" >= ${since} AND "createdAt" < ${until}
           AND payload->>'landingId' IN (${Prisma.join(ids)})
+          ${eventBuyerSql}
         GROUP BY payload->>'landingId', "eventName"
       `,
       this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
@@ -708,13 +825,20 @@ requests.post(
           COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
         FROM "Client"
         WHERE "landingId" IN (${Prisma.join(ids)}) AND "deletedAt" IS NULL
+          ${clientBuyerSql}
         GROUP BY "landingId"
       `,
+      // deletedAt IS NULL добавлен тем же баг-фиксом, что и getBuyersFunnel/getProjectStats ниже
+      // (2026-08-05, проект Isabella Ramirez: "выручка 99, топ лендингов суммарно 94") — покупка
+      // мягко удалённого (объединённого как дубликат) клиента продолжала считаться в выручке
+      // лендинга, хотя строкой выше clientRows уже фильтрует таких клиентов корректно.
       this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
         SELECT c."landingId" as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
         JOIN "Client" c ON c.id = p."clientId"
-        WHERE c."landingId" IN (${Prisma.join(ids)}) AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        WHERE c."landingId" IN (${Prisma.join(ids)}) AND c."deletedAt" IS NULL
+          AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+          ${purchaseBuyerSql}
         GROUP BY c."landingId"
       `,
     ]);
@@ -740,8 +864,17 @@ requests.post(
   // Subscribe/Dialogue — поэтому здесь вся воронка берётся из TrackingEvent единообразно, без
   // отдельного захода в Client. column — фиксированный union из вызывающего кода (не
   // пользовательский ввод), Prisma.raw безопасен.
-  private async getEventColumnFunnel(column: 'pixelId' | 'campaignId', projectId: string, ids: string[], since: Date, until: Date) {
+  private async getEventColumnFunnel(
+    column: 'pixelId' | 'campaignId',
+    projectId: string,
+    ids: string[],
+    since: Date,
+    until: Date,
+    buyerId?: string,
+  ) {
     const col = Prisma.raw(`"${column}"`);
+    const eventBuyerSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    const purchaseBuyerSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
     const [eventRows, purchaseRows] = await Promise.all([
       this.prisma.$queryRaw<{ id: string; eventName: string; count: number }[]>`
         SELECT ${col} as id, "eventName", COUNT(*)::int as count
@@ -749,13 +882,23 @@ requests.post(
         WHERE "projectId" = ${projectId} AND "eventName" IN ('PageView', 'Lead', 'Subscribe', 'Dialogue')
           AND "createdAt" >= ${since} AND "createdAt" < ${until}
           AND ${col} IN (${Prisma.join(ids)})
+          ${eventBuyerSql}
         GROUP BY ${col}, "eventName"
       `,
+      // projectId добавлен тем же баг-фиксом, что и getBuyersFunnel выше (2026-08-05) —
+      // campaignId — внешний ID рекламной площадки, не гарантированно уникален внутри одной
+      // компании между разными проектами (например, одна кампания может вести на несколько
+      // разных проектов/каналов) — без явного projectId сумма покупок молча растекалась бы по
+      // всем проектам компании с тем же campaignId, тот же класс бага, что уже был у buyers.
+      // deletedAt IS NULL добавлен отдельным баг-фиксом того же дня (проект Isabella Ramirez) —
+      // покупка мягко удалённого клиента иначе продолжает считаться здесь.
       this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
         SELECT c.${col} as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
         JOIN "Client" c ON c.id = p."clientId"
-        WHERE c.${col} IN (${Prisma.join(ids)}) AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        WHERE c.${col} IN (${Prisma.join(ids)}) AND c."projectId" = ${projectId} AND c."deletedAt" IS NULL
+          AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+          ${purchaseBuyerSql}
         GROUP BY c.${col}
       `,
     ]);
@@ -774,25 +917,41 @@ requests.post(
     }));
   }
 
-  // Без PageView/Lead — атрибуция баера (Client.buyerId, скрытый buyerRef-параметр ссылки)
-  // резолвится только к моменту создания строки Client (на подписке), у TrackingEvent вообще
-  // нет колонки buyerId (см. schema.prisma) — просмотры/клики баеру принципиально не приписать,
-  // это не пробел в реализации, а честная граница того, что вообще можно посчитать.
-  private async getBuyersFunnel(ids: string[], since: Date, until: Date) {
+  // Без PageView/Lead — эта воронка ("топ баеров" ПРОТИВ друг друга) осталась как была, только
+  // Subscribe/Dialogue/Purchase (Client.buyerId). Уточнение 2026-08-03: TrackingEvent.buyerId
+  // теперь реальная колонка (см. TrackingService.resolveAttribution) — просмотры/клики баеру
+  // технически ужЕ приписываются (см. getLandingsFunnel/getEventColumnFunnel/getAdBreakdown
+  // выше), это НЕ архитектурное ограничение. Здесь просто не добавлено намеренно — категория
+  // "buyers" ранжирует баеров друг против друга, добавление pageViews/leads сюда — отдельная
+  // задача, не запрошенная в рамках "только свои клиенты".
+  // Баг-репорт пользователя 2026-08-05 (расхождение выручки на странице проекта — разворот
+  // строки баера в "Топ баеров" показывал $701/11 покупок, реальная цифра по ЭТОМУ проекту —
+  // $129/1 покупка) — обе SQL ниже фильтровали только по buyerId, без projectId вообще: баер
+  // мог работать на несколько проектов компании, и обе агрегации молча суммировали ВСЕ его
+  // клиенты/покупки по компании целиком, а не только по проекту, со страницы которого сделан
+  // запрос. Тот же класс бага, что уже чинили для buyers/pixels в getLeaderboards выше
+  // (INNER-JOIN прятал нулевые строки) — здесь другой механизм (отсутствующий фильтр), тот же
+  // симптом "не то число там, где ждёшь".
+  private async getBuyersFunnel(projectId: string, ids: string[], since: Date, until: Date) {
     const [clientRows, purchaseRows] = await Promise.all([
       this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
         SELECT "buyerId" as id,
           COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
           COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
         FROM "Client"
-        WHERE "buyerId" IN (${Prisma.join(ids)}) AND "deletedAt" IS NULL
+        WHERE "buyerId" IN (${Prisma.join(ids)}) AND "projectId" = ${projectId} AND "deletedAt" IS NULL
         GROUP BY "buyerId"
       `,
+      // deletedAt IS NULL добавлен отдельным баг-фиксом того же дня (2026-08-05, проект Isabella
+      // Ramirez: "выручка 99, а в топ баеров сумма 94") — clientRows выше уже фильтрует мягко
+      // удалённых клиентов корректно, а эта, вторая, покупка-агрегация — нет, из-за чего покупка
+      // объединённого-как-дубликат клиента продолжала считаться в развороте баера.
       this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
         SELECT c."buyerId" as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
         JOIN "Client" c ON c.id = p."clientId"
-        WHERE c."buyerId" IN (${Prisma.join(ids)}) AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+        WHERE c."buyerId" IN (${Prisma.join(ids)}) AND c."projectId" = ${projectId} AND c."deletedAt" IS NULL
+          AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
         GROUP BY c."buyerId"
       `,
     ]);
@@ -910,5 +1069,66 @@ requests.post(
       : items;
 
     return { items: itemsWithCurl, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  // Управление операторами проекта (запрос пользователя 2026-07-31) — доступ Operator к
+  // проекту больше не назначается один раз при создании участника, а выдаётся/снимается
+  // отдельно, здесь. Живёт в ProjectsService, а не в TeamService, т.к. точка входа — карточка
+  // проекта, не /team; переиспользует те же team-role.util хелперы, что и /team.
+  private async assertCanManageProjectOperators(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole): Promise<void> {
+    await this.findOne(projectId, companyId); // 404, если проект не в этой компании
+    assertCanAccessTeamManagement(requesterRole);
+    await assertOperatorAdminScope(this.prisma, requesterId, requesterRole, UserRole.OPERATOR, [projectId]);
+  }
+
+  async listProjectOperators(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole) {
+    await this.assertCanManageProjectOperators(projectId, companyId, requesterId, requesterRole);
+    return this.prisma.user.findMany({
+      where: { companyId, deletedAt: null, role: UserRole.OPERATOR, projectAccess: { some: { projectId } } },
+      select: { id: true, firstName: true, lastName: true, email: true, isActive: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  // Company-wide, НЕ сужено до пересечения с проектами Оператор-админа (подтверждено
+  // AskUserQuestion 2026-07-31: иначе только что созданного оператора с 0 проектов ему было
+  // бы неоткуда взять) — только имя/email, без деталей доступа к другим проектам.
+  async listOperatorCandidates(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole) {
+    await this.assertCanManageProjectOperators(projectId, companyId, requesterId, requesterRole);
+    return this.prisma.user.findMany({
+      where: { companyId, deletedAt: null, role: UserRole.OPERATOR, projectAccess: { none: { projectId } } },
+      select: { id: true, firstName: true, lastName: true, email: true },
+      orderBy: { firstName: 'asc' },
+    });
+  }
+
+  async addOperatorToProject(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole, userId: string): Promise<void> {
+    await this.assertCanManageProjectOperators(projectId, companyId, requesterId, requesterRole);
+    const target = await this.prisma.user.findFirst({ where: { id: userId, companyId, deletedAt: null, role: UserRole.OPERATOR } });
+    if (!target) throw new BadRequestException('Пользователь не найден или не является оператором');
+
+    await this.prisma.projectAccess.upsert({
+      where: { userId_projectId: { userId, projectId } },
+      create: { userId, projectId },
+      update: {},
+    });
+    // Фиксированный дефолтный набор роли, без ручной настройки (запрос пользователя
+    // 2026-07-31: "убираем у операторов разрешения как они до этого давались") — не
+    // перезаписывает уже существующие права, если оператора когда-то уже добавляли сюда.
+    await this.permissionsService.seedDefaultsIfEmpty(userId, projectId, UserRole.OPERATOR);
+  }
+
+  async removeOperatorFromProject(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole, userId: string): Promise<void> {
+    await this.assertCanManageProjectOperators(projectId, companyId, requesterId, requesterRole);
+    const target = await this.prisma.user.findFirst({ where: { id: userId, companyId, deletedAt: null, role: UserRole.OPERATOR } });
+    if (!target) throw new BadRequestException('Пользователь не найден или не является оператором');
+
+    // Та же дисциплина очистки, что и в TeamService.update — не оставлять осиротевшие
+    // UserPermission-строки, иначе повторное добавление того же оператора на этот же проект
+    // тихо воскресит старый набор прав в обход seedDefaultsIfEmpty.
+    await this.prisma.$transaction([
+      this.prisma.projectAccess.deleteMany({ where: { userId, projectId } }),
+      this.prisma.userPermission.deleteMany({ where: { userId, projectId } }),
+    ]);
   }
 }

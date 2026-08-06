@@ -4,6 +4,7 @@ import { ModuleRef } from '@nestjs/core';
 import { Channel } from '@prisma/client';
 import { Queue } from 'bull';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkSubscriptionLimit } from '../../common/guards/subscription.util';
 import { renderMessagePlaceholders } from '../../common/message-placeholders.util';
 import { TelegramProvider } from './providers/telegram.provider';
 
@@ -130,12 +131,25 @@ export class BotScenarioEngineService {
   // строки Client вообще. messageMedia → mediaGroup — тот же перевод, что уже
   // PushesProcessor делает для Push.messageMedia (1 элемент = одиночное фото/видео/кружок,
   // 2-10 = альбом).
+  // checkSubscriptionLimit — та же проверка, что и у автоворонок выше (см. её комментарий) —
+  // сценарии могли рассылать в обход блокировки компании администратором платформы точно так
+  // же, найдено при том же аудите 2026-07-30. Channel не хранит companyId напрямую — идём через
+  // Project.
   private async sendStepMessage(
     tgUserId: string,
     clientId: string | null,
     channel: Channel,
     step: { messageText: string | null; messageMedia: unknown; buttons: unknown },
   ): Promise<void> {
+    const project = await this.prisma.project.findUnique({ where: { id: channel.projectId }, select: { company: true } });
+    if (project?.company) {
+      const { blocked, reason } = checkSubscriptionLimit(project.company, 'pushes');
+      if (blocked) {
+        this.logger.warn(`Scenario SEND_MESSAGE skipped for tgUserId ${tgUserId}: ${reason}`);
+        return;
+      }
+    }
+
     const media = step.messageMedia as { type: 'photo' | 'video' | 'video_note'; url: string }[] | null;
     const mediaGroup = media && media.length > 1 ? media.map((m) => ({ type: m.type as 'photo' | 'video', url: m.url })) : undefined;
 

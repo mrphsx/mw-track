@@ -14,8 +14,12 @@ class PushButtonDto {
 export class PushMediaDto {
   // video_note — кружок (запрос пользователя 2026-07-17) — уже полностью поддержан
   // на уровне отправки (TelegramProvider.sendMessage), не хватало только здесь и в UI.
-  @IsIn(['photo', 'video', 'video_note'])
-  type: 'photo' | 'video' | 'video_note';
+  // voice — голосовое (запрос пользователя 2026-08-05, редизайн загрузки медиа: единый
+  // контейнер загрузки сам определяет тип по файлу) — TelegramProvider.sendMessage уже умел
+  // 'voice' (использовалось сценариями), для рассылок не хватало только этого допустимого
+  // значения в DTO.
+  @IsIn(['photo', 'video', 'video_note', 'voice'])
+  type: 'photo' | 'video' | 'video_note' | 'voice';
 
   @IsString()
   url: string;

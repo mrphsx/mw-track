@@ -31,7 +31,7 @@ export class ProjectLandingsController {
     @Body() dto: CreateLandingFromTemplateDto,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
-    return this.landingsService.createFromTemplate(projectId, companyId, dto);
+    return this.landingsService.createFromTemplate(projectId, companyId, dto, user.userId);
   }
 
   @Post('custom')
@@ -44,6 +44,6 @@ export class ProjectLandingsController {
     @UploadedFile() file: Express.Multer.File,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
-    return this.landingsService.createCustom(projectId, companyId, dto, file);
+    return this.landingsService.createCustom(projectId, companyId, dto, file, user.userId);
   }
 }

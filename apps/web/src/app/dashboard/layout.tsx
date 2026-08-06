@@ -1,31 +1,42 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth.store';
 import { Skeleton } from '@/components/ui/skeleton';
+import { MarketingHome } from '@/components/marketing/marketing-home';
 
-// Общий owner-only гейт для дизайна Studio (изначально написан как гейт для всей галереи
-// прототипов, запрос 2026-07-28: "давай следующий дизайн, этот сохрани, пусть будет как
-// список" — галерея и остальные варианты (Control Room/Brutal/Ledger) удалены 2026-07-30 по
-// запросу пользователя, Studio остался единственным и живёт под /dashboard/studio/*, этот
-// гейт по-прежнему нужен именно ему). Сайдбар/шапка самого Studio — в его собственном layout
-// НИЖЕ этого, сюда он не заходит, здесь только доступ.
+// Общий гейт для дизайна Studio — раньше owner-only (галерея прототипов, запрос 2026-07-28:
+// "давай следующий дизайн, этот сохрани, пусть будет как список"; остальные варианты Control
+// Room/Brutal/Ledger удалены 2026-07-30). Ограничение по роли снято 2026-07-30 ("пора выносить
+// новый дизайн как основной... у всех показывался новый дизайн studio") — Studio теперь основной
+// дизайн для ЛЮБОЙ роли, не только владельца, здесь остаётся только обычная проверка авторизации
+// (как у классического (dashboard)/layout.tsx). Видимость отдельных пунктов навигации
+// (Команда — только Owner/Admin, остальные — по granular-правам) по-прежнему на уровне
+// StudioSidebar/самих страниц — это не менялось, тот же принцип, что и у классического Sidebar.
 export default function DashboardOwnerGateLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { accessToken, hydrated, user } = useAuthStore();
-  const isOwner = user?.role === 'OWNER' || user?.role === 'SUPER_ADMIN';
+  const pathname = usePathname();
+  const { accessToken, hydrated } = useAuthStore();
+  // Публичная домашняя страница (запрос пользователя 2026-08-04) — неавторизованный посетитель
+  // корня видит мини-презентацию с кнопками входа/регистрации вместо немедленного редиректа на
+  // /login; любой другой путь внутри Studio по-прежнему требует авторизации как раньше.
+  const isPublicRoot = pathname === '/';
 
   useEffect(() => {
-    if (!hydrated) return;
-    if (!accessToken) {
-      router.replace('/login');
-      return;
-    }
-    if (user && !isOwner) router.replace('/');
-  }, [hydrated, accessToken, user, isOwner, router]);
+    if (hydrated && !accessToken && !isPublicRoot) router.replace('/login');
+  }, [hydrated, accessToken, isPublicRoot, router]);
 
-  if (!hydrated || !accessToken || !isOwner) {
+  if (!hydrated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Skeleton className="w-32 h-8" />
+      </div>
+    );
+  }
+
+  if (!accessToken) {
+    if (isPublicRoot) return <MarketingHome />;
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Skeleton className="w-32 h-8" />

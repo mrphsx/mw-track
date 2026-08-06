@@ -14,6 +14,7 @@ const ROLE_LABELS: Record<string, string> = {
   ADMIN: 'Администратор',
   BUYER: 'Байер',
   OPERATOR: 'Оператор',
+  OPERATOR_ADMIN: 'Оператор-админ',
 };
 
 export default function AcceptInvitePage() {
@@ -54,9 +55,11 @@ export default function AcceptInvitePage() {
 
   if (isError || !invite) {
     return (
-      <div className="w-full max-w-md bg-card rounded-2xl shadow p-8 text-center">
-        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-3">MWTRACK</div>
-        <p className="text-muted-foreground">
+      <div className="text-center">
+        <span className="text-lg font-bold tracking-tight text-[#131A24] dark:text-white">
+          MW<span className="text-[#1F4E9C] dark:text-[#7BA9EE]">TRACK</span>
+        </span>
+        <p className="mt-4 text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
           Ссылка-приглашение недействительна, уже использована или истекла. Попросите отправителя
           выслать новую.
         </p>
@@ -65,14 +68,15 @@ export default function AcceptInvitePage() {
   }
 
   return (
-    <div className="w-full max-w-md bg-card rounded-2xl shadow p-8">
-      <div className="text-center mb-6">
-        <div className="text-3xl font-bold text-blue-600 dark:text-blue-400 mb-1">MWTRACK</div>
-        <p className="text-muted-foreground text-sm">
-          Вас пригласили в команду «{invite.companyName}» с ролью {ROLE_LABELS[invite.role] || invite.role}
-        </p>
-      </div>
-      <form onSubmit={handleSubmit} className="space-y-4">
+    <div>
+      <span className="lg:hidden text-lg font-bold tracking-tight text-[#131A24] dark:text-white">
+        MW<span className="text-[#1F4E9C] dark:text-[#7BA9EE]">TRACK</span>
+      </span>
+      <h1 className="mt-6 lg:mt-0 text-2xl font-bold tracking-tight text-[#131A24] dark:text-white">Присоединиться к команде</h1>
+      <p className="mt-1.5 text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
+        Вас пригласили в «{invite.companyName}» с ролью {ROLE_LABELS[invite.role] || invite.role}
+      </p>
+      <form onSubmit={handleSubmit} className="mt-8 space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="firstName">Имя</Label>
           <Input id="firstName" value={firstName} onChange={(e) => setFirstName(e.target.value)} required />
@@ -90,7 +94,7 @@ export default function AcceptInvitePage() {
           <Input id="password" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required />
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
-        <Button type="submit" disabled={loading} className="w-full">
+        <Button type="submit" disabled={loading} className="w-full bg-[#1F4E9C] hover:bg-[#1F4E9C]/90 dark:bg-[#7BA9EE] dark:text-[#0F1620]">
           {loading ? 'Присоединяемся...' : 'Присоединиться к команде'}
         </Button>
       </form>

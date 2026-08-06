@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "Permission" ADD VALUE 'CLIENTS_VIEW_CROSS_PROJECT';

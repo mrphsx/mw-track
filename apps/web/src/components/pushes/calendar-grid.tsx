@@ -43,7 +43,12 @@ export function CalendarGrid({ visibleMonth, onMonthChange, counts, selectedDate
   }, [visibleMonth]);
 
   return (
-    <div className={compact ? 'w-[19rem]' : 'w-full max-w-sm'}>
+    // compact — раньше фиксированная ширина 19rem (когда календарь стоял РЯДОМ со списком
+    // рассылок дня, см. schedule-calendar.tsx); после того как ScheduleCalendar стал верстать
+    // их друг под другом (запрос пользователя 2026-08-05: "растяни сам календарь на всю ширину
+    // своей карточки"), фиксированная ширина держала сетку узкой посреди широкой карточки —
+    // теперь w-full, растягивается на всю ширину родителя в обоих случаях.
+    <div className={compact ? 'w-full' : 'w-full max-w-sm'}>
       <div className="flex items-center justify-between mb-2">
         <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => onMonthChange(subMonths(visibleMonth, 1))}>
           <ChevronLeft className="w-4 h-4" />

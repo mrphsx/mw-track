@@ -13,16 +13,21 @@ import { Switch } from '@/components/ui/switch';
 import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
+  ClientsVisibilityScopeSection,
   CreatableRole,
+  CredRow,
   DomainsPermissionsSection,
+  LandingsVisibilityScopeSection,
   ProjectChecklist,
   ProjectPermissionsEditor,
   ProjectSummary,
   ROLE_HINTS,
   TeamMember,
   buildPermissionsState,
+  genPassword,
   usePermissionsForm,
 } from '../../shared';
+import { Input } from '@/components/ui/input';
 
 // Отдельная страница вместо диалога (запрос пользователя 2026-07-28). Нет отдельного
 // GET /team/:userId на бэкенде — участник ищется в уже загруженном списке GET /team (тот же
@@ -33,6 +38,7 @@ export default function EditTeamMemberPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const isOwner = currentUser?.role === 'OWNER' || currentUser?.role === 'SUPER_ADMIN';
+  const isOperatorAdmin = currentUser?.role === 'OPERATOR_ADMIN';
 
   const { data: members, isLoading } = useQuery({
     queryKey: ['team'],
@@ -47,40 +53,96 @@ export default function EditTeamMemberPage() {
   const [isActive, setIsActive] = useState(true);
   const [error, setError] = useState('');
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
-  const form = usePermissionsForm('BUYER');
+  const form = usePermissionsForm(isOperatorAdmin ? 'OPERATOR' : 'BUYER');
+
+  // Редактирование данных сотрудника (запрос пользователя 2026-08-03: "иметь возможность
+  // редактировать всю информацию... возможность менять пароль") — email/имя/фамилия
+  // предзаполняются из member, newPassword изначально пуст (пусто = не менять, см. комментарий
+  // в UpdateTeamMemberDto).
+  const [email, setEmail] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [savedPassword, setSavedPassword] = useState<string | null>(null);
 
   const member = members?.find((m) => m.id === userId) ?? null;
 
   if (member && loadedFor !== member.id) {
     setIsActive(member.isActive);
+    setEmail(member.email);
+    setFirstName(member.firstName);
+    setLastName(member.lastName || '');
+    setNewPassword('');
     const { projectPermissions, domainsPermissions } = buildPermissionsState(member.permissions);
     form.load(
       member.role === 'OWNER' ? 'ADMIN' : (member.role as CreatableRole),
       member.projectAccess.map((pa) => pa.project.id),
       projectPermissions,
       domainsPermissions,
+      member.landingsVisibilityScope,
+      member.clientsVisibilityScope,
     );
     setLoadedFor(member.id);
   }
 
   const update = useMutation({
-    mutationFn: () =>
-      api.patch(`/team/${userId}`, {
+    mutationFn: () => {
+      // Operator — проекты этой страницей больше не редактируются (запрос пользователя
+      // 2026-07-31: назначение — только через вкладку «Операторы» на /team или в настройках
+      // проекта). Если роль УЖЕ была Operator — не трогаем projectIds вообще (undefined,
+      // TeamService.update пропускает замену набора). Если роль ТОЛЬКО ЧТО меняется НА
+      // Operator (с Buyer/Оператор-админа) — явно шлём [] : иначе старые ProjectAccess/
+      // UserPermission с правами прежней роли молча остались бы висеть на новом Operator-е.
+      const justBecameOperator = form.role === 'OPERATOR' && member?.role !== 'OPERATOR';
+      const projectIds =
+        form.role === 'ADMIN' ? undefined : form.role === 'OPERATOR' ? (justBecameOperator ? [] : undefined) : form.projectIds;
+
+      return api.patch(`/team/${userId}`, {
         role: form.role,
         isActive,
-        projectIds: form.role === 'ADMIN' ? undefined : form.projectIds,
+        projectIds,
         projectPermissions:
-          form.role === 'ADMIN'
+          form.role === 'ADMIN' || form.role === 'OPERATOR'
             ? undefined
             : form.projectIds.map((projectId) => ({ projectId, permissions: form.projectPermissions[projectId] ?? [] })),
-        domainsPermissions: form.role === 'ADMIN' ? undefined : form.domainsPermissions,
-      }),
+        domainsPermissions: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.domainsPermissions,
+        landingsVisibilityScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsVisibilityScope,
+        clientsVisibilityScope: form.role === 'BUYER' ? form.clientsVisibilityScope : undefined,
+        email,
+        firstName,
+        lastName: lastName || undefined,
+        password: newPassword || undefined,
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team'] });
-      router.push('/team');
+      // Пароль хешируется необратимо — если он был сменён, показываем его один раз (тот же
+      // UX, что и на team/new) вместо немедленного перехода на /team.
+      if (newPassword) {
+        setSavedPassword(newPassword);
+      } else {
+        router.push('/team');
+      }
     },
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось сохранить изменения'),
   });
+
+  if (savedPassword) {
+    return (
+      <div className="max-w-md space-y-4">
+        <h1 className="text-2xl font-bold">Пароль изменён</h1>
+        <Card>
+          <CardContent className="pt-6 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Пароль показывается один раз — передайте его участнику лично, он больше нигде не сохранён.
+            </p>
+            <CredRow label="Новый пароль" value={savedPassword} />
+            <Button onClick={() => router.push('/team')}>К списку команды</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Загрузка...</p>;
@@ -97,7 +159,7 @@ export default function EditTeamMemberPage() {
     );
   }
 
-  const needsProjects = form.role !== 'ADMIN';
+  const needsProjects = form.role !== 'ADMIN' && form.role !== 'OPERATOR';
   const isOwnerRow = member.role === 'OWNER';
 
   return (
@@ -117,6 +179,35 @@ export default function EditTeamMemberPage() {
         <>
           <Card>
             <CardContent className="pt-6 space-y-3 max-w-xl">
+              <h2 className="text-sm font-semibold">Данные сотрудника</h2>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="tm-first">Имя</Label>
+                  <Input id="tm-first" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="tm-last">Фамилия</Label>
+                  <Input id="tm-last" value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tm-email">Email</Label>
+                <Input id="tm-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tm-pass">Новый пароль (пусто — не менять)</Label>
+                <div className="flex gap-2">
+                  <Input id="tm-pass" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className="font-mono" />
+                  <Button type="button" variant="outline" onClick={() => setNewPassword(genPassword())}>
+                    Сгенерировать
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="pt-6 space-y-3 max-w-xl">
               <div className="space-y-1.5">
                 <Label>Роль</Label>
                 <Select value={form.role} onValueChange={(v) => v && form.setRole(v as CreatableRole)}>
@@ -124,12 +215,25 @@ export default function EditTeamMemberPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
-                    <SelectItem value="BUYER">Байер</SelectItem>
-                    <SelectItem value="OPERATOR">Оператор</SelectItem>
+                    {isOperatorAdmin ? (
+                      <SelectItem value="OPERATOR">Оператор</SelectItem>
+                    ) : (
+                      <>
+                        {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
+                        <SelectItem value="BUYER">Байер</SelectItem>
+                        <SelectItem value="OPERATOR">Оператор</SelectItem>
+                        <SelectItem value="OPERATOR_ADMIN">Оператор-админ</SelectItem>
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">{ROLE_HINTS[form.role]}</p>
+                {form.role === 'OPERATOR' && (
+                  <p className="text-xs text-muted-foreground border rounded-md p-2.5 bg-muted/40">
+                    Проекты этого оператора назначаются на вкладке «Операторы» на странице
+                    «Команда» или в настройках проекта — не здесь.
+                  </p>
+                )}
               </div>
               <div className="flex items-center justify-between border rounded-md px-3 py-2">
                 <Label htmlFor="tm-active">Активен</Label>
@@ -166,6 +270,22 @@ export default function EditTeamMemberPage() {
                   <DomainsPermissionsSection selected={form.domainsPermissions} onToggle={form.toggleDomainsPermission} />
                 </CardContent>
               </Card>
+
+              <Card>
+                <CardContent className="pt-6 space-y-2">
+                  <h2 className="text-sm font-semibold">Видимость лендингов</h2>
+                  <LandingsVisibilityScopeSection value={form.landingsVisibilityScope} onChange={form.setLandingsVisibilityScope} />
+                </CardContent>
+              </Card>
+
+              {form.role === 'BUYER' && (
+                <Card>
+                  <CardContent className="pt-6 space-y-2">
+                    <h2 className="text-sm font-semibold">Видимость клиентов и статистики</h2>
+                    <ClientsVisibilityScopeSection value={form.clientsVisibilityScope} onChange={form.setClientsVisibilityScope} />
+                  </CardContent>
+                </Card>
+              )}
             </>
           )}
 

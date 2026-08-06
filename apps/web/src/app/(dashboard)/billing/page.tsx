@@ -19,7 +19,7 @@ interface PlanConfig {
   durationDays: number;
   maxProjects: number;
   maxClients: number;
-  maxPushesPerMonth: number;
+  maxPushesPerDay: number;
 }
 
 interface CompanyUsage {
@@ -30,8 +30,8 @@ interface CompanyUsage {
   currentProjects: number;
   maxClients: number;
   currentClients: number;
-  maxPushesPerMonth: number;
-  pushesThisMonth: number;
+  maxPushesPerDay: number;
+  pushesToday: number;
 }
 
 interface Invoice {
@@ -100,9 +100,13 @@ export default function BillingPage() {
     queryFn: async () => (await api.get<BalanceTransaction[]>('/billing/transactions')).data,
   });
 
-  const createTopUp = useMutation({
+  // NOWPayments подключён 2026-07-30 (реальные ключи в .env.prod) — единственный видимый способ
+  // оплаты сейчас (запрос пользователя: "убери другие способы оплаты кроме nowpayments, остальные
+  // пока спрячь"). Self-hosted (`POST /billing/topup`) и Heleket остаются рабочими/существующими
+  // на бэкенде — просто без кнопки здесь.
+  const createNowPaymentsTopUp = useMutation({
     mutationFn: async ({ amount, network }: { amount: number; network: PaymentNetwork }) =>
-      (await api.post('/billing/topup', { amount, network })).data as Invoice,
+      (await api.post('/billing/topup/nowpayments', { amount, network })).data as Invoice,
     onSuccess: (invoice) => {
       setActiveInvoiceId(invoice.id);
       queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
@@ -157,13 +161,10 @@ export default function BillingPage() {
               </SelectContent>
             </Select>
             <Button
-              disabled={!topUpAmount || Number(topUpAmount) < 10 || createTopUp.isPending}
-              onClick={() => createTopUp.mutate({ amount: Number(topUpAmount), network: topUpNetwork })}
+              disabled={!topUpAmount || Number(topUpAmount) < 10 || createNowPaymentsTopUp.isPending}
+              onClick={() => createNowPaymentsTopUp.mutate({ amount: Number(topUpAmount), network: topUpNetwork })}
             >
-              {createTopUp.isPending ? 'Создаём счёт...' : 'Пополнить'}
-            </Button>
-            <Button variant="outline" disabled title="Оплата через Heleket (карты, ещё больше криптовалют) — готовится, скоро будет доступна">
-              Heleket (скоро)
+              {createNowPaymentsTopUp.isPending ? 'Создаём счёт...' : 'Пополнить через NOWPayments'}
             </Button>
           </div>
         </CardContent>
@@ -184,7 +185,7 @@ export default function BillingPage() {
           <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <UsageBar label="Проекты" current={usage.currentProjects} max={usage.maxProjects} />
             <UsageBar label="Клиенты" current={usage.currentClients} max={usage.maxClients} />
-            <UsageBar label="Рассылок в месяц" current={usage.pushesThisMonth} max={usage.maxPushesPerMonth} />
+            <UsageBar label="Рассылок в день" current={usage.pushesToday} max={usage.maxPushesPerDay} />
           </CardContent>
         </Card>
       )}
@@ -202,7 +203,7 @@ export default function BillingPage() {
                 <ul className="text-sm text-muted-foreground space-y-1">
                   <li>{config?.maxProjects} проектов</li>
                   <li>{config?.maxClients.toLocaleString()} клиентов</li>
-                  <li>{config?.maxPushesPerMonth} рассылок/мес</li>
+                  <li>{config?.maxPushesPerDay} рассылок/день</li>
                 </ul>
                 <Button
                   className="w-full"

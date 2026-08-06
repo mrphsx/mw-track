@@ -87,6 +87,27 @@ interface ActionLogRow {
   admin: { firstName: string; lastName: string | null };
 }
 
+const ACTION_LABEL: Record<string, string> = {
+  SUBSCRIPTION_CHANGE: 'Смена подписки',
+  BALANCE_TOPUP: 'Пополнение баланса',
+  RESTRICTIONS_CHANGE: 'Смена ограничений',
+  DOMAIN_FORCE_DELETE: 'Принудительное удаление домена',
+  COMPANY_VIEWED: 'Просмотр компании',
+};
+
+interface InvoiceRow {
+  id: string;
+  amount: string;
+  currency: string;
+  status: 'PENDING' | 'PAID' | 'EXPIRED' | 'CANCELLED';
+  provider: string;
+  network: string | null;
+  txHash: string | null;
+  paidAmount: string | null;
+  paidAt: string | null;
+  createdAt: string;
+}
+
 // Дрилл-даун по одной компании (Фаза 4.3B, запрос пользователя 2026-07-19) — все данные читаются
 // через новый /admin/companies/:id/* API (бэкенд оборачивает существующие сервисы через
 // runAsCompany, см. память). Клиенты внутри проекта — отдельная страница
@@ -139,6 +160,14 @@ export default function CompanyDetailPage() {
     queryFn: async () => (await api.get<{ items: ActionLogRow[] }>('/admin/actions', { params: { companyId: id } })).data,
   });
 
+  // Реальная история крипто-платежей (запрос пользователя 2026-07-30, аудит панели
+  // администратора) — раньше был виден только материализованный Company.balance, не то, откуда
+  // он взялся (Company.balance сам по себе не показывает историю — считается инкрементами).
+  const { data: invoices } = useQuery({
+    queryKey: ['admin-company-invoices', id],
+    queryFn: async () => (await api.get<InvoiceRow[]>(`/admin/companies/${id}/invoices`)).data,
+  });
+
   return (
     <div className="max-w-6xl space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -186,6 +215,7 @@ export default function CompanyDetailPage() {
           <TabsTrigger value="landings">Лендинги</TabsTrigger>
           <TabsTrigger value="domains">Домены</TabsTrigger>
           <TabsTrigger value="team">Команда</TabsTrigger>
+          <TabsTrigger value="invoices">Инвойсы</TabsTrigger>
           <TabsTrigger value="errors">Ошибки</TabsTrigger>
           <TabsTrigger value="actions">Действия</TabsTrigger>
         </TabsList>
@@ -331,6 +361,49 @@ export default function CompanyDetailPage() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="invoices">
+          <Card className="mt-4">
+            <CardContent className="p-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Время</TableHead>
+                    <TableHead>Сумма</TableHead>
+                    <TableHead>Статус</TableHead>
+                    <TableHead>Провайдер</TableHead>
+                    <TableHead>Сеть</TableHead>
+                    <TableHead>Tx</TableHead>
+                    <TableHead>Оплачен</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {invoices?.map((inv) => (
+                    <TableRow key={inv.id}>
+                      <TableCell className="text-xs text-gray-500">{format(new Date(inv.createdAt), 'd MMM yyyy HH:mm', { locale: ru })}</TableCell>
+                      <TableCell className="text-xs font-medium">
+                        {inv.amount} {inv.currency}
+                        {inv.paidAmount && inv.paidAmount !== inv.amount && <span className="text-gray-400"> (получено {inv.paidAmount})</span>}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={inv.status === 'PAID' ? 'outline' : inv.status === 'PENDING' ? 'secondary' : 'destructive'}>
+                          {inv.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-gray-500">{inv.provider}</TableCell>
+                      <TableCell className="text-xs text-gray-500">{inv.network ?? '—'}</TableCell>
+                      <TableCell className="max-w-[160px] truncate text-xs text-gray-400">{inv.txHash ?? '—'}</TableCell>
+                      <TableCell className="text-xs text-gray-500">
+                        {inv.paidAt ? format(new Date(inv.paidAt), 'd MMM yyyy HH:mm', { locale: ru }) : '—'}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {invoices && invoices.length === 0 && <p className="p-4 text-sm text-gray-400">Инвойсов нет</p>}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="errors">
           <Card className="mt-4">
             <CardContent className="p-0">
@@ -381,7 +454,7 @@ export default function CompanyDetailPage() {
                       <TableCell className="text-xs">
                         {a.admin.firstName} {a.admin.lastName ?? ''}
                       </TableCell>
-                      <TableCell className="text-xs">{a.action}</TableCell>
+                      <TableCell className="text-xs">{ACTION_LABEL[a.action] ?? a.action}</TableCell>
                       <TableCell className="text-xs text-gray-500">{JSON.stringify(a.previousValue)}</TableCell>
                       <TableCell className="text-xs text-gray-500">{JSON.stringify(a.newValue)}</TableCell>
                     </TableRow>

@@ -153,7 +153,7 @@ function ActiveGroupStats({
 
   const stopTest = useMutation({
     mutationFn: () => api.delete(`/ab-test-groups/${groupId}`),
-    onSuccess: () => router.push(`/dashboard/studio/projects/${projectId}/landings/history`),
+    onSuccess: () => router.push(`/projects/${projectId}/landings/history`),
   });
 
   const attachment = findGroupAttachment(domains, groupId);
@@ -165,7 +165,7 @@ function ActiveGroupStats({
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/landings`}
+          href={`/projects/${projectId}/landings`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Все лендинги
@@ -262,7 +262,7 @@ function EndedGroupStats({ stats, projectId }: { stats: GroupStatsEnded; project
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/landings/history`}
+          href={`/projects/${projectId}/landings/history`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> История тестов

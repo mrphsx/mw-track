@@ -18,6 +18,7 @@ import { ClientsModule } from './modules/clients/clients.module';
 import { DomainsModule } from './modules/domains/domains.module';
 import { HealthModule } from './modules/health/health.module';
 import { LandingsModule } from './modules/landings/landings.module';
+import { PersonalBroadcastsModule } from './modules/personal-broadcasts/personal-broadcasts.module';
 import { PixelsModule } from './modules/pixels/pixels.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { PushesModule } from './modules/pushes/pushes.module';
@@ -52,6 +53,7 @@ import { RedisModule } from './redis/redis.module';
     TrackingModule,
     AutomationsModule,
     PushesModule,
+    PersonalBroadcastsModule,
     StoriesModule,
     LandingsModule,
     DomainsModule,

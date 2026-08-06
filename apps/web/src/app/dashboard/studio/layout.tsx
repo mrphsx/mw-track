@@ -7,7 +7,6 @@ import { Bell, Moon, Sun, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { StudioSidebar } from '@/components/layout/studio-sidebar';
-import { DesignModeToggle } from '@/components/layout/design-mode-toggle';
 import { Switch } from '@/components/ui/switch';
 import {
   DropdownMenu,
@@ -30,15 +29,16 @@ interface ProjectSummary {
   channel: { isActive: boolean } | null;
 }
 
-// Шелл дизайна "Studio" — единственный оставшийся вариант нового дизайна (запрос пользователя
-// 2026-07-30: "удали полностью страницу дизайнов всех остальных" — галерея /dashboard и
-// остальные варианты (Control Room/Brutal/Ledger) удалены целиком). Доступ проверяет общий
-// apps/web/src/app/dashboard/layout.tsx выше по дереву — здесь только сайдбар/шапка этого
-// дизайна, в тёплой палитре (см. studio-sidebar.tsx).
+// Шелл дизайна "Studio" — единственный оставшийся вариант нового дизайна и, с 2026-07-30,
+// основной дизайн приложения для всех ролей на основном домене (mw-track.com); классика
+// переехала на old.mw-track.com отдельным доменом (см. apps/web/src/middleware.ts). Доступ
+// проверяет общий apps/web/src/app/dashboard/layout.tsx выше по дереву (теперь просто
+// авторизация, без ограничения по роли) — здесь только сайдбар/шапка этого дизайна, в тёплой
+// палитре (см. studio-sidebar.tsx).
 //
-// Переключатель "← Все варианты" (вёл на удалённую галерею) заменён на общий `DesignModeToggle`
-// (запрос того же дня: "добавь переключатель в header, где можно будет в один клик переключать
-// дизайн") — тот же компонент используется и в классической шапке, см. его комментарий.
+// Переключатель дизайнов в шапке (DesignModeToggle) убран тем же днём ("из хэдера убери уже
+// переключатель дизайнов") — теперь смена дизайна означает переход на другой домен, ссылка на
+// него осталась только в сайдбаре (StudioSidebar, "Старый дизайн").
 //
 // Правки раунда 2026-07-29 ("перенеси смену темы наверх и сделай как свитч", "добавь красиво
 // баланс так же сверху, иконку оповещений и подписку тоже"):
@@ -84,31 +84,58 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <DesignModeToggle mode="studio" mutedClassName="text-[#5F6B7A] dark:text-[#92A0AF]" />
-            {user?.company && (
-              <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-sm">
-                <Wallet className="w-3.5 h-3.5 text-[#1F7A6C] dark:text-[#6FCBBA] shrink-0" />
-                <span className="font-mono tabular-nums font-semibold text-[#131A24] dark:text-[#E9EDF3]">
-                  ${Number(user.company.balance).toFixed(2)}
-                </span>
-              </div>
-            )}
+            {/* Объединено в одну пилюлю (запрос пользователя 2026-07-30: "таблетка плана меньше
+                чем остальные, лучше добавь все в одну таблету, план, баланс, уведомления") —
+                раньше баланс/план/колокол были тремя визуально разными элементами (разный
+                размер текста, разная форма — прямоугольная пилюля vs круглая кнопка), теперь
+                один общий контур с внутренними разделителями, общий text-sm/паддинг на все три
+                секции. На узких экранах вся пилюля скрыта целиком (не по частям — раздельное
+                скрытие внутри одного divide-x выглядело бы криво), вместо неё отдельная голая
+                кнопка-колокол, чтобы уведомления оставались доступны и на мобильном. */}
+            <div className="hidden sm:flex items-center rounded-full bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-sm overflow-hidden">
+              {user?.company && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5">
+                  <Wallet className="w-3.5 h-3.5 text-[#1F7A6C] dark:text-[#6FCBBA] shrink-0" />
+                  <span className="font-mono tabular-nums font-semibold text-[#131A24] dark:text-[#E9EDF3]">
+                    ${Number(user.company.balance).toFixed(2)}
+                  </span>
+                </div>
+              )}
 
-            {user?.company?.plan && (
-              <span
-                className={`hidden md:inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-full shadow-sm ${
-                  expiringSoon
-                    ? 'bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400'
-                    : 'bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 text-[#5F6B7A] dark:text-[#92A0AF]'
-                }`}
-              >
-                {PLAN_LABELS[user.company.plan] || user.company.plan}
-                {daysLeft !== null && <span className="opacity-70">· {daysLeft} дн.</span>}
-              </span>
-            )}
+              {user?.company?.plan && (
+                <div
+                  className={`flex items-center gap-1.5 px-3 py-1.5 font-medium border-l border-[#DCE1E8] dark:border-white/10 ${
+                    expiringSoon ? 'text-red-600 dark:text-red-400' : 'text-[#5F6B7A] dark:text-[#92A0AF]'
+                  }`}
+                >
+                  {PLAN_LABELS[user.company.plan] || user.company.plan}
+                  {daysLeft !== null && <span className="opacity-70">· {daysLeft} дн.</span>}
+                </div>
+              )}
 
+              <DropdownMenu>
+                <DropdownMenuTrigger className="relative flex items-center px-3 py-1.5 border-l border-[#DCE1E8] dark:border-white/10 text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
+                  <Bell className="w-4 h-4" />
+                  {notifications.length > 0 && (
+                    <span className="absolute top-1 right-1.5 w-3.5 h-3.5 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center">
+                      {notifications.length}
+                    </span>
+                  )}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  {notifications.length === 0 && <div className="px-2 py-1.5 text-sm text-muted-foreground">Всё в порядке</div>}
+                  {notifications.map((n, i) => (
+                    <DropdownMenuItem key={i} className="text-sm">
+                      {n}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
+            {/* Мобильный fallback — та же кнопка-колокол, только не в пилюле, скрыта от sm и выше. */}
             <DropdownMenu>
-              <DropdownMenuTrigger className="relative w-9 h-9 flex items-center justify-center rounded-full bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors">
+              <DropdownMenuTrigger className="relative sm:hidden w-9 h-9 flex items-center justify-center rounded-full bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors">
                 <Bell className="w-4 h-4" />
                 {notifications.length > 0 && (
                   <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">

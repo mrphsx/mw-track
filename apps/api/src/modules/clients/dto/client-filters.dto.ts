@@ -120,13 +120,19 @@ export class ClientFiltersDto {
   // Фильтры по рекламным данным (запрос пользователя 2026-07-24) — те же поля, что теперь
   // показываются в карточке клиента (ClientsService.getClientDetail). buyerId === 'none' —
   // отдельный смысл, "без баера" (та же метка, что уже показывает /team, только как фильтр).
+  // Мульти-выбор (запрос пользователя 2026-08-03: "нету мультивыбора в фильтрах") — тот же
+  // toArray-приём, что уже применён к channelType/country выше.
   @IsOptional()
-  @IsString()
-  buyerId?: string;
+  @Transform(toArray)
+  @IsArray()
+  @IsString({ each: true })
+  buyerId?: string[];
 
   @IsOptional()
-  @IsString()
-  pixelId?: string;
+  @Transform(toArray)
+  @IsArray()
+  @IsString({ each: true })
+  pixelId?: string[];
 
   @IsOptional()
   @IsString()

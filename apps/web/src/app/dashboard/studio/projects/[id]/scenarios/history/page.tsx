@@ -20,8 +20,8 @@ function groupTitle(g: ScenarioAbTestGroupListItem): string {
 }
 
 // Studio-версия истории A/B-тестов сценариев (запрос пользователя 2026-07-30: "добей остальные
-// оставшиеся страницы") — логика 1:1 с классической. Ссылка "К сценарию →" по-прежнему ведёт на
-// классический редактор сценария — своей Studio-версии у него пока нет.
+// оставшиеся страницы") — логика 1:1 с классической. Ссылка "К сценарию →" ведёт на Studio-
+// редактор сценария (тот появился позже в тот же день — комментарий выше устарел).
 export default function StudioScenarioAbTestHistoryPage() {
   const { id: projectId } = useParams<{ id: string }>();
 
@@ -43,7 +43,7 @@ export default function StudioScenarioAbTestHistoryPage() {
     <div className="space-y-6">
       <div>
         <Link
-          href={`/dashboard/studio/projects/${projectId}/scenarios`}
+          href={`/projects/${projectId}/scenarios`}
           className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1 mb-2"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Сценарии
@@ -73,7 +73,7 @@ export default function StudioScenarioAbTestHistoryPage() {
                 </div>
                 {g.primaryScenarioId && (
                   <Link
-                    href={`/dashboard/studio/projects/${projectId}/scenarios/${g.primaryScenarioId}`}
+                    href={`/projects/${projectId}/scenarios/${g.primaryScenarioId}`}
                     className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:underline shrink-0"
                   >
                     К сценарию →

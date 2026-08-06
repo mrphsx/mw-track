@@ -247,7 +247,7 @@ export default function StudioLandingsPage() {
             <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">A/B/n-тесты</h2>
             {hasEndedAbTestGroups && (
               <Link
-                href={`/dashboard/studio/projects/${projectId}/landings/history`}
+                href={`/projects/${projectId}/landings/history`}
                 className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors inline-flex items-center gap-1.5"
               >
                 <History className="w-3.5 h-3.5" /> История тестов
@@ -261,7 +261,7 @@ export default function StudioLandingsPage() {
               return (
                 <div
                   key={g.id}
-                  onClick={() => router.push(`/dashboard/studio/projects/${projectId}/landings/groups/${g.id}`)}
+                  onClick={() => router.push(`/projects/${projectId}/landings/groups/${g.id}`)}
                   className={`${STUDIO_CARD} p-4 flex items-center justify-between gap-4 flex-wrap cursor-pointer hover:opacity-90 transition-opacity`}
                 >
                   <div className="min-w-0 space-y-1">
@@ -353,7 +353,8 @@ export default function StudioLandingsPage() {
               selected={selectedIds.has(l.id)}
               onToggleSelect={() => toggleSelected(l.id)}
               abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
-              statsHrefOverride={`/dashboard/studio/projects/${projectId}/landings/${l.id}`}
+              statsHrefOverride={`/projects/${projectId}/landings/${l.id}`}
+              containerClassName={STUDIO_CARD}
             />
           ))}
         </div>

@@ -4,6 +4,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/store/auth.store';
 import { Project, readTabFromSearchParams, SettingsTab } from '../../../../../(dashboard)/projects/[id]/settings/tabs';
 import {
   BotSettingsTab,
@@ -12,6 +13,7 @@ import {
   GeneralTab,
   ChannelsTab,
   IntegrationTab,
+  OperatorsTab,
   PersonalAccountConnect,
   PixelLogsTab,
   PixelsTab,
@@ -33,6 +35,13 @@ export default function StudioProjectSettingsPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentUser = useAuthStore((s) => s.user);
+  // Та же видимость, что и у пункта "Команда" в сайдбаре (запрос пользователя 2026-07-31).
+  const canManageOperators =
+    currentUser?.role === 'OWNER' ||
+    currentUser?.role === 'ADMIN' ||
+    currentUser?.role === 'SUPER_ADMIN' ||
+    currentUser?.role === 'OPERATOR_ADMIN';
 
   const [tab, setTab] = useState<SettingsTab>(() => readTabFromSearchParams(searchParams));
 
@@ -61,6 +70,7 @@ export default function StudioProjectSettingsPage() {
     { value: 'pixel-logs', label: 'Логи' },
     { value: 'events', label: 'События' },
     { value: 'integration', label: 'Интеграция' },
+    { value: 'operators', label: 'Операторы', hidden: !canManageOperators },
     { value: 'danger', label: 'Опасная зона' },
   ];
 
@@ -98,7 +108,8 @@ export default function StudioProjectSettingsPage() {
         {tab === 'pixel-logs' && <PixelLogsTab projectId={id} pixels={project.pixels} />}
         {tab === 'events' && <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} />}
         {tab === 'integration' && <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} />}
-        {tab === 'danger' && <DangerTab projectId={id} onArchived={() => router.push('/dashboard/studio')} />}
+        {tab === 'operators' && canManageOperators && <OperatorsTab projectId={id} />}
+        {tab === 'danger' && <DangerTab projectId={id} onArchived={() => router.push('/')} />}
       </div>
     </div>
   );

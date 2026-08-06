@@ -3,11 +3,12 @@
 import { useState } from 'react';
 import { format } from 'date-fns';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { MessageCircle, Star } from 'lucide-react';
+import { Layers, MessageCircle, Star } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ClientAvatar } from '@/components/clients/client-avatar';
 
 export interface ClientRow {
@@ -45,6 +46,14 @@ export interface ClientRow {
   // клиента, который реально не писал) — показывается во всплывающей подсказке над той же
   // галочкой, отдельного UI не потребовалось.
   dialogueSource: 'PERSONAL_ACCOUNT' | 'BOT_DIRECT' | 'MANAGER_CONFIRM' | 'CRM_BUTTON' | null;
+  // "Ещё в проектах" (запрос пользователя 2026-07-30) — есть ли этот клиент (по tgUserId) в
+  // других проектах компании. visible:true (право CLIENTS_VIEW_CROSS_PROJECT на ЭТОМ проекте,
+  // или elevated-роль) — точный список каналов/дат/диалогов; visible:false — только сам факт +
+  // было ли где-то диалог и когда, без имён проектов. null — пересечений нет вообще.
+  crossProjectOverlap:
+    | { visible: true; projects: { projectId: string; projectName: string; joinedAt: string | null; hasDialogue: boolean; dialogueAt: string | null }[] }
+    | { visible: false; hasDialogue: boolean; dialogueAt: string | null }
+    | null;
 }
 
 export const DIALOGUE_SOURCE_LABEL: Record<NonNullable<ClientRow['dialogueSource']>, string> = {
@@ -101,7 +110,7 @@ export function formatSecondsDuration(totalSeconds: number): string {
 // ведётся вообще вне Telegram-бота этого проекта. Бэкенд сам решает "уже был диалог или нет" —
 // повторно нажать без вреда, событие в Facebook/TikTok уйдёт только один раз (см.
 // ClientsService.recordManualDialogue/applyDialogueUpdate).
-function RegisterDialogueButton({ projectId, clientId }: { projectId: string; clientId: string }) {
+export function RegisterDialogueButton({ projectId, clientId }: { projectId: string; clientId: string }) {
   const queryClient = useQueryClient();
   const [done, setDone] = useState(false);
 
@@ -137,6 +146,49 @@ function RegisterDialogueButton({ projectId, clientId }: { projectId: string; cl
   );
 }
 
+// Бейдж "ещё в проектах" (запрос пользователя 2026-07-30) — переиспользуется и Studio-версией
+// таблицы. Иконка Layers — та же, что уже используется для "Пересечение аудиторий" в сайдбаре,
+// сознательно тот же визуальный язык для одного и того же понятия.
+export function CrossProjectOverlapBadge({ overlap }: { overlap: ClientRow['crossProjectOverlap'] }) {
+  if (!overlap) return null;
+
+  if (overlap.visible) {
+    return (
+      <Tooltip>
+        <TooltipTrigger>
+          <Badge variant="outline" className="gap-1 cursor-default">
+            <Layers className="w-3 h-3" /> {overlap.projects.length}
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent className="space-y-1">
+          {overlap.projects.map((p) => (
+            <div key={p.projectId} className="text-xs">
+              <span className="font-medium">{p.projectName}</span>
+              {p.joinedAt && <> — вступил {format(new Date(p.joinedAt), 'd MMM yyyy')}</>}
+              {' · '}
+              {p.hasDialogue ? `диалог${p.dialogueAt ? ` (${format(new Date(p.dialogueAt), 'd MMM yyyy')})` : ''}` : 'диалога нет'}
+            </div>
+          ))}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger>
+        <Badge variant="outline" className="gap-1 cursor-default">
+          <Layers className="w-3 h-3" />
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="text-xs">
+        Есть в другом нашем проекте
+        {overlap.hasDialogue ? ` — там был диалог${overlap.dialogueAt ? ` (${format(new Date(overlap.dialogueAt), 'd MMM yyyy')})` : ''}` : ', диалога там нет'}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps) {
   return (
     <Table>
@@ -152,6 +204,7 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
           <TableHead>Подписан</TableHead>
           <TableHead>Отписан</TableHead>
           <TableHead>Длительность</TableHead>
+          <TableHead>Ещё в проектах</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -268,6 +321,9 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
               ) : (
                 '—'
               )}
+            </TableCell>
+            <TableCell onClick={(e) => e.stopPropagation()}>
+              <CrossProjectOverlapBadge overlap={client.crossProjectOverlap} />
             </TableCell>
           </TableRow>
         ))}

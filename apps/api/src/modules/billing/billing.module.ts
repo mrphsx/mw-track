@@ -5,12 +5,13 @@ import { BillingService } from './billing.service';
 import { BillingCron } from './billing.cron';
 import { CryptoPaymentService } from './crypto-payment.service';
 import { HeleketService } from './heleket.service';
+import { NowPaymentsService } from './nowpayments.service';
 import { PaymentMonitoringProcessor } from './payment-monitoring.processor';
 
 @Module({
   imports: [BullModule.registerQueue({ name: 'payment-monitoring' })],
   controllers: [BillingController],
-  providers: [BillingService, CryptoPaymentService, HeleketService, PaymentMonitoringProcessor, BillingCron],
+  providers: [BillingService, CryptoPaymentService, HeleketService, NowPaymentsService, PaymentMonitoringProcessor, BillingCron],
   exports: [BillingService],
 })
 export class BillingModule {}

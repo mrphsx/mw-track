@@ -7,6 +7,8 @@ import { SubscriptionLimit } from '../../common/decorators/subscription-limit.de
 import { SubscriptionGuard } from '../../common/guards/subscription.guard';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { resolveScopedBuyerId } from '../../common/buyer-scope.util';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { LeaderboardFunnelQueryDto } from './dto/leaderboard-funnel-query.dto';
@@ -17,6 +19,7 @@ export class ProjectsController {
   constructor(
     private projectsService: ProjectsService,
     private permissionsService: PermissionsService,
+    private prisma: PrismaService,
   ) {}
 
   @Get()
@@ -81,7 +84,8 @@ export class ProjectsController {
   @Get(':id/ad-breakdown')
   async getAdBreakdown(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() period: StatsPeriodDto) {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
-    return this.projectsService.getAdBreakdown(id, companyId, period);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    return this.projectsService.getAdBreakdown(id, companyId, period, scopedBuyerId);
   }
 
   // Топ баеров/выручка (запрос пользователя 2026-07-17: "что видят в статистике а что нет")
@@ -94,9 +98,13 @@ export class ProjectsController {
   @Get(':id/leaderboards')
   async getLeaderboards(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() period: StatsPeriodDto) {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
-    const data = await this.projectsService.getLeaderboards(id, companyId, period);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    const data = await this.projectsService.getLeaderboards(id, companyId, period, scopedBuyerId);
 
-    if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS))) {
+    // "Только свои клиенты" (запрос пользователя 2026-08-03) — категория "buyers" ранжирует
+    // против других баеров, при активном скоупе это бессмысленно (и утечка чужих имён/выручки),
+    // всегда обнуляем независимо от STATS_VIEW_TEAM_LEADERBOARDS.
+    if (scopedBuyerId || !(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS))) {
       data.buyers = [];
     }
     if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
@@ -124,10 +132,16 @@ export class ProjectsController {
     @Query() query: LeaderboardFunnelQueryDto,
   ) {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
 
     const categories = ['buyers', 'pixels', 'landings', 'campaigns'] as const;
     if (!(categories as readonly string[]).includes(category)) throw new BadRequestException('Неизвестная категория лидерборда');
-    if (category === 'buyers' && !(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS))) {
+    // scopedBuyerId — та же причина, что и в getLeaderboards выше: "buyers" ранжирует против
+    // других баеров, при активном скоупе всегда пусто, независимо от разрешения.
+    if (
+      category === 'buyers' &&
+      (scopedBuyerId || !(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS)))
+    ) {
       return { items: [] };
     }
 
@@ -137,7 +151,7 @@ export class ProjectsController {
       .filter(Boolean)
       .slice(0, 10);
 
-    const data = await this.projectsService.getLeaderboardFunnel(id, companyId, category as (typeof categories)[number], ids, query);
+    const data = await this.projectsService.getLeaderboardFunnel(id, companyId, category as (typeof categories)[number], ids, query, scopedBuyerId);
 
     if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
       return { items: data.items.map((i) => ({ ...i, revenue: 0 })) };
@@ -172,5 +186,42 @@ export class ProjectsController {
       // роли OWNER, не ADMIN и не остальных.
       user.role === 'OWNER',
     );
+  }
+
+  // Управление операторами проекта (запрос пользователя 2026-07-31: доступ Operator к
+  // проекту больше не назначается при создании участника — только здесь или через карточку
+  // оператора на /team). assertCanAccessTeamManagement/assertOperatorAdminScope — те же
+  // хелперы, что и у /team, НЕ @Roles() (см. их комментарий про ранговую модель RolesGuard).
+  @Get(':id/operators')
+  async listOperators(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.listProjectOperators(id, companyId, user.userId, user.role);
+  }
+
+  // Company-wide, не отфильтровано по пересечению проектов Оператор-админа (подтверждено
+  // AskUserQuestion 2026-07-31) — иначе только что созданного оператора с 0 проектов
+  // Оператор-админу было бы неоткуда взять. Только имя/email — без деталей чужого доступа.
+  @Get(':id/operators/candidates')
+  async listOperatorCandidates(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.listOperatorCandidates(id, companyId, user.userId, user.role);
+  }
+
+  @Post(':id/operators')
+  async addOperator(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Body('userId') userId: string,
+  ) {
+    return this.projectsService.addOperatorToProject(id, companyId, user.userId, user.role, userId);
+  }
+
+  @Delete(':id/operators/:userId')
+  async removeOperator(
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.projectsService.removeOperatorFromProject(id, companyId, user.userId, user.role, userId);
   }
 }

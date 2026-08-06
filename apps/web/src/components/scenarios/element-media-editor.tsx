@@ -117,15 +117,52 @@ function SingleFileEditor({
 function AlbumEditor({ channelId, value, onChange }: { channelId: string; value: ScenarioMediaItem[]; onChange: (media: ScenarioMediaItem[]) => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [nextType, setNextType] = useState<'photo' | 'video'>('photo');
-  const upload = useUploadMutation(channelId, nextType, (item) => onChange([...value, item]));
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+
+  const uploadOne = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('mediaType', nextType);
+      const res = await api.post<{ url: string }>(`/channels/${channelId}/scenario-step-media`, formData);
+      return { url: res.data.url, type: nextType } satisfies ScenarioMediaItem;
+    },
+  });
 
   const canAddMore = value.length < MAX_ALBUM_ITEMS;
   const removeMedia = (i: number) => onChange(value.filter((_, idx) => idx !== i));
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  // Мульти-выбор (запрос пользователя 2026-08-04: "можно было выделить несколько фотографий и
+  // загрузить") — выбранные файлы лишние сверх лимита альбома просто отбрасываются с понятным
+  // сообщением, остальные загружаются ПОСЛЕДОВАТЕЛЬНО (не параллельно): backend принимает один
+  // файл за запрос, а at onChange нужен актуальный массив — конкурентные мутации читали бы
+  // устаревший `value` через замыкание и теряли бы уже добавленные элементы (последний успешный
+  // ответ перезаписал бы предыдущие). Останавливаемся на первой ошибке — то, что успело
+  // загрузиться, остаётся в альбоме.
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (file) upload.mutate(file);
+    if (!files.length) return;
+
+    const remaining = MAX_ALBUM_ITEMS - value.length;
+    const toUpload = files.slice(0, remaining);
+    const dropped = files.length - toUpload.length;
+    setUploadError(dropped > 0 ? `Лимит альбома — ${MAX_ALBUM_ITEMS}, лишние ${dropped} файл(ов) не загружены.` : '');
+
+    setIsUploading(true);
+    let current = value;
+    for (const file of toUpload) {
+      try {
+        const item = await uploadOne.mutateAsync(file);
+        current = [...current, item];
+        onChange(current);
+      } catch (err) {
+        setUploadError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось загрузить файл');
+        break;
+      }
+    }
+    setIsUploading(false);
   };
 
   return (
@@ -160,14 +197,21 @@ function AlbumEditor({ channelId, value, onChange }: { channelId: string; value:
               <SelectItem value="video">Видео</SelectItem>
             </SelectContent>
           </Select>
-          <input ref={fileInputRef} type="file" accept={nextType === 'photo' ? 'image/*' : 'video/*'} className="hidden" onChange={handleFileSelect} />
-          <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={nextType === 'photo' ? 'image/*' : 'video/*'}
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+          <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
             <Upload className="w-3.5 h-3.5 mr-1.5" />
-            {upload.isPending ? 'Загружаем...' : `Добавить (${value.length}/${MAX_ALBUM_ITEMS})`}
+            {isUploading ? 'Загружаем...' : `Добавить (${value.length}/${MAX_ALBUM_ITEMS})`}
           </Button>
         </div>
       )}
-      {upload.uploadError && <p className="text-xs text-red-500">{upload.uploadError}</p>}
+      {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
     </div>
   );
 }

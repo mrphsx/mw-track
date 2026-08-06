@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import Link from 'next/link';
+import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTheme } from 'next-themes';
 import { format } from 'date-fns';
-import { Plus } from 'lucide-react';
+import { Plus, Pencil, Copy } from 'lucide-react';
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
@@ -42,6 +43,7 @@ interface BestTimeStats {
 // полный реskin, как у Сценариев, а не оболочка-поверх-общего, как у Лендингов).
 export default function StudioPushesPage() {
   const { id: projectId } = useParams<{ id: string }>();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const [openLogsFor, setOpenLogsFor] = useState<string | null>(null);
@@ -56,12 +58,21 @@ export default function StudioPushesPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['pushes', projectId] }),
   });
 
+  // Копирование (запрос пользователя 2026-08-05) — см. полный комментарий в classic-версии.
+  const duplicatePush = useMutation({
+    mutationFn: (pushId: string) => api.post<{ id: string }>(`/projects/${projectId}/pushes/${pushId}/duplicate`),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['pushes', projectId] });
+      router.push(`/projects/${projectId}/pushes/${res.data.id}/edit`);
+    },
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Рассылки</h1>
         {hasPermission(user, projectId, 'PUSHES_CREATE') && (
-          <StudioLinkButton variant="primary" icon={Plus} href={`/dashboard/studio/projects/${projectId}/pushes/new`}>
+          <StudioLinkButton variant="primary" icon={Plus} href={`/projects/${projectId}/pushes/new`}>
             Новая рассылка
           </StudioLinkButton>
         )}
@@ -101,16 +112,36 @@ export default function StudioPushesPage() {
                 <td className={`px-5 py-3 text-right font-mono tabular-nums ${push.failedCount > 0 ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-[#131A24] dark:text-[#E9EDF3]'}`}>
                   {push.failedCount}
                 </td>
-                <td className="px-5 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                  {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, projectId, 'PUSHES_DELETE') && (
-                    <button
-                      type="button"
-                      onClick={() => cancelPush.mutate(push.id)}
-                      className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] underline-offset-2 hover:underline"
-                    >
-                      Отменить
-                    </button>
-                  )}
+                <td className="px-5 py-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                  <div className="inline-flex items-center gap-3">
+                    {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, projectId, 'PUSHES_CREATE') && (
+                      <Link
+                        href={`/projects/${projectId}/pushes/${push.id}/edit`}
+                        className="inline-flex items-center gap-1 text-xs text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] underline-offset-2 hover:underline"
+                      >
+                        <Pencil className="w-3 h-3" /> Изменить
+                      </Link>
+                    )}
+                    {hasPermission(user, projectId, 'PUSHES_CREATE') && (
+                      <button
+                        type="button"
+                        onClick={() => duplicatePush.mutate(push.id)}
+                        disabled={duplicatePush.isPending}
+                        className="inline-flex items-center gap-1 text-xs text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] underline-offset-2 hover:underline disabled:opacity-50"
+                      >
+                        <Copy className="w-3 h-3" /> Копировать
+                      </button>
+                    )}
+                    {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, projectId, 'PUSHES_DELETE') && (
+                      <button
+                        type="button"
+                        onClick={() => cancelPush.mutate(push.id)}
+                        className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] underline-offset-2 hover:underline"
+                      >
+                        Отменить
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

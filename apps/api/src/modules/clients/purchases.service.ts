@@ -65,6 +65,10 @@ export class PurchasesService {
             totalSpent: { increment: dto.amount },
             purchasesCount: { increment: 1 },
             lastActiveAt: new Date(),
+            // Запрос пользователя 2026-08-06 (рассылка с личного аккаунта, фильтр "по давности
+            // депозита") — Purchase.createdAt есть только per-row, для фильтрации по клиенту
+            // нужна денормализованная дата последнего, тот же приём, что totalSpent/purchasesCount.
+            lastPurchaseAt: new Date(),
           },
         });
 

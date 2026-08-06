@@ -22,6 +22,7 @@ interface ProjectSummary {
     tgMode: TgMode | null;
     tgAvatarFileId: string | null;
     tgPersonalConnected?: boolean;
+    webhookStale?: boolean;
   } | null;
   _count: { clients: number; pushes: number };
   activeClientsCount: number;
@@ -46,7 +47,7 @@ export default function StudioProjectsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Проекты</h1>
-        <StudioLinkButton variant="primary" icon={Plus} href="/dashboard/studio/projects/new">
+        <StudioLinkButton variant="primary" icon={Plus} href="/projects/new">
           Новый проект
         </StudioLinkButton>
       </div>
@@ -59,7 +60,7 @@ export default function StudioProjectsPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {projects?.map((project) => (
-          <Link key={project.id} href={`/dashboard/studio/projects/${project.id}`}>
+          <Link key={project.id} href={`/projects/${project.id}`}>
             <div className={`${STUDIO_CARD} hover:shadow-md transition-shadow h-full p-5 space-y-3`}>
               <CityTime timezone={project.timezone} className="shrink-0" />
               <div className="flex items-center justify-between gap-2">
@@ -95,6 +96,13 @@ export default function StudioProjectsPage() {
                   </StudioPill>
                   {project.channel.type === 'TELEGRAM' && project.channel.tgMode && (
                     <StudioPill hue="slate">{TG_MODE_LABEL[project.channel.tgMode]}</StudioPill>
+                  )}
+                  {/* "Молчащий" вебхук (запрос пользователя 2026-08-05) — см. классическую
+                      версию для полного комментария. */}
+                  {project.channel.webhookStale && (
+                    <span title="Telegram давно не присылал вебхуки этому боту — возможно, трафик не регистрируется">
+                      <StudioPill danger>Нет вебхуков</StudioPill>
+                    </span>
                   )}
                 </div>
               )}

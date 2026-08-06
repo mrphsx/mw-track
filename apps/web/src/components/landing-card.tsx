@@ -85,6 +85,7 @@ export function LandingCard({
   statusDotClassName,
   hideChannelDetails,
   statsHrefOverride,
+  containerClassName,
 }: {
   landing: LandingItem;
   domains: DomainOption[] | undefined;
@@ -147,6 +148,12 @@ export function LandingCard({
   // умолчанию не задан, поведение остальных потребителей (классическая страница проекта,
   // компанейская /landings) не меняется.
   statsHrefOverride?: string;
+  // Studio (запрос пользователя 2026-08-03: "карточки лэндингов серые, надо под новый дизайн")
+  // — обычный shadcn `<Card>` в тёмной теме красится в `--card` (плейсхолдер-токен, не
+  // настоящий Studio-синий #171F2B, см. память dark_theme_rollout) — тот же паттерн, что уже
+  // применён для LandingContentCard: когда передан containerClassName, рендерится обычный div
+  // с этим классом вместо <Card>, поведение остальных потребителей не меняется.
+  containerClassName?: string;
 }) {
   const router = useRouter();
   const channel = primaryChannel(landing);
@@ -168,16 +175,15 @@ export function LandingCard({
   // тот же порядок проверки, что и в AbTestGroupDialog (LandingsService.assertValidMembers).
   const selectDisabled = !!selectable && !!landing.abTestGroupId;
 
-  return (
-    <Card
-      onClick={() => (selectable ? !selectDisabled && onToggleSelect?.() : router.push(statsHref))}
-      className={cn(
-        'transition-colors',
-        selectable && selectDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:ring-foreground/20',
-        selectable && selected && 'ring-2 ring-primary',
-      )}
-    >
-      <CardContent className="p-4 space-y-3">
+  const handleClick = () => (selectable ? !selectDisabled && onToggleSelect?.() : router.push(statsHref));
+  const stateClassName = cn(
+    'transition-colors',
+    selectable && selectDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:ring-foreground/20',
+    selectable && selected && 'ring-2 ring-primary',
+  );
+
+  const body = (
+    <>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex items-center gap-2">
             {statusDotClassName && <span className={cn('w-3 h-3 rounded-full shrink-0', statusDotClassName)} title={STATUS_LABEL[landing.status]} />}
@@ -276,6 +282,14 @@ export function LandingCard({
           {landing._count.clients} {landing._count.clients === 1 ? 'подписчик' : 'подписчиков'}
         </div>
 
+        {/* Автор (запрос пользователя 2026-08-03: "в лэндинге укажи кто его создал") — null у
+            лендингов, чей автор не резолвится (см. LandingItem.createdBy). */}
+        {landing.createdBy && (
+          <p className="text-xs text-muted-foreground truncate">
+            Создал: {landing.createdBy.firstName} {landing.createdBy.lastName ?? ''}
+          </p>
+        )}
+
         {/* Клик по карточке ведёт на страницу статистики лендинга — действия ниже не должны
             всплывать до Card.onClick, иначе кнопка "Удалить" и остальные тоже открывали бы её.
             В режиме выбора (selectable) сами действия не имеют смысла — клики по карточке
@@ -326,7 +340,20 @@ export function LandingCard({
             </Button>
           )}
         </div>
-      </CardContent>
+    </>
+  );
+
+  if (containerClassName) {
+    return (
+      <div onClick={handleClick} className={cn(containerClassName, stateClassName)}>
+        <div className="p-4 space-y-3">{body}</div>
+      </div>
+    );
+  }
+
+  return (
+    <Card onClick={handleClick} className={stateClassName}>
+      <CardContent className="p-4 space-y-3">{body}</CardContent>
     </Card>
   );
 }

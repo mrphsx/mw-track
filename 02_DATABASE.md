@@ -32,12 +32,12 @@ model Company {
   planExpiresAt     DateTime? // когда наступит следующее автосписание; null = не продлевается автоматически (TRIAL/ENTERPRISE)
   maxProjects       Int @default(1)
   maxClients        Int @default(1000)
-  maxPushesPerMonth Int @default(5)
+  maxPushesPerDay   Int @default(2)
   
   // Лимиты использования
   currentProjects   Int @default(0)
   currentClients    Int @default(0)
-  pushesThisMonth   Int @default(0)
+  pushesToday       Int @default(0)
   pushesResetAt     DateTime @default(now())
   
   createdAt DateTime @default(now())
@@ -659,11 +659,11 @@ enum EventSource {
 // Создать 3-5 шаблонов лендингов (хранятся в JSON файлах)
 
 const PLAN_LIMITS = {
-  TRIAL:      { maxProjects: 1,   maxClients: 1000,   maxPushesPerMonth: 5   },
-  STARTER:    { maxProjects: 3,   maxClients: 5000,   maxPushesPerMonth: 10  },
-  GROWTH:     { maxProjects: 10,  maxClients: 25000,  maxPushesPerMonth: 50  },
-  SCALE:      { maxProjects: 30,  maxClients: 100000, maxPushesPerMonth: 999 },
-  ENTERPRISE: { maxProjects: 999, maxClients: 999999, maxPushesPerMonth: 999 },
+  TRIAL:      { maxProjects: 1,  maxClients: 1000,   maxPushesPerDay: 2   },
+  STARTER:    { maxProjects: 5,  maxClients: 5000,   maxPushesPerDay: 10  },
+  GROWTH:     { maxProjects: 10, maxClients: 25000,  maxPushesPerDay: 50  },
+  SCALE:      { maxProjects: 20, maxClients: 100000, maxPushesPerDay: 240 },
+  ENTERPRISE: { maxProjects: 50, maxClients: 999999, maxPushesPerDay: 999 },
 };
 ```
 

@@ -4,7 +4,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { CreateTeamMemberDto } from './dto/create-team-member.dto';
 import { UpdateTeamMemberDto } from './dto/update-team-member.dto';
-import { assertCanAssignRole, assertProjectsBelongToCompany } from './team-role.util';
+import {
+  assertCanAccessTeamManagement,
+  assertCanAssignRole,
+  assertOperatorAdminScope,
+  assertProjectsBelongToCompany,
+} from './team-role.util';
 
 const bcrypt = require('bcryptjs');
 
@@ -17,6 +22,8 @@ const TEAM_MEMBER_SELECT = {
   isActive: true,
   lastLoginAt: true,
   createdAt: true,
+  landingsVisibilityScope: true,
+  clientsVisibilityScope: true,
   projectAccess: { select: { project: { select: { id: true, name: true } } } },
   permissions: { select: { projectId: true, permission: true } },
 } as const;
@@ -28,7 +35,21 @@ export class TeamService {
     private permissionsService: PermissionsService,
   ) {}
 
-  async findAll(companyId: string) {
+  // requesterId/requesterRole — для OPERATOR_ADMIN список сужается до Operator-ов, чьи проекты
+  // пересекаются с его собственными (запрос пользователя 2026-07-30: "видит только своих").
+  async findAll(companyId: string, requesterId: string, requesterRole: UserRole) {
+    assertCanAccessTeamManagement(requesterRole);
+
+    if (requesterRole === UserRole.OPERATOR_ADMIN) {
+      const own = await this.prisma.projectAccess.findMany({ where: { userId: requesterId }, select: { projectId: true } });
+      const ownIds = own.map((a) => a.projectId);
+      return this.prisma.user.findMany({
+        where: { companyId, deletedAt: null, role: UserRole.OPERATOR, projectAccess: { some: { projectId: { in: ownIds } } } },
+        select: TEAM_MEMBER_SELECT,
+        orderBy: { createdAt: 'asc' },
+      });
+    }
+
     return this.prisma.user.findMany({
       where: { companyId, deletedAt: null, role: { not: UserRole.SUPER_ADMIN } },
       select: TEAM_MEMBER_SELECT,
@@ -39,12 +60,21 @@ export class TeamService {
   // requesterRole — только Owner создаёт роль ADMIN (см. assertCanAssignRole); Admin может
   // создавать/менять только Buyer/Operator, ниже себя по факту, хотя формально тот же ранг
   // в RolesGuard — это разделение не выражается иерархией, поэтому явная проверка здесь.
-  async create(companyId: string, requesterRole: UserRole, dto: CreateTeamMemberDto): Promise<User> {
+  // requesterId нужен только для OPERATOR_ADMIN (assertOperatorAdminScope сверяет dto.projectIds
+  // с его собственным ProjectAccess) — для остальных ролей игнорируется.
+  async create(companyId: string, requesterId: string, requesterRole: UserRole, dto: CreateTeamMemberDto): Promise<User> {
+    assertCanAccessTeamManagement(requesterRole);
     assertCanAssignRole(requesterRole, dto.role);
 
-    if (dto.role !== 'ADMIN' && (!dto.projectIds || dto.projectIds.length === 0)) {
-      throw new BadRequestException('Для роли Buyer/Operator нужно выбрать хотя бы один проект');
+    // Operator — единственное исключение из "проекты обязательны при создании" (запрос
+    // пользователя 2026-07-31: "изначально у него нет доступных проектов" — доступ выдаётся
+    // отдельно, позже, через новые /projects/:id/operators или карточку оператора). Buyer и
+    // Оператор-админ по-прежнему требуют хотя бы один проект сразу.
+    if (dto.role !== 'ADMIN' && dto.role !== 'OPERATOR' && (!dto.projectIds || dto.projectIds.length === 0)) {
+      throw new BadRequestException('Для роли Buyer/Оператор-админ нужно выбрать хотя бы один проект');
     }
+
+    await assertOperatorAdminScope(this.prisma, requesterId, requesterRole, dto.role as UserRole, dto.projectIds);
 
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (existing) throw new ConflictException('Email уже занят');
@@ -61,6 +91,8 @@ export class TeamService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         role: dto.role,
+        landingsVisibilityScope: dto.landingsVisibilityScope,
+        clientsVisibilityScope: dto.clientsVisibilityScope,
         projectAccess:
           dto.role !== 'ADMIN' && dto.projectIds?.length
             ? { create: dto.projectIds.map((projectId) => ({ projectId })) }
@@ -76,6 +108,8 @@ export class TeamService {
   }
 
   async update(companyId: string, requesterId: string, requesterRole: UserRole, userId: string, dto: UpdateTeamMemberDto): Promise<User> {
+    assertCanAccessTeamManagement(requesterRole);
+
     if (userId === requesterId) {
       throw new BadRequestException('Нельзя менять роль/статус самому себе');
     }
@@ -83,6 +117,19 @@ export class TeamService {
     const member = await this.findMemberOrThrow(companyId, userId);
 
     if (dto.role) assertCanAssignRole(requesterRole, dto.role);
+
+    // Проверяем И существующий набор проектов цели, И новый dto.projectIds — update делает
+    // полную замену набора (см. ниже), частичное обновление могло бы иначе тихо снять доступ
+    // оператора к проекту вне зоны видимости оператор-админа, о котором тот даже не узнал бы.
+    const existingAccessForScope = await this.prisma.projectAccess.findMany({ where: { userId }, select: { projectId: true } });
+    await assertOperatorAdminScope(
+      this.prisma,
+      requesterId,
+      requesterRole,
+      (dto.role ?? member.role) as UserRole,
+      existingAccessForScope.map((a) => a.projectId),
+      dto.projectIds,
+    );
 
     // Guard rail: нельзя деактивировать/понизить последнего активного Owner компании —
     // иначе компания могла бы остаться без единого владельца.
@@ -95,8 +142,24 @@ export class TeamService {
       await assertProjectsBelongToCompany(this.prisma, companyId, dto.projectIds);
     }
 
+    // Редактирование данных сотрудника (запрос пользователя 2026-08-03) — та же проверка
+    // уникальности email, что и при создании (см. create() выше).
+    if (dto.email && dto.email !== member.email) {
+      const emailTaken = await this.prisma.user.findUnique({ where: { email: dto.email } });
+      if (emailTaken) throw new ConflictException('Email уже занят');
+    }
+    const passwordHash = dto.password ? await bcrypt.hash(dto.password, 12) : undefined;
+
     const nextRole = (dto.role ?? member.role) as UserRole;
     const becomesRestricted = nextRole !== 'ADMIN';
+
+    // Пустой projectIds легитимен ТОЛЬКО для Operator (запрос пользователя 2026-07-31: "должна
+    // быть возможность убрать все проекты у оператора, чтобы он остался без проектов") — раньше
+    // это блокировал `@ArrayMinSize(1)` на самом DTO безусловно для всех ролей; теперь декоратор
+    // снят, а минимум в один проект для Buyer/Оператор-админ проверяется явно здесь же.
+    if (dto.projectIds && dto.projectIds.length === 0 && nextRole !== 'OPERATOR' && nextRole !== 'ADMIN') {
+      throw new BadRequestException('Для роли Buyer/Оператор-админ нужно выбрать хотя бы один проект');
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.projectIds) {
@@ -112,9 +175,9 @@ export class TeamService {
         if (removedProjectIds.length > 0) {
           await tx.userPermission.deleteMany({ where: { userId, projectId: { in: removedProjectIds } } });
         }
-        if (becomesRestricted) {
+        if (becomesRestricted && dto.projectIds.length > 0) {
           await tx.projectAccess.createMany({ data: dto.projectIds.map((projectId) => ({ userId, projectId })) });
-        } else {
+        } else if (!becomesRestricted) {
           // Переход в ADMIN — elevated, ProjectAccess/UserPermission ему не нужны вообще.
           await tx.userPermission.deleteMany({ where: { userId } });
         }
@@ -122,7 +185,16 @@ export class TeamService {
 
       return tx.user.update({
         where: { id: userId },
-        data: { role: dto.role, isActive: dto.isActive },
+        data: {
+          role: dto.role,
+          isActive: dto.isActive,
+          landingsVisibilityScope: dto.landingsVisibilityScope,
+          clientsVisibilityScope: dto.clientsVisibilityScope,
+          email: dto.email,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          passwordHash,
+        },
       });
     });
 
@@ -137,10 +209,16 @@ export class TeamService {
   // "Удаление" — мягкое отключение (User.deletedAt + isActive:false), не хард-делит —
   // соответствует общему инварианту проекта (см. CLAUDE.md). Переиспользует те же guard
   // rails, что и update() (нельзя тронуть себя/последнего Owner).
-  async remove(companyId: string, requesterId: string, userId: string): Promise<void> {
+  async remove(companyId: string, requesterId: string, requesterRole: UserRole, userId: string): Promise<void> {
+    assertCanAccessTeamManagement(requesterRole);
     if (userId === requesterId) throw new BadRequestException('Нельзя отключить самого себя');
 
     const member = await this.findMemberOrThrow(companyId, userId);
+
+    if (requesterRole === UserRole.OPERATOR_ADMIN) {
+      const existingAccess = await this.prisma.projectAccess.findMany({ where: { userId }, select: { projectId: true } });
+      await assertOperatorAdminScope(this.prisma, requesterId, requesterRole, member.role, existingAccess.map((a) => a.projectId));
+    }
 
     if (member.role === 'OWNER') {
       const activeOwners = await this.prisma.user.count({ where: { companyId, role: 'OWNER', isActive: true, deletedAt: null } });

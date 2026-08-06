@@ -4,7 +4,8 @@ import { Channel } from '@prisma/client';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
-import { RPCError } from 'telegram/errors';
+import { FloodWaitError, RPCError, SlowModeWaitError } from 'telegram/errors';
+import { Button } from 'telegram/tl/custom/button';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { RedisService } from '../../../redis/redis.service';
 import { EncryptionService } from '../../../common/encryption.service';
@@ -199,6 +200,85 @@ export class TelegramPersonalService {
       );
       return { success: true };
     } catch (error) {
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  // Папки Telegram (запрос пользователя 2026-08-06, рассылка с личного аккаунта: "даже
+  // похорошему по папкам которые уже созданы в телеграме") — сырой MTProto-вызов, GramJS не
+  // даёт готовой обёртки, тот же приём, что уже используется здесь для Api.stories.SendStory.
+  // Без кеша в БД — папки живые на стороне Telegram, фетчатся заново при каждом открытии формы
+  // создания рассылки. DialogFilterDefault ("Все чаты") и DialogFilterChatlist (папки-ссылки)
+  // отфильтрованы — у обычных DialogFilter есть includePeers, у остальных двух — другая форма,
+  // не нужная для явного membership-фильтра ниже.
+  async getDialogFilters(channel: Channel): Promise<{ id: number; title: string }[]> {
+    // getLiveClient/invoke могут бросить (протухшая сессия, обрыв соединения) — по тому же
+    // приёму "никогда не бросает наружу", что sendStory/sendDirectMessage: недоступность папок
+    // не должна валить previewAudience/create целиком, деградируем до пустого списка.
+    try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return [];
+      const result = await client.invoke(new Api.messages.GetDialogFilters());
+      return result.filters
+        .filter((f): f is Api.DialogFilter => f.className === 'DialogFilter')
+        .map((f) => ({ id: f.id, title: f.title.text }));
+    } catch {
+      return [];
+    }
+  }
+
+  // Явное членство в папке (includePeers) — запрос пользователя формулировал это как "даже
+  // похорошему", т.е. best-effort: правило-based категории папки (contacts/groups/bots/...)
+  // сознательно НЕ резолвятся — GramJS не отдаёт "кто попадает под правило" напрямую, это
+  // потребовало бы кросс-сверки с полным списком диалогов аккаунта на каждый вызов. Покрывает
+  // обычный случай "руками раскидал контакты по папкам", что и является типичным использованием.
+  async getFolderTgUserIds(channel: Channel, folderId: number): Promise<string[]> {
+    try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return [];
+
+      const result = await client.invoke(new Api.messages.GetDialogFilters());
+      const filter = result.filters.find((f): f is Api.DialogFilter => f.className === 'DialogFilter' && f.id === folderId);
+      if (!filter) return [];
+
+      return filter.includePeers.filter((p): p is Api.InputPeerUser => p.className === 'InputPeerUser').map((p) => String(p.userId));
+    } catch {
+      return [];
+    }
+  }
+
+  // Отправка рассылки через личный аккаунт (запрос пользователя 2026-08-06, модуль
+  // personal-broadcasts) — тот же try/catch → {success, error} паттерн, что sendStory выше,
+  // никогда не бросает наружу (процессор рассылки не должен падать из-за одного получателя).
+  // client.getInputEntity — и есть "живая проверка, что диалог реально существует прямо
+  // сейчас" (явный запрос пользователя): если GramJS не может резолвить пира по tgUserId
+  // (аккаунт никогда не видел этого пользователя или потерял его из кэша сущностей), значит
+  // отправлять там нечему — падает в тот же catch, вызывающая сторона помечает как "skipped".
+  // FloodWaitError/SlowModeWaitError — отдельная ветка, чтобы процессор мог поспать РОВНО
+  // столько, сколько просит сам Telegram, а не свою обычную паузу между получателями.
+  async sendDirectMessage(
+    channel: Channel,
+    tgUserId: string,
+    params: { text: string; mediaUrl?: string; buttons?: { text: string; url?: string }[] },
+  ): Promise<{ success: boolean; error?: string; floodWaitSeconds?: number }> {
+    const client = await this.getLiveClient(channel);
+    if (!client) return { success: false, error: 'Личный аккаунт не подключён или недоступен' };
+
+    try {
+      const entity = await client.getInputEntity(Number(tgUserId));
+      const buttons = params.buttons?.filter((b) => b.url).map((b) => [Button.url(b.text, b.url)]);
+
+      await client.sendMessage(entity, {
+        message: params.text,
+        ...(params.mediaUrl ? { file: params.mediaUrl } : {}),
+        ...(buttons?.length ? { buttons } : {}),
+      });
+
+      return { success: true };
+    } catch (error) {
+      if (error instanceof FloodWaitError || error instanceof SlowModeWaitError) {
+        return { success: false, error: error.message, floodWaitSeconds: error.seconds };
+      }
       return { success: false, error: (error as Error).message };
     }
   }

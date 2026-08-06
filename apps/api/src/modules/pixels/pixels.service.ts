@@ -39,7 +39,8 @@ export class PixelsService {
     if (!project) throw new NotFoundException('Проект не найден');
     await this.getProjectsService().assertAccess(dto.projectId, companyId, userId, role, [Permission.PIXELS_CREATE]);
 
-    return this.prisma.trackingPixel.create({ data: { ...dto } });
+    // createdById — запрос пользователя 2026-08-03, тот же паттерн, что у Landing.createdById.
+    return this.prisma.trackingPixel.create({ data: { ...dto, createdById: userId } });
   }
 
   async findOne(id: string, companyId: string, userId: string, role: UserRole, requiredPermissions: Permission[] = [Permission.PIXELS_VIEW]): Promise<TrackingPixel> {

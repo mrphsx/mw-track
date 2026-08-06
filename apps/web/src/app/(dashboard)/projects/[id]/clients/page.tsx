@@ -86,7 +86,12 @@ export default function ClientsPage() {
           {data && <p className="text-sm text-muted-foreground">Всего: {data.total}</p>}
         </div>
         <div className="flex gap-2">
-          <Input placeholder="Поиск..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-56" />
+          <Input
+            placeholder="Имя, username, user_id..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-56"
+          />
           <Button variant="outline" onClick={exportLookalike}>
             <Download className="w-4 h-4 mr-1.5" /> Экспорт
           </Button>

@@ -118,6 +118,13 @@ export class AudienceService {
   // сторон персонально). LIMIT/OFFSET применяются к самому списку общих tgUserId ДО дозагрузки
   // полных строк Client — иначе при большом пересечении пришлось бы каждый раз тянуть всех
   // клиентов с обеих сторон только чтобы показать одну страницу.
+  //
+  // search (запрос пользователя 2026-07-30: "когда открываешь список клиентов тоже нужен
+  // поиск, по имени, user_id, username итд") — матчится по ЛЮБОЙ стороне пары (c1 ИЛИ c2): один
+  // и тот же человек может иметь разное отображаемое имя в двух проектах (сменил имя между
+  // подписками), но ищем-то одного и того же реального пользователя, так что должно хватать
+  // совпадения хоть с одной стороны. ILIKE-параметр подставляется через Prisma.sql —
+  // параметризовано (не конкатенация сырой строки), безопасно от SQL-инъекций.
   async getOverlapDetail(
     companyId: string,
     userId: string,
@@ -126,6 +133,7 @@ export class AudienceService {
     projectBId: string,
     page: number,
     limit: number,
+    search?: string,
   ): Promise<OverlapDetailPage> {
     const projectsService = this.getProjectsService();
     await projectsService.assertAccess(projectAId, companyId, userId, role);
@@ -136,6 +144,14 @@ export class AudienceService {
       AND c1."companyId" = ${companyId} AND c2."companyId" = ${companyId}
       AND c1."deletedAt" IS NULL AND c2."deletedAt" IS NULL
       AND c1."tgUserId" IS NOT NULL
+      ${
+        search
+          ? Prisma.sql`AND (
+              c1."tgUserId" ILIKE ${`%${search}%`} OR c1."tgFirstName" ILIKE ${`%${search}%`} OR c1."tgLastName" ILIKE ${`%${search}%`} OR c1."tgUsername" ILIKE ${`%${search}%`}
+              OR c2."tgFirstName" ILIKE ${`%${search}%`} OR c2."tgLastName" ILIKE ${`%${search}%`} OR c2."tgUsername" ILIKE ${`%${search}%`}
+            )`
+          : Prisma.empty
+      }
     `;
 
     const [{ count }] = await this.prisma.$queryRaw<{ count: bigint }[]>`

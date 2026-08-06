@@ -26,6 +26,10 @@ interface ProjectSummary {
     // Есть только у Telegram-канала — MTProto-подключение личного аккаунта, отдельное от
     // самого бота (запрос пользователя 2026-07-21: "значок если добавлен личный аккаунт").
     tgPersonalConnected?: boolean;
+    // Запрос пользователя 2026-08-05 (после реального ~20-часового инцидента: Telegram молча
+    // перестал слать вебхуки боту, узнали постфактум) — true, если от Telegram давно не было
+    // вообще никаких вебхуков для этого канала, при том что раньше они были.
+    webhookStale?: boolean;
   } | null;
   _count: { clients: number; pushes: number };
   activeClientsCount: number;
@@ -114,6 +118,15 @@ export default function ProjectsPage() {
                     {project.channel.type === 'TELEGRAM' && project.channel.tgMode && (
                       <Badge variant="secondary" className="text-xs">
                         {TG_MODE_LABEL[project.channel.tgMode]}
+                      </Badge>
+                    )}
+                    {/* "Молчащий" вебхук (запрос пользователя 2026-08-05) — отдельно от
+                        isActive/"заблокирован": бот технически жив, просто Telegram перестал
+                        присылать ему апдейты (реальный инцидент, обнаруженный только по логам
+                        nginx постфактум). */}
+                    {project.channel.webhookStale && (
+                      <Badge variant="destructive" className="text-xs" title="Telegram давно не присылал вебхуки этому боту — возможно, трафик не регистрируется">
+                        Нет вебхуков
                       </Badge>
                     )}
                   </div>

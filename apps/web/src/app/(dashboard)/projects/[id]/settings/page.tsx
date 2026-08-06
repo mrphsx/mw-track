@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/store/auth.store';
 import { BotSettingsTab } from '@/components/bot-settings-tab';
 import { PersonalAccountConnect } from '@/components/personal-account-connect';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -13,6 +14,7 @@ import {
   GeneralTab,
   ChannelsTab,
   IntegrationTab,
+  OperatorsTab,
   PixelLogsTab,
   PixelsTab,
   Project,
@@ -29,6 +31,14 @@ export default function ProjectSettingsPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const currentUser = useAuthStore((s) => s.user);
+  // Вкладка "Операторы" — та же видимость, что и у пункта "Команда" в сайдбаре (запрос
+  // пользователя 2026-07-31): управляют доступом операторов только Owner/Admin/Оператор-админ.
+  const canManageOperators =
+    currentUser?.role === 'OWNER' ||
+    currentUser?.role === 'ADMIN' ||
+    currentUser?.role === 'SUPER_ADMIN' ||
+    currentUser?.role === 'OPERATOR_ADMIN';
 
   // Персистентность вкладки в URL (тот же паттерн, что уже есть у PeriodSelector на странице
   // проекта, apps/web/src/app/(dashboard)/projects/[id]/page.tsx) — читаем один раз при
@@ -69,6 +79,7 @@ export default function ProjectSettingsPage() {
           <TabsTrigger value="pixel-logs">Логи</TabsTrigger>
           <TabsTrigger value="events">События</TabsTrigger>
           <TabsTrigger value="integration">Интеграция</TabsTrigger>
+          {canManageOperators && <TabsTrigger value="operators">Операторы</TabsTrigger>}
           <TabsTrigger value="danger">Опасная зона</TabsTrigger>
         </TabsList>
 
@@ -104,6 +115,11 @@ export default function ProjectSettingsPage() {
         <TabsContent value="integration" className="mt-4">
           <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} />
         </TabsContent>
+        {canManageOperators && (
+          <TabsContent value="operators" className="mt-4">
+            <OperatorsTab projectId={id} />
+          </TabsContent>
+        )}
         <TabsContent value="danger" className="mt-4">
           <DangerTab projectId={id} onArchived={() => router.push('/projects')} />
         </TabsContent>

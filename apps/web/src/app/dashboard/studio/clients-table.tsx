@@ -13,7 +13,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { MessageCircle, Star } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ClientAvatar } from '@/components/clients/client-avatar';
-import { ClientRow, DIALOGUE_SOURCE_LABEL, formatDuration } from '@/components/clients/clients-table';
+import { ClientRow, CrossProjectOverlapBadge, DIALOGUE_SOURCE_LABEL, formatDuration } from '@/components/clients/clients-table';
 import { StudioPill } from './ui';
 
 const CHANNEL_SHORT_LABEL: Record<string, string> = { TELEGRAM: 'TG' };
@@ -45,6 +45,7 @@ export function StudioClientsTable({
             <th className="px-5 py-3 font-medium">Подписан</th>
             <th className="px-5 py-3 font-medium">Отписан</th>
             <th className="px-5 py-3 font-medium">Длительность</th>
+            <th className="px-5 py-3 font-medium">Ещё в проектах</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
@@ -169,6 +170,9 @@ function StudioClientRow({ projectId, client, onSelect }: { projectId: string; c
         ) : (
           '—'
         )}
+      </td>
+      <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
+        <CrossProjectOverlapBadge overlap={client.crossProjectOverlap} />
       </td>
     </tr>
   );

@@ -12,9 +12,11 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
+  ClientsVisibilityScopeSection,
   CreatableRole,
   CredRow,
   DomainsPermissionsSection,
+  LandingsVisibilityScopeSection,
   ProjectChecklist,
   ProjectPermissionsEditor,
   ProjectSummary,
@@ -29,10 +31,11 @@ export default function NewInvitePage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const isOwner = currentUser?.role === 'OWNER' || currentUser?.role === 'SUPER_ADMIN';
+  const isOperatorAdmin = currentUser?.role === 'OPERATOR_ADMIN';
 
   const [error, setError] = useState('');
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
-  const form = usePermissionsForm('BUYER');
+  const form = usePermissionsForm(isOperatorAdmin ? 'OPERATOR' : 'BUYER');
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],
@@ -43,12 +46,15 @@ export default function NewInvitePage() {
     mutationFn: () =>
       api.post<{ token: string }>('/team-invites', {
         role: form.role,
-        projectIds: form.role === 'ADMIN' ? undefined : form.projectIds,
+        // Operator — то же исключение, что и на /team/new (запрос пользователя 2026-07-31).
+        projectIds: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.projectIds,
         projectPermissions:
-          form.role === 'ADMIN'
+          form.role === 'ADMIN' || form.role === 'OPERATOR'
             ? undefined
             : form.projectIds.map((projectId) => ({ projectId, permissions: form.projectPermissions[projectId] ?? [] })),
-        domainsPermissions: form.role === 'ADMIN' ? undefined : form.domainsPermissions,
+        domainsPermissions: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.domainsPermissions,
+        landingsVisibilityScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsVisibilityScope,
+        clientsVisibilityScope: form.role === 'BUYER' ? form.clientsVisibilityScope : undefined,
       }),
     onSuccess: ({ data }) => {
       queryClient.invalidateQueries({ queryKey: ['team-invites'] });
@@ -57,7 +63,7 @@ export default function NewInvitePage() {
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось создать ссылку'),
   });
 
-  const needsProjects = form.role !== 'ADMIN';
+  const needsProjects = form.role !== 'ADMIN' && form.role !== 'OPERATOR';
   const canSubmit = !needsProjects || form.projectIds.length > 0;
 
   if (createdUrl) {
@@ -96,12 +102,25 @@ export default function NewInvitePage() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
-                <SelectItem value="BUYER">Байер</SelectItem>
-                <SelectItem value="OPERATOR">Оператор</SelectItem>
+                {isOperatorAdmin ? (
+                  <SelectItem value="OPERATOR">Оператор</SelectItem>
+                ) : (
+                  <>
+                    {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
+                    <SelectItem value="BUYER">Байер</SelectItem>
+                    <SelectItem value="OPERATOR">Оператор</SelectItem>
+                    <SelectItem value="OPERATOR_ADMIN">Оператор-админ</SelectItem>
+                  </>
+                )}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">{ROLE_HINTS[form.role]}</p>
+            {form.role === 'OPERATOR' && (
+              <p className="text-xs text-muted-foreground border rounded-md p-2.5 bg-muted/40">
+                Проекты назначаются отдельно — через вкладку «Операторы» в настройках проекта
+                или карточку оператора в разделе «Операторы» на странице «Команда».
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -134,6 +153,22 @@ export default function NewInvitePage() {
               <DomainsPermissionsSection selected={form.domainsPermissions} onToggle={form.toggleDomainsPermission} />
             </CardContent>
           </Card>
+
+          <Card>
+            <CardContent className="pt-6 space-y-2">
+              <h2 className="text-sm font-semibold">Видимость лендингов</h2>
+              <LandingsVisibilityScopeSection value={form.landingsVisibilityScope} onChange={form.setLandingsVisibilityScope} />
+            </CardContent>
+          </Card>
+
+          {form.role === 'BUYER' && (
+            <Card>
+              <CardContent className="pt-6 space-y-2">
+                <h2 className="text-sm font-semibold">Видимость клиентов и статистики</h2>
+                <ClientsVisibilityScopeSection value={form.clientsVisibilityScope} onChange={form.setClientsVisibilityScope} />
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
 

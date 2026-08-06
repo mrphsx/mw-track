@@ -186,6 +186,13 @@ export default function LandingStatsPage() {
                 </a>
               )}
             </div>
+            {/* Автор (запрос пользователя 2026-08-03: "на странице лэндинга не видно кто
+                создал лэндинг") */}
+            {stats.landing.createdBy && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Создал: {stats.landing.createdBy.firstName} {stats.landing.createdBy.lastName ?? ''}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => setShowDomainDialog(true)}>

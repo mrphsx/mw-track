@@ -34,7 +34,7 @@ export default function StudioNewProjectPage() {
       });
       return data;
     },
-    onSuccess: (project) => router.push(`/dashboard/studio/projects/${project.id}`),
+    onSuccess: (project) => router.push(`/projects/${project.id}`),
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось создать проект'),
   });
 
