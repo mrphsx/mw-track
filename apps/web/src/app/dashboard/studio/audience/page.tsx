@@ -262,7 +262,7 @@ function OverlapCompactCells({ client, borderLeft }: { client: ClientRow; border
   return (
     <>
       <td className={`px-3 py-2 whitespace-nowrap text-[#5F6B7A] dark:text-[#92A0AF] ${borderLeft ? 'border-l border-[#DCE1E8] dark:border-white/10' : ''}`}>
-        {client.subscribedAt ? format(new Date(client.subscribedAt), 'd MMM yyyy') : '—'}
+        {client.subscribedAt ? format(new Date(client.subscribedAt), 'd MMM yyyy, HH:mm') : '—'}
       </td>
       <td className="px-3 py-2 text-[#131A24] dark:text-[#E9EDF3]">{client.firstDialogueAt ? 'Да' : '—'}</td>
       <td className={`px-3 py-2 ${client.hasPurchase ? 'font-semibold text-[#1F4E9C] dark:text-[#7BA9EE]' : 'text-[#5F6B7A] dark:text-[#92A0AF]'}`}>

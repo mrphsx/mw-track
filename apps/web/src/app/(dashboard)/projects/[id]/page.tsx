@@ -134,6 +134,11 @@ interface AdBreakdownRow {
   cr: number;
 }
 
+interface UnattributedBucket {
+  clients: number;
+  revenue: number;
+}
+
 interface Leaderboards {
   buyers: { buyerId: string; name: string; clients: number; revenue: number }[];
   // Багфикс 2026-07-28 ("пиксель с реальным подписчиком отсутствовал в топе") — раньше только
@@ -142,6 +147,13 @@ interface Leaderboards {
   pixels: { pixelId: string | null; label: string; clients: number; revenue: number }[];
   landings: { landingId: string; name: string; subscribers: number; revenue: number }[];
   campaigns: { campaignId: string; campaignName: string | null; clients: number; revenue: number }[];
+  // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09: "104 клиента, а в топ баеров
+  // только 27, где остальные?") — buyers/pixels/campaigns выше намеренно исключают клиентов без
+  // атрибуции (ранжировать "неизвестно кого" бессмысленно), эти три поля — честный остаток,
+  // чтобы сумма по категории видимо сходилась с общим числом клиентов за период.
+  buyersUnattributed: UnattributedBucket;
+  pixelsUnattributed: UnattributedBucket;
+  campaignsUnattributed: UnattributedBucket;
 }
 
 // Предпросмотр лендинга (запрос пользователя 2026-07-17, "топ лэндингов... ссылка на превью
@@ -220,11 +232,20 @@ function LeaderboardCard({
   items,
   funnelById,
   funnelLoading,
+  unattributed,
+  unattributedLabel,
 }: {
   title: string;
   items: { id: string; label: string; primary: string; secondary?: string; previewId?: string }[];
   funnelById?: Map<string, LeaderboardFunnelRow>;
   funnelLoading?: boolean;
+  // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09: "104 клиента, а в топ баеров
+  // только 27, где остальные?") — отдельная, не ранжируемая строка внизу списка: клиенты без
+  // атрибуции реально существуют (видны в общей статистике проекта), просто не участвуют в топе
+  // конкретных баеров/пикселей/кампаний. Показываем только когда clients > 0 — на большинстве
+  // проектов атрибуция полная, лишняя строка с нулём была бы просто шумом.
+  unattributed?: UnattributedBucket;
+  unattributedLabel?: string;
 }) {
   return (
     <Card>
@@ -232,7 +253,7 @@ function LeaderboardCard({
         <CardTitle className="text-base">{title}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {items.length === 0 && <p className="text-sm text-muted-foreground">Нет данных за период.</p>}
+        {items.length === 0 && !unattributed?.clients && <p className="text-sm text-muted-foreground">Нет данных за период.</p>}
         {items.map((item, i) => {
           const funnel = funnelById?.get(item.id);
           return (
@@ -262,6 +283,15 @@ function LeaderboardCard({
             </div>
           );
         })}
+        {!!unattributed?.clients && (
+          <div className="flex items-center justify-between text-sm gap-2 pt-2 border-t border-dashed">
+            <span className="text-muted-foreground italic truncate">{unattributedLabel}</span>
+            <div className="text-right shrink-0">
+              <div className="font-medium text-muted-foreground">{unattributed.clients} клиентов</div>
+              {unattributed.revenue > 0 && <div className="text-xs text-muted-foreground">${unattributed.revenue.toFixed(2)}</div>}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -884,6 +914,8 @@ export default function ProjectOverviewPage() {
             }))}
             funnelById={activeLeaderboardTab === 'buyers' ? leaderboardFunnelById : undefined}
             funnelLoading={activeLeaderboardTab === 'buyers' && leaderboardFunnelLoading}
+            unattributed={leaderboards?.buyersUnattributed}
+            unattributedLabel="Без баера"
           />
         </TabsContent>
         <TabsContent value="pixels" className="mt-4">
@@ -897,6 +929,8 @@ export default function ProjectOverviewPage() {
             }))}
             funnelById={activeLeaderboardTab === 'pixels' ? leaderboardFunnelById : undefined}
             funnelLoading={activeLeaderboardTab === 'pixels' && leaderboardFunnelLoading}
+            unattributed={leaderboards?.pixelsUnattributed}
+            unattributedLabel="Без пикселя"
           />
         </TabsContent>
         <TabsContent value="landings" className="mt-4">
@@ -924,6 +958,8 @@ export default function ProjectOverviewPage() {
             }))}
             funnelById={activeLeaderboardTab === 'campaigns' ? leaderboardFunnelById : undefined}
             funnelLoading={activeLeaderboardTab === 'campaigns' && leaderboardFunnelLoading}
+            unattributed={leaderboards?.campaignsUnattributed}
+            unattributedLabel="Без кампании"
           />
         </TabsContent>
       </Tabs>

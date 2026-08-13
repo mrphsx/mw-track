@@ -40,6 +40,7 @@ import {
   PROTOTYPE_PERIOD_OPTIONS,
   PrototypeFunnelStage,
   PrototypePeriodValue,
+  PrototypeUnattributedBucket,
   isSingleDayPeriod,
   previewLanding,
   usePrototypeProjectData,
@@ -555,6 +556,8 @@ export default function StudioProjectPage() {
               }))}
               funnelById={leaderboardFunnelById}
               funnelLoading={leaderboardFunnelLoading}
+              unattributed={leaderboards.buyersUnattributed}
+              unattributedLabel="Без баера"
             />
           )}
           {activeLeaderboardTab === 'pixels' && (
@@ -570,6 +573,8 @@ export default function StudioProjectPage() {
               }))}
               funnelById={leaderboardFunnelById}
               funnelLoading={leaderboardFunnelLoading}
+              unattributed={leaderboards.pixelsUnattributed}
+              unattributedLabel="Без пикселя"
             />
           )}
           {activeLeaderboardTab === 'landings' && (
@@ -601,6 +606,8 @@ export default function StudioProjectPage() {
               }))}
               funnelById={leaderboardFunnelById}
               funnelLoading={leaderboardFunnelLoading}
+              unattributed={leaderboards.campaignsUnattributed}
+              unattributedLabel="Без кампании"
             />
           )}
         </div>
@@ -680,6 +687,8 @@ function LeaderboardBlock({
   items,
   funnelById,
   funnelLoading,
+  unattributed,
+  unattributedLabel,
 }: {
   title: string;
   icon: LucideIcon;
@@ -687,6 +696,10 @@ function LeaderboardBlock({
   items: { id: string; label: string; primary: string; secondary?: string; previewId?: string }[];
   funnelById?: Map<string, LeaderboardFunnelRow>;
   funnelLoading?: boolean;
+  // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09) — см. полный комментарий у
+  // classic-версии (apps/web/src/app/(dashboard)/projects/[id]/page.tsx, LeaderboardCard).
+  unattributed?: PrototypeUnattributedBucket;
+  unattributedLabel?: string;
 }) {
   const { textClass, bgSoftClass } = STUDIO_HUES[hue];
   return (
@@ -697,7 +710,7 @@ function LeaderboardBlock({
         </div>
         <h3 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">{title}</h3>
       </div>
-      {items.length === 0 && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Нет данных за период.</p>}
+      {items.length === 0 && !unattributed?.clients && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Нет данных за период.</p>}
       <div className="space-y-3">
         {items.slice(0, 5).map((item, i) => {
           const itemFunnel = funnelById?.get(item.id);
@@ -732,6 +745,15 @@ function LeaderboardBlock({
             </div>
           );
         })}
+        {!!unattributed?.clients && (
+          <div className="flex items-center justify-between text-sm gap-2 pt-2 border-t border-dashed border-[#DCE1E8] dark:border-white/10">
+            <span className="text-[#5F6B7A] dark:text-[#92A0AF] italic truncate">{unattributedLabel}</span>
+            <div className="text-right shrink-0">
+              <div className="font-medium text-[#5F6B7A] dark:text-[#92A0AF]">{unattributed.clients} клиентов</div>
+              {unattributed.revenue > 0 && <div className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">${unattributed.revenue.toFixed(2)}</div>}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

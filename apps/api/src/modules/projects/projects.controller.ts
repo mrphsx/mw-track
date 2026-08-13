@@ -27,6 +27,14 @@ export class ProjectsController {
     return this.projectsService.findAll(companyId, user.userId, user.role);
   }
 
+  // Компания-wide сводка на главной странице (запрос пользователя 2026-08-06) — литеральный
+  // путь до 'GET :id' (тот же приём, что уже используют 'stats/best-time' у PushesController и
+  // т.п.), иначе Nest принял бы 'company-stats' за значение :id.
+  @Get('company-stats')
+  getCompanyStats(@Company() companyId: string, @CurrentUser() user: AuthUser, @Query() periodQuery: StatsPeriodDto) {
+    return this.projectsService.getCompanyStats(companyId, user.userId, user.role, periodQuery);
+  }
+
   @Post()
   @SubscriptionLimit('projects')
   @UseGuards(SubscriptionGuard)
@@ -106,6 +114,10 @@ export class ProjectsController {
     // всегда обнуляем независимо от STATS_VIEW_TEAM_LEADERBOARDS.
     if (scopedBuyerId || !(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS))) {
       data.buyers = [];
+      // "БЕЗ БАЕРА" (запрос пользователя 2026-08-09) — обнуляем вместе с самим списком buyers:
+      // осиротевшая строка "без баера" без единой видимой строки с баерами была бы непонятной
+      // сама по себе, та же граница видимости, что и у buyers целиком.
+      data.buyersUnattributed = { clients: 0, revenue: 0 };
     }
     if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
       data.buyers = data.buyers.map((b) => ({ ...b, revenue: 0 }));
@@ -114,6 +126,9 @@ export class ProjectsController {
       // pixels теперь тоже несёт revenue (баг-фикс 2026-07-28, раньше было только conversions —
       // счётчик, не деньги) — та же граница видимости, что и у остальных трёх.
       data.pixels = data.pixels.map((p) => ({ ...p, revenue: 0 }));
+      data.buyersUnattributed.revenue = 0;
+      data.pixelsUnattributed.revenue = 0;
+      data.campaignsUnattributed.revenue = 0;
     }
 
     return data;

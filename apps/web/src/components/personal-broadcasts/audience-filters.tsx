@@ -80,6 +80,10 @@ interface Props {
   folders: { id: number; title: string }[];
   audienceTotal: number | null;
   isCalculating: boolean;
+  // Отличаем "запрос не удался" (например 504 на холодном списке диалогов у аккаунта с
+  // тысячами контактов) от настоящего "0 подходящих" — до этого оба случая рендерились
+  // одинаково как "—", пользователь не мог отличить ошибку от честного нуля.
+  calcError?: boolean;
   // Studio (тот же containerClassName-паттерн, что уже у PushAudienceStep) — обычный shadcn
   // Card в тёмной теме Studio красится в плейсхолдер --card, не в настоящий #171F2B.
   containerClassName?: string;
@@ -110,18 +114,27 @@ function TriStateRadio({ label, value, onChange }: { label: string; value: boole
 
 // Максимально подробные фильтры аудитории (запрос пользователя 2026-08-06: "максимально
 // подробные филтры по аудитории... по депозитам, по давности депозита, диалог, подписки итд" +
-// "даже похорошему по папкам которые уже созданы в телеграме") — заметно богаче
-// PushAudienceStep, аудитория всегда неявно ограничена dialogueSource='PERSONAL_ACCOUNT' на
-// бэкенде (PersonalBroadcastsService.buildAudienceWhere), эта форма выбирает ТОЛЬКО ещё более
-// узкое подмножество внутри уже-диалогующих с личным аккаунтом.
-export function PersonalBroadcastAudienceFilters({ value, onChange, folders, audienceTotal, isCalculating, containerClassName }: Props) {
+// "даже похорошему по папкам которые уже созданы в телеграме") — заметно богаче PushAudienceStep.
+// С 2026-08-06 (запрос "пушить не только клиентов из СРМ, но и всех остальных, даже внешних")
+// базовая аудитория — ВЕСЬ живой список диалогов личного Telegram-аккаунта
+// (TelegramPersonalService.getAllDialogs), а не только строки Client с dialogueSource=
+// 'PERSONAL_ACCOUNT'. Фильтры про покупки/подписку/страну ниже применяются к данным CRM там, где
+// они есть для конкретного диалога — у внешних контактов без Client их просто нет, что
+// естественно исключает их из фильтров вроде "Есть депозит: Да", но не из рассылки в целом.
+export function PersonalBroadcastAudienceFilters({ value, onChange, folders, audienceTotal, isCalculating, calcError, containerClassName }: Props) {
   const update = (patch: Partial<PersonalBroadcastFilterState>) => onChange({ ...value, ...patch });
 
   const summary = (
     <div className="p-5 space-y-2">
       {isCalculating ? (
-        <div className="flex items-center justify-center py-6 text-muted-foreground">
+        <div className="flex flex-col items-center justify-center gap-2 py-6 text-muted-foreground">
           <Loader2 className="w-5 h-5 animate-spin" />
+          <span className="text-xs">Считаем аудиторию — для аккаунтов с большим числом диалогов может занять до пары минут</span>
+        </div>
+      ) : calcError ? (
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-2 text-sm text-red-500">Не удалось посчитать аудиторию</span>
+          <span className="text-xs text-muted-foreground">повторите позже</span>
         </div>
       ) : (
         <div className="flex items-center justify-between">
@@ -133,7 +146,7 @@ export function PersonalBroadcastAudienceFilters({ value, onChange, folders, aud
       )}
       <p className="text-xs text-muted-foreground flex items-center gap-1.5 pt-1">
         <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />
-        Диалог с личным аккаунтом проверяется ещё раз прямо перед отправкой каждому — это только предварительная оценка.
+        Учитываются все диалоги личного аккаунта, включая внешних — диалог проверяется ещё раз прямо перед отправкой каждому.
       </p>
     </div>
   );

@@ -171,9 +171,9 @@ export function ClientDetailContent({
           <div className="text-sm text-muted-foreground">
             {client.country || '—'} {client.city ? `· ${client.city}` : ''}
           </div>
-          <div className="text-xs text-muted-foreground">Регистрация: {format(new Date(client.createdAt), 'd MMM yyyy')}</div>
+          <div className="text-xs text-muted-foreground">Регистрация: {format(new Date(client.createdAt), 'd MMM yyyy, HH:mm')}</div>
           {client.lastActiveAt && (
-            <div className="text-xs text-muted-foreground">Активность: {format(new Date(client.lastActiveAt), 'd MMM yyyy')}</div>
+            <div className="text-xs text-muted-foreground">Активность: {format(new Date(client.lastActiveAt), 'd MMM yyyy, HH:mm')}</div>
           )}
           {client.firstDialogueAt && (
             <div className="text-xs text-muted-foreground">
@@ -241,7 +241,7 @@ export function ClientDetailContent({
           {purchases?.length === 0 && <p className="text-sm text-muted-foreground">Покупок нет.</p>}
           {purchases?.map((p) => (
             <div key={p.id} className="flex items-center justify-between text-sm">
-              <span>{format(new Date(p.createdAt), 'd MMM yyyy')}</span>
+              <span>{format(new Date(p.createdAt), 'd MMM yyyy, HH:mm')}</span>
               <span className="text-muted-foreground">{p.source}</span>
               <span className="font-medium">
                 {Number(p.amount).toFixed(2)} {p.currency}

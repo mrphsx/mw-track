@@ -1,15 +1,48 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { Users, FolderOpen, Send, Bot, Plus } from 'lucide-react';
+import { Users, FolderOpen, Send, Bot, Plus, DollarSign, Wallet, Repeat } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { StatsCard } from '@/components/shared/stats-card';
+import { StatsCard, DualStatsCard } from '@/components/shared/stats-card';
 import { SubscriptionBanner } from '@/components/shared/subscription-banner';
+import { PeriodSelector, PeriodValue, StatsPeriod } from '@/components/shared/period-selector';
+import { useAuthStore } from '@/store/auth.store';
+import { hasAnyPermission } from '@/lib/permissions';
+
+interface CompanyStats {
+  newClients: number;
+  unsubscribedClients: number;
+  botActivatedClients: number;
+  totalRevenue: number;
+  totalFd: number;
+  totalRd: number;
+  fdRevenue: number;
+  rdRevenue: number;
+  projectCount: number;
+}
+
+const PERIOD_VALUES = ['today', 'yesterday', '7d', '30d', 'custom'] as const;
+
+// Тот же приём URL-персистентности периода, что и на странице проекта (запрос пользователя
+// 2026-07-25, projects/[id]/page.tsx readPeriodFromSearchParams) — перенесён сюда впервые для
+// главной страницы (запрос пользователя 2026-08-06: "сегодня, вчера, 7, 30 и кастом").
+function readPeriodFromSearchParams(params: URLSearchParams): PeriodValue {
+  const period = params.get('period');
+  if (period === 'custom') {
+    const from = params.get('from') || undefined;
+    const to = params.get('to') || undefined;
+    if (from && to) return { period: 'custom', from, to };
+  }
+  if (period && (PERIOD_VALUES as readonly string[]).includes(period)) return { period: period as StatsPeriod };
+  return { period: 'today' };
+}
 
 interface ProjectSummary {
   id: string;
@@ -27,6 +60,12 @@ interface CompanyUsage {
 }
 
 export default function OverviewPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const user = useAuthStore((s) => s.user);
+  const canViewRevenue = hasAnyPermission(user, 'STATS_VIEW_REVENUE');
+
   const { data: projects, isLoading: projectsLoading } = useQuery({
     queryKey: ['projects'],
     queryFn: async () => (await api.get<ProjectSummary[]>('/projects')).data,
@@ -40,6 +79,34 @@ export default function OverviewPage() {
   const totalClients = projects?.reduce((sum, p) => sum + p._count.clients, 0) ?? 0;
   const totalPushes = projects?.reduce((sum, p) => sum + p._count.pushes, 0) ?? 0;
   const activeBots = projects?.reduce((sum, p) => sum + (p.channel?.isActive ? 1 : 0), 0) ?? 0;
+
+  const [periodValue, setPeriodValueState] = useState<PeriodValue>(() => readPeriodFromSearchParams(searchParams));
+  const setPeriodValue = (next: PeriodValue) => {
+    setPeriodValueState(next);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('period', next.period);
+    if (next.period === 'custom') {
+      if (next.from) params.set('from', next.from); else params.delete('from');
+      if (next.to) params.set('to', next.to); else params.delete('to');
+    } else {
+      params.delete('from');
+      params.delete('to');
+    }
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+  const periodReady = periodValue.period !== 'custom' || (!!periodValue.from && !!periodValue.to);
+  const periodParams =
+    periodValue.period === 'custom' ? { period: periodValue.period, from: periodValue.from, to: periodValue.to } : { period: periodValue.period };
+
+  // Запрос пользователя 2026-08-06: "нужно на главной странице так же показать какую-то
+  // статистику... кассы, клиентов, фд/рд" — компания-wide сводка по всем доступным проектам
+  // сразу (GET /projects/company-stats, впервые company-wide и period-aware на главной; см.
+  // ProjectsService.getCompanyStats для деталей упрощения по часовым поясам).
+  const { data: companyStats } = useQuery({
+    queryKey: ['company-stats', periodParams],
+    queryFn: async () => (await api.get<CompanyStats>('/projects/company-stats', { params: periodParams })).data,
+    enabled: periodReady,
+  });
 
   return (
     <div className="space-y-6">
@@ -65,6 +132,29 @@ export default function OverviewPage() {
         <StatsCard label="Проектов" value={usage ? `${usage.currentProjects}/${usage.maxProjects}` : '—'} icon={FolderOpen} />
         <StatsCard label="Рассылок" value={totalPushes} icon={Send} />
         <StatsCard label="Активных ботов" value={activeBots} icon={Bot} />
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <h2 className="text-lg font-semibold">Статистика по всем проектам</h2>
+          <PeriodSelector value={periodValue} onChange={setPeriodValue} />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatsCard
+            label="Новые клиенты"
+            value={companyStats?.newClients ?? '—'}
+            icon={Users}
+            dangerHint={companyStats && companyStats.unsubscribedClients > 0 ? `−${companyStats.unsubscribedClients} отписались` : undefined}
+          />
+          <StatsCard label="Активировали бота" value={companyStats?.botActivatedClients ?? '—'} icon={Bot} />
+          {canViewRevenue && <StatsCard label="Доход" value={companyStats ? `$${companyStats.totalRevenue.toFixed(2)}` : '—'} icon={DollarSign} />}
+          <DualStatsCard
+            items={[
+              { label: 'ФД', value: companyStats?.totalFd ?? '—', icon: Wallet },
+              { label: 'РД', value: companyStats?.totalRd ?? '—', icon: Repeat },
+            ]}
+          />
+        </div>
       </div>
 
       <div>

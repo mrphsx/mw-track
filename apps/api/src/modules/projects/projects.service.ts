@@ -110,6 +110,94 @@ export class ProjectsService {
     return ids.filter((id) => grantedIds.has(id));
   }
 
+  // Статистика на главной странице (запрос пользователя 2026-08-06: "нужно на главной странице
+  // так же показать какую-то статистику... кассы, клиентов, фд/рд") — впервые компания-wide
+  // (не по одному проекту, как ClientsRepository.getProjectStats) и впервые с периодом на самой
+  // главной странице. Реализовано прямо здесь (не в ClientsRepository/ClientsModule) намеренно —
+  // ClientsModule импортирует ProjectsModule, поэтому обратная зависимость замкнула бы цикл (тот
+  // же класс проблемы, что уже задокументирован у forwardRef в projects.module.ts); ProjectsService
+  // и так уже держит this.prisma и getAccessibleProjectIds, отдельный модуль не нужен.
+  //
+  // Часовой пояс: у каждого проекта свой (Project.timezone), а "сегодня"/"вчера" в resolveStatsPeriod
+  // считаются по нему для ОДНОГО проекта. Для компании целиком (потенциально много проектов с
+  // разными зонами) точная по-проектная граница суток — отдельная, более тяжёлая техника (см.
+  // getGlobalScheduledSummary в pushes.service.ts, JOIN Project с AT TIME ZONE на каждой строке).
+  // Здесь сознательно упрощено: границы периода считаются ОДИН раз в UTC — 7d/30d от этого не
+  // зависят вообще (чистое скользящее окно), "сегодня"/"вчера"/кастом могут отличаться на
+  // несколько часов от того, что показала бы страница КОНКРЕТНОГО проекта с ненулевым смещением
+  // зоны — приемлемый компромисс для сводной карточки на главной, а не точная посуточная отчётность.
+  //
+  // revenueProjectIds — отдельный (обычно более узкий) список: STATS_VIEW_REVENUE может быть
+  // выдан не на все проекты, где есть STATS_VIEW (тот же принцип частичного зануления денежных
+  // полей, что и у ClientsController.stats — см. её комментарий). Клиентские метрики (счётчики)
+  // не считаются финансовыми и не зануляются.
+  async getCompanyStats(companyId: string, userId: string, role: UserRole, periodQuery: StatsPeriodDto) {
+    const [projectIds, revenueProjectIds] = await Promise.all([
+      this.getAccessibleProjectIds(companyId, userId, role, Permission.STATS_VIEW),
+      this.getAccessibleProjectIds(companyId, userId, role, Permission.STATS_VIEW_REVENUE),
+    ]);
+
+    if (projectIds.length === 0) {
+      return { newClients: 0, unsubscribedClients: 0, botActivatedClients: 0, totalRevenue: 0, totalFd: 0, totalRd: 0, fdRevenue: 0, rdRevenue: 0, projectCount: 0 };
+    }
+
+    const { since, until } = await resolveStatsPeriod(this.prisma, 'UTC', periodQuery);
+    // OURS_ONLY — тот же критерий "реальный подписчик, не холодный контакт мимо воронки", что и
+    // в ClientsRepository.getProjectStats (Client.subscribedAt IS NOT NULL).
+    const purchaseWhere =
+      revenueProjectIds.length > 0
+        ? Prisma.sql`"projectId" IN (${Prisma.join(revenueProjectIds)}) AND "clientId" IN (
+            SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL
+          )`
+        : Prisma.sql`FALSE`;
+
+    const [newClients, unsubscribedClients, botActivatedClients, revenueAgg, fdRdRows] = await Promise.all([
+      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, subscribedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, unsubscribedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, botActivatedAt: { gte: since, lt: until } } }),
+      this.prisma.purchase.aggregate({
+        where: {
+          projectId: { in: revenueProjectIds },
+          createdAt: { gte: since, lt: until },
+          client: { subscribedAt: { not: null }, deletedAt: null },
+        },
+        _sum: { amount: true },
+      }),
+      // ФД/РД по той же ROW_NUMBER()-идиоме, что и ClientsRepository.getProjectStats — "первый/
+      // повторный" считается по ВСЕЙ истории покупок клиента (не только за окно), окно
+      // применяется уже снаружи. Client привязан к ровно одному проекту (Client.projectId),
+      // поэтому PARTITION BY "clientId" не смешивает покупки разных проектов даже при IN(...).
+      this.prisma.$queryRaw<{ fd_count: bigint; rd_count: bigint; fd_revenue: string | null; rd_revenue: string | null }[]>`
+        WITH ranked AS (
+          SELECT id, "createdAt", amount,
+            ROW_NUMBER() OVER (PARTITION BY "clientId" ORDER BY "createdAt" ASC, id ASC) as rn
+          FROM "Purchase"
+          WHERE ${purchaseWhere}
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE rn = 1) as fd_count,
+          COUNT(*) FILTER (WHERE rn > 1) as rd_count,
+          COALESCE(SUM(amount) FILTER (WHERE rn = 1), 0) as fd_revenue,
+          COALESCE(SUM(amount) FILTER (WHERE rn > 1), 0) as rd_revenue
+        FROM ranked
+        WHERE "createdAt" >= ${since} AND "createdAt" < ${until}
+      `,
+    ]);
+
+    const fdRd = fdRdRows[0];
+    return {
+      newClients,
+      unsubscribedClients,
+      botActivatedClients,
+      totalRevenue: Number(revenueAgg._sum.amount ?? 0),
+      totalFd: Number(fdRd?.fd_count ?? 0),
+      totalRd: Number(fdRd?.rd_count ?? 0),
+      fdRevenue: Number(fdRd?.fd_revenue ?? 0),
+      rdRevenue: Number(fdRd?.rd_revenue ?? 0),
+      projectCount: projectIds.length,
+    };
+  }
+
   async findAll(companyId: string, userId: string, role: UserRole) {
     // OWNER/ADMIN/SUPER_ADMIN видят все проекты компании
     const elevatedRoles: UserRole[] = ELEVATED_ROLES;
@@ -117,7 +205,18 @@ export class ProjectsService {
       ? await this.prisma.project.findMany({
           where: { companyId, deletedAt: null },
           include: {
-            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgAvatarFileId: true, tgSessionEncrypted: true, lastWebhookAt: true } },
+            channel: {
+              select: {
+                id: true,
+                type: true,
+                isActive: true,
+                tgMode: true,
+                tgAvatarFileId: true,
+                tgSessionEncrypted: true,
+                lastWebhookAt: true,
+                tgPersonalLastError: true,
+              },
+            },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
             _count: { select: { pushes: true } },
           },
@@ -127,7 +226,9 @@ export class ProjectsService {
         await this.prisma.project.findMany({
           where: { companyId, deletedAt: null, projectAccess: { some: { userId } } },
           include: {
-            channel: { select: { id: true, type: true, isActive: true, tgMode: true, tgSessionEncrypted: true, lastWebhookAt: true } },
+            channel: {
+              select: { id: true, type: true, isActive: true, tgMode: true, tgSessionEncrypted: true, lastWebhookAt: true, tgPersonalLastError: true },
+            },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
             _count: { select: { pushes: true } },
           },
@@ -236,6 +337,7 @@ export class ProjectsService {
             tgAvatarFileId: true,
             tgSessionEncrypted: true,
             lastWebhookAt: true,
+            tgPersonalLastError: true,
           },
         },
         // testEventCode (запрос пользователя 2026-07-29: "проверь ещё раз создание пикселя...
@@ -639,7 +741,19 @@ requests.post(
               AND "subscribedAt" <= "firstDialogueAt"
               ${buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty}
           `,
-          this.prisma.trackingEvent.count({ where: { projectId: id, eventName: 'Purchase', createdAt: { gte: since, lt: until }, ...scope } }),
+          // Из таблицы Purchase, не TrackingEvent(eventName='Purchase') — тот же класс правки,
+          // что и getEventColumnFunnel.subscribes/dialogues чуть ниже (баг-репорт пользователя
+          // 2026-08-09, проверка "других ТОП-метрик на сходство данных"): трекинг-событие и
+          // реальная запись покупки создаются раздельно, событие может задвоиться или не
+          // совпасть по времени с самой покупкой — Purchase-таблица остаётся единственным
+          // источником истины для факта покупки, как и everywhere else в этом файле.
+          this.prisma.purchase.count({
+            where: {
+              projectId: id,
+              createdAt: { gte: since, lt: until },
+              client: { campaignId: campaign.campaignId, deletedAt: null, ...buyerWhere },
+            },
+          }),
         ]);
         const dialogues = Number(dialogueRows[0]?.count ?? 0);
 
@@ -687,7 +801,7 @@ requests.post(
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
     const buyerFilterSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
 
-    const [buyerRows, users, pixelRows, landingRows, campaignRows] = await Promise.all([
+    const [buyerRows, users, pixelRows, landingRows, campaignRows, [unattributed]] = await Promise.all([
       this.prisma.$queryRaw<{ buyerId: string; clients: bigint; revenue: string | null }[]>`
         SELECT c."buyerId",
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
@@ -736,6 +850,38 @@ requests.post(
         ORDER BY revenue DESC, clients DESC
         LIMIT 5
       `,
+      // "Без баера"/"Без пикселя"/"Без кампании" (запрос пользователя 2026-08-09, проект ROLANDO
+      // ACUNA: "за сегодня пишет 104 клиента а в списке топ баеров только один баер у которого
+      // 27 клиентов, где остальные клиенты???") — buyerRows/pixelRows/campaignRows выше НАМЕРЕННО
+      // исключают клиентов без атрибуции (WHERE ... IS NOT NULL) — ранжировать "неизвестно кого"
+      // против реальных баеров/пикселей/кампаний бессмысленно, это осознанное поведение (тот же
+      // принцип, что уже применяет TeamService.getBuyerAnalytics для company-wide версии этого
+      // же лидерборда, см. её "unattributed"). Но на странице проекта такого явного "остатка" не
+      // было вообще — 77 из 104 клиентов молча пропадали из виду, что и вызвало баг-репорт: они
+      // никуда не делись, у них просто нет привязки к баеру/пикселю/кампании (органика/прямые
+      // переходы/старые интеграции без меток). Один общий запрос считает остаток по всем трём
+      // категориям сразу, чтобы не платить 3 отдельных похода в БД.
+      this.prisma.$queryRaw<
+        {
+          buyersClients: bigint;
+          buyersRevenue: string | null;
+          pixelsClients: bigint;
+          pixelsRevenue: string | null;
+          campaignsClients: bigint;
+          campaignsRevenue: string | null;
+        }[]
+      >`
+        SELECT
+          COUNT(DISTINCT c.id) FILTER (WHERE c."buyerId" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as "buyersClients",
+          COALESCE(SUM(p.amount) FILTER (WHERE c."buyerId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as "buyersRevenue",
+          COUNT(DISTINCT c.id) FILTER (WHERE c."pixelId" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "pixelsClients",
+          COALESCE(SUM(p.amount) FILTER (WHERE c."pixelId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "pixelsRevenue",
+          COUNT(DISTINCT c.id) FILTER (WHERE c."campaignId" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "campaignsClients",
+          COALESCE(SUM(p.amount) FILTER (WHERE c."campaignId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "campaignsRevenue"
+        FROM "Client" c
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
+      `,
     ]);
 
     const usersById = new Map(users.map((u) => [u.id, u]));
@@ -768,6 +914,9 @@ requests.post(
         clients: Number(r.clients),
         revenue: Number(r.revenue || 0),
       })),
+      buyersUnattributed: { clients: Number(unattributed?.buyersClients ?? 0), revenue: Number(unattributed?.buyersRevenue ?? 0) },
+      pixelsUnattributed: { clients: Number(unattributed?.pixelsClients ?? 0), revenue: Number(unattributed?.pixelsRevenue ?? 0) },
+      campaignsUnattributed: { clients: Number(unattributed?.campaignsClients ?? 0), revenue: Number(unattributed?.campaignsRevenue ?? 0) },
     };
   }
 
@@ -874,16 +1023,36 @@ requests.post(
   ) {
     const col = Prisma.raw(`"${column}"`);
     const eventBuyerSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    const clientBuyerSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
     const purchaseBuyerSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
-    const [eventRows, purchaseRows] = await Promise.all([
+    const [eventRows, clientRows, purchaseRows] = await Promise.all([
       this.prisma.$queryRaw<{ id: string; eventName: string; count: number }[]>`
         SELECT ${col} as id, "eventName", COUNT(*)::int as count
         FROM "TrackingEvent"
-        WHERE "projectId" = ${projectId} AND "eventName" IN ('PageView', 'Lead', 'Subscribe', 'Dialogue')
+        WHERE "projectId" = ${projectId} AND "eventName" IN ('PageView', 'Lead')
           AND "createdAt" >= ${since} AND "createdAt" < ${until}
           AND ${col} IN (${Prisma.join(ids)})
           ${eventBuyerSql}
         GROUP BY ${col}, "eventName"
+      `,
+      // Subscribe/Dialogue — из Client, не TrackingEvent (тот же приём, что уже правильно
+      // использует getLandingsFunnel/getBuyersFunnel) — дедуплицировано по клиенту и совпадает с
+      // "источником истины" верхнеуровневого лидерборда (getLeaderboards, тоже считает по
+      // Client). Баг-репорт пользователя 2026-08-09 (проект ROLANDO ACUNA): "снизу пикселя в
+      // конверсии показывает 77 клиентов а справа показывает 75" — разобрано вживую: у пикселя
+      // было 77 строк TrackingEvent(eventName='Subscribe'), из них одна — дубликат события на
+      // том же клиенте (2 события на 1 клиента), и ещё у одного клиента событие создалось
+      // (createdAt) внутри окна "сегодня", а сам Client.subscribedAt — на 3.5 часа раньше, вне
+      // окна (асинхронная запись события отстаёт от момента реальной подписки) — оба эффекта
+      // невозможны при подсчёте напрямую по Client.subscribedAt/firstDialogueAt, как здесь.
+      this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
+        SELECT ${col} as id,
+          COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+        FROM "Client"
+        WHERE ${col} IN (${Prisma.join(ids)}) AND "projectId" = ${projectId} AND "deletedAt" IS NULL
+          ${clientBuyerSql}
+        GROUP BY ${col}
       `,
       // projectId добавлен тем же баг-фиксом, что и getBuyersFunnel выше (2026-08-05) —
       // campaignId — внешний ID рекламной площадки, не гарантированно уникален внутри одной
@@ -904,14 +1073,15 @@ requests.post(
     ]);
 
     const eventsById = this.groupEventCounts(eventRows);
+    const clientsById = new Map(clientRows.map((r) => [r.id, r]));
     const purchasesById = new Map(purchaseRows.map((r) => [r.id, r]));
 
     return ids.map((id) => ({
       id,
       pageViews: eventsById.get(id)?.PageView ?? 0,
       leads: eventsById.get(id)?.Lead ?? 0,
-      subscribes: eventsById.get(id)?.Subscribe ?? 0,
-      dialogues: eventsById.get(id)?.Dialogue ?? 0,
+      subscribes: clientsById.get(id)?.subscribes ?? 0,
+      dialogues: clientsById.get(id)?.dialogues ?? 0,
       purchases: purchasesById.get(id)?.purchases ?? 0,
       revenue: Number(purchasesById.get(id)?.revenue ?? 0),
     }));

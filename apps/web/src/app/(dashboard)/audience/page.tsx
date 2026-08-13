@@ -279,7 +279,7 @@ function OverlapCompactCells({ client, borderLeft }: { client: ClientRow; border
   return (
     <>
       <TableCell className={`text-sm text-muted-foreground whitespace-nowrap ${borderLeft ? 'border-l' : ''}`}>
-        {client.subscribedAt ? format(new Date(client.subscribedAt), 'd MMM yyyy') : '—'}
+        {client.subscribedAt ? format(new Date(client.subscribedAt), 'd MMM yyyy, HH:mm') : '—'}
       </TableCell>
       <TableCell className="text-sm">{client.firstDialogueAt ? 'Да' : '—'}</TableCell>
       <TableCell className={`text-sm ${client.hasPurchase ? 'font-semibold text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`}>

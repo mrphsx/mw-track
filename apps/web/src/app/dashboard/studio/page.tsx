@@ -1,11 +1,51 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, Bot, FolderOpen, Send, Users, LucideIcon } from 'lucide-react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle, Bot, DollarSign, FolderOpen, Repeat, Send, UserX, Users, Wallet, LucideIcon } from 'lucide-react';
+import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { hasAnyPermission } from '@/lib/permissions';
 import { ChannelAvatar } from '@/components/channel-avatar';
-import { getSubscriptionWarning, usePrototypeHomeData } from '@/lib/prototype-project-data';
+import { Input } from '@/components/ui/input';
+import {
+  getSubscriptionWarning,
+  usePrototypeHomeData,
+  PROTOTYPE_PERIOD_OPTIONS,
+  PrototypePeriod,
+  PrototypePeriodValue,
+} from '@/lib/prototype-project-data';
 import { STUDIO_HUES, StudioHueName } from './colors';
+
+interface CompanyStats {
+  newClients: number;
+  unsubscribedClients: number;
+  botActivatedClients: number;
+  totalRevenue: number;
+  totalFd: number;
+  totalRd: number;
+  fdRevenue: number;
+  rdRevenue: number;
+  projectCount: number;
+}
+
+const PERIOD_VALUES = ['today', 'yesterday', '7d', '30d', 'custom'] as const;
+
+// URL-персистентность периода (запрос пользователя 2026-08-06) — впервые портирован в Studio на
+// главную страницу тот же приём, что уже есть на классической странице проекта; сама страница
+// проекта Studio (в отличие от неё) этот приём ещё не использует, см. находки перед реализацией.
+function readPeriodFromSearchParams(params: URLSearchParams): PrototypePeriodValue {
+  const period = params.get('period');
+  if (period === 'custom') {
+    const from = params.get('from') || undefined;
+    const to = params.get('to') || undefined;
+    if (from && to) return { period: 'custom', from, to };
+  }
+  if (period && (PERIOD_VALUES as readonly string[]).includes(period)) return { period: period as PrototypePeriod };
+  return { period: 'today' };
+}
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -24,7 +64,11 @@ function greeting(): string {
 // проектов — rounded-xl (заметно менее круглые, для контраста и чтобы влезало больше
 // информации на той же площади).
 export default function StudioDashboardPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
+  const canViewRevenue = hasAnyPermission(user, 'STATS_VIEW_REVENUE');
   const { projects, isLoading, usage } = usePrototypeHomeData();
   const warning = getSubscriptionWarning(usage);
 
@@ -32,6 +76,32 @@ export default function StudioDashboardPage() {
   const totalPushes = projects?.reduce((sum, p) => sum + p._count.pushes, 0) ?? 0;
   const activeBots = projects?.reduce((sum, p) => sum + (p.channel?.isActive ? 1 : 0), 0) ?? 0;
   const totalProjects = projects?.length ?? 0;
+
+  const [period, setPeriodState] = useState<PrototypePeriodValue>(() => readPeriodFromSearchParams(searchParams));
+  const setPeriod = (next: PrototypePeriodValue) => {
+    setPeriodState(next);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('period', next.period);
+    if (next.period === 'custom') {
+      if (next.from) params.set('from', next.from); else params.delete('from');
+      if (next.to) params.set('to', next.to); else params.delete('to');
+    } else {
+      params.delete('from');
+      params.delete('to');
+    }
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+  const periodReady = period.period !== 'custom' || (!!period.from && !!period.to);
+  const periodParams = period.period === 'custom' ? { period: period.period, from: period.from, to: period.to } : { period: period.period };
+
+  // Запрос пользователя 2026-08-06: "нужно на главной странице так же показать какую-то
+  // статистику... кассы, клиентов, фд/рд" — см. полный комментарий в classic-версии
+  // (apps/web/src/app/(dashboard)/page.tsx).
+  const { data: companyStats } = useQuery({
+    queryKey: ['company-stats', periodParams],
+    queryFn: async () => (await api.get<CompanyStats>('/projects/company-stats', { params: periodParams })).data,
+    enabled: periodReady,
+  });
 
   return (
     <div className="space-y-10">
@@ -65,6 +135,70 @@ export default function StudioDashboardPage() {
         <StatCard label="Проектов" value={`${usage?.currentProjects ?? totalProjects}/${usage?.maxProjects ?? '—'}`} icon={FolderOpen} hue="slate" />
         <StatCard label="Рассылок" value={totalPushes} icon={Send} hue="teal" />
         <StatCard label="Активных ботов" value={`${activeBots}/${totalProjects}`} icon={Bot} hue="sage" />
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">Статистика по всем проектам</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+              {PROTOTYPE_PERIOD_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setPeriod({ period: opt.value })}
+                  className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                    period.period === opt.value
+                      ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                      : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setPeriod({ period: 'custom', from: period.from, to: period.to })}
+                className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                  period.period === 'custom'
+                    ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                    : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+                }`}
+              >
+                Период
+              </button>
+            </div>
+            {period.period === 'custom' && (
+              <div className="flex items-center gap-2">
+                <Input
+                  type="date"
+                  value={period.from ?? ''}
+                  max={period.to || undefined}
+                  onChange={(e) => setPeriod({ period: 'custom', from: e.target.value, to: period.to })}
+                  className="w-auto rounded-lg bg-white dark:bg-[#171F2B] dark:border-white/10 shadow-sm"
+                />
+                <span className="text-[#5F6B7A] dark:text-[#92A0AF] text-sm">—</span>
+                <Input
+                  type="date"
+                  value={period.to ?? ''}
+                  min={period.from || undefined}
+                  onChange={(e) => setPeriod({ period: 'custom', from: period.from, to: e.target.value })}
+                  className="w-auto rounded-lg bg-white dark:bg-[#171F2B] dark:border-white/10 shadow-sm"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <StatCard label="Новые клиенты" value={companyStats?.newClients ?? '—'} icon={Users} hue="amber" />
+          <StatCard label="Отписались" value={companyStats?.unsubscribedClients ?? '—'} icon={UserX} hue="plum" />
+          <StatCard label="Активировали бота" value={companyStats?.botActivatedClients ?? '—'} icon={Bot} hue="slate" />
+          {canViewRevenue && (
+            <StatCard label="Выручка" value={companyStats ? `$${companyStats.totalRevenue.toFixed(2)}` : '—'} icon={DollarSign} hue="sage" />
+          )}
+          <StatCard label="Первый депозит" value={companyStats?.totalFd ?? '—'} icon={Wallet} hue="sage" />
+          <StatCard label="Повторный депозит" value={companyStats?.totalRd ?? '—'} icon={Repeat} hue="sage" />
+        </div>
       </div>
 
       <div>

@@ -54,9 +54,11 @@ export class PersonalBroadcastsProcessor {
       const current = await this.prisma.personalBroadcast.findUnique({ where: { id: broadcastId }, select: { status: true } });
       if (!current || current.status === PersonalBroadcastStatus.CANCELLED) break;
 
+      // tgUserId читается напрямую со строки лога (снапшот, запрос пользователя 2026-08-06:
+      // "пушить не только клиентов из СРМ, но и всех остальных") — раньше шёл через client.tgUserId,
+      // что делало отправку невозможной для получателей без строки Client вообще.
       const row = await this.prisma.personalBroadcastLog.findFirst({
         where: { broadcastId, status: 'pending' },
-        include: { client: { select: { id: true, tgUserId: true } } },
         orderBy: { id: 'asc' },
       });
       if (!row) break; // всё разослано
@@ -71,12 +73,12 @@ export class PersonalBroadcastsProcessor {
 
       let waitMs = randomDelayMs(broadcast.delayMinSeconds, broadcast.delayMaxSeconds);
 
-      if (!row.client.tgUserId) {
+      if (!row.tgUserId) {
         await this.finishLog(row.id, 'skipped');
         await this.incrementCounter(broadcastId, 'skippedCount');
       } else {
         const variant = variants[row.variantIndex] ?? variants[0];
-        const result = await this.personal.sendDirectMessage(channel, row.client.tgUserId, {
+        const result = await this.personal.sendDirectMessage(channel, row.tgUserId, {
           text: variant.messageText,
           mediaUrl: variant.mediaUrl,
           buttons: variant.buttons,
@@ -90,7 +92,7 @@ export class PersonalBroadcastsProcessor {
           // следующей итерации) и спим ровно столько, сколько попросил сам Telegram, плюс запас.
           await this.prisma.personalBroadcastLog.update({ where: { id: row.id }, data: { status: 'pending' } });
           waitMs = (result.floodWaitSeconds + 5) * 1000;
-          this.logger.warn(`FloodWait ${result.floodWaitSeconds}s on broadcast ${broadcastId}, client ${row.clientId}`);
+          this.logger.warn(`FloodWait ${result.floodWaitSeconds}s on broadcast ${broadcastId}, tgUserId ${row.tgUserId}`);
         } else {
           await this.finishLog(row.id, 'failed', result.error);
           await this.incrementCounter(broadcastId, 'failedCount');

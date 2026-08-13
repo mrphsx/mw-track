@@ -29,91 +29,114 @@ export class PersonalBroadcastsService {
   async getFolders(projectId: string): Promise<{ id: number; title: string }[]> {
     const channel = await this.getPersonalChannel(projectId);
     if (!channel) return [];
+    // Прогрев кеша диалогов не блокирует этот ответ (см. TelegramPersonalService.prewarmDialogsCache)
+    // — к моменту, когда пользователь дойдёт до фильтров, холодный фетch для больших аккаунтов
+    // уже будет в процессе вместо стартующего только на первый preview-audience.
+    this.personal.prewarmDialogsCache(channel);
     return this.personal.getDialogFilters(channel);
   }
 
-  // Аудитория всегда начинается с dialogueSource='PERSONAL_ACCOUNT' — это единственный
-  // безусловный признак "реальный диалог именно с личным аккаунтом" (запрос пользователя:
-  // "рассылку всем у кого есть диалог"), см. находки в плане про DialogueSource. Живая проверка
-  // "диалог реально есть" происходит ВТОРОЙ раз, непосредственно перед отправкой каждому
-  // получателю — см. PersonalBroadcastsProcessor/TelegramPersonalService.sendDirectMessage.
-  private async buildAudienceWhere(projectId: string, filter: PersonalBroadcastFilterDto): Promise<Prisma.ClientWhereInput> {
-    const where: Prisma.ClientWhereInput = {
-      projectId,
-      deletedAt: null,
-      dialogueSource: 'PERSONAL_ACCOUNT',
-      tgUserId: { not: null },
-    };
+  // ПЕРЕРАБОТАНО 2026-08-06 (запрос пользователя: "чтобы можно было пушить не только клиентов
+  // пришедших через нашу срм, но и всех остальных, даже внешних, все абсолютно чаты должны
+  // пушиться, неважно откуда они") — раньше аудитория была ЦЕЛИКОМ запросом к Client
+  // (dialogueSource='PERSONAL_ACCOUNT'), т.е. только тем, кого CRM уже успела создать как
+  // клиента. Источником правды теперь служит ЖИВОЙ список диалогов Telegram-аккаунта
+  // (TelegramPersonalService.getAllDialogs) — включает вообще всех, с кем есть 1:1 диалог,
+  // независимо от того, создавала ли CRM для них Client. Данные CRM (покупки/подписка/страна и
+  // т.д.) накладываются ПОВЕРХ этого списка там, где для tgUserId нашлась строка Client — для
+  // диалогов без Client все CRM-поля трактуются как отсутствующие/нулевые (тот же смысл, что и
+  // LEFT JOIN с NULL-строкой): фильтр "hasPurchase: true" их закономерно исключит (у них
+  // действительно 0 покупок), а "hasPurchase: false" — включит, что и есть корректное поведение,
+  // не специальный случай.
+  private async resolveAudience(
+    projectId: string,
+    channel: Channel,
+    filter: PersonalBroadcastFilterDto,
+  ): Promise<{ tgUserId: string; clientId?: string; firstName?: string; username?: string }[]> {
+    let dialogs = await this.personal.getAllDialogs(channel);
+    if (dialogs.length === 0) return [];
 
-    if (filter.dialogueSince || filter.dialogueUntil) {
-      where.lastDialogueAt = {
-        ...(filter.dialogueSince ? { gte: new Date(filter.dialogueSince) } : {}),
-        ...(filter.dialogueUntil ? { lte: new Date(filter.dialogueUntil) } : {}),
-      };
-    }
-
-    if (typeof filter.hasPurchase === 'boolean') where.hasPurchase = filter.hasPurchase;
-
-    if (filter.minPurchasesCount !== undefined || filter.maxPurchasesCount !== undefined) {
-      where.purchasesCount = {
-        ...(filter.minPurchasesCount !== undefined ? { gte: filter.minPurchasesCount } : {}),
-        ...(filter.maxPurchasesCount !== undefined ? { lte: filter.maxPurchasesCount } : {}),
-      };
-    }
-
-    if (filter.minSpent !== undefined || filter.maxSpent !== undefined) {
-      where.totalSpent = {
-        ...(filter.minSpent !== undefined ? { gte: filter.minSpent } : {}),
-        ...(filter.maxSpent !== undefined ? { lte: filter.maxSpent } : {}),
-      };
-    }
-
-    // "По давности депозита" (запрос пользователя) — новое Client.lastPurchaseAt.
-    if (filter.lastPurchaseSince || filter.lastPurchaseUntil) {
-      where.lastPurchaseAt = {
-        ...(filter.lastPurchaseSince ? { gte: new Date(filter.lastPurchaseSince) } : {}),
-        ...(filter.lastPurchaseUntil ? { lte: new Date(filter.lastPurchaseUntil) } : {}),
-      };
-    }
-
-    if (typeof filter.isSubscribed === 'boolean') where.isSubscribed = filter.isSubscribed;
-
-    if (filter.subscribedSince || filter.subscribedUntil) {
-      where.subscribedAt = {
-        ...(filter.subscribedSince ? { gte: new Date(filter.subscribedSince) } : {}),
-        ...(filter.subscribedUntil ? { lte: new Date(filter.subscribedUntil) } : {}),
-      };
-    }
-
-    if (filter.unsubscribedSince || filter.unsubscribedUntil) {
-      where.unsubscribedAt = {
-        ...(filter.unsubscribedSince ? { gte: new Date(filter.unsubscribedSince) } : {}),
-        ...(filter.unsubscribedUntil ? { lte: new Date(filter.unsubscribedUntil) } : {}),
-      };
-    }
-
-    if (filter.country?.length) where.country = { in: filter.country };
-
-    if (filter.inactiveDaysMin !== undefined) {
-      where.lastActiveAt = { lte: new Date(Date.now() - filter.inactiveDaysMin * 24 * 60 * 60 * 1000) };
-    }
-
-    // Папка Telegram — резолвится в явный список tgUserId ДО построения where (см.
-    // TelegramPersonalService.getFolderTgUserIds — только includePeers, без правило-based
-    // категорий, задокументированное ограничение). Пустой результат = ни один клиент не попадёт,
-    // что и есть корректное поведение для несуществующей/пустой папки.
+    // Папка Telegram — сужаем список ДО похода в Client, экономим запрос при пустой папке.
     if (filter.folderId !== undefined) {
-      const channel = await this.getPersonalChannel(projectId);
-      const tgUserIds = channel ? await this.personal.getFolderTgUserIds(channel, filter.folderId) : [];
-      where.tgUserId = { in: tgUserIds };
+      const folderTgUserIds = new Set(await this.personal.getFolderTgUserIds(channel, filter.folderId));
+      dialogs = dialogs.filter((d) => folderTgUserIds.has(d.tgUserId));
+      if (dialogs.length === 0) return [];
     }
 
-    return where;
+    const clients = await this.prisma.client.findMany({
+      where: { projectId, deletedAt: null, tgUserId: { in: dialogs.map((d) => d.tgUserId) } },
+      select: {
+        id: true,
+        tgUserId: true,
+        lastDialogueAt: true,
+        hasPurchase: true,
+        purchasesCount: true,
+        totalSpent: true,
+        lastPurchaseAt: true,
+        isSubscribed: true,
+        subscribedAt: true,
+        unsubscribedAt: true,
+        country: true,
+        lastActiveAt: true,
+      },
+    });
+    const clientByTgUserId = new Map(clients.map((c) => [c.tgUserId!, c]));
+
+    const dialogueSince = filter.dialogueSince ? new Date(filter.dialogueSince) : undefined;
+    const dialogueUntil = filter.dialogueUntil ? new Date(filter.dialogueUntil) : undefined;
+    const lastPurchaseSince = filter.lastPurchaseSince ? new Date(filter.lastPurchaseSince) : undefined;
+    const lastPurchaseUntil = filter.lastPurchaseUntil ? new Date(filter.lastPurchaseUntil) : undefined;
+    const subscribedSince = filter.subscribedSince ? new Date(filter.subscribedSince) : undefined;
+    const subscribedUntil = filter.subscribedUntil ? new Date(filter.subscribedUntil) : undefined;
+    const unsubscribedSince = filter.unsubscribedSince ? new Date(filter.unsubscribedSince) : undefined;
+    const unsubscribedUntil = filter.unsubscribedUntil ? new Date(filter.unsubscribedUntil) : undefined;
+    const inactiveBefore = filter.inactiveDaysMin !== undefined ? new Date(Date.now() - filter.inactiveDaysMin * 24 * 60 * 60 * 1000) : undefined;
+
+    const result: { tgUserId: string; clientId?: string; firstName?: string; username?: string }[] = [];
+    for (const dialog of dialogs) {
+      const client = clientByTgUserId.get(dialog.tgUserId);
+
+      // Давность диалога — для трекнутых клиентов берём Client.lastDialogueAt (наш собственный
+      // сигнал), для остальных — дату последнего сообщения в самом диалоге по данным Telegram
+      // (TelegramPersonalService.getAllDialogs.lastMessageAt) как честный эквивалент.
+      const lastDialogueAt = client?.lastDialogueAt ?? dialog.lastMessageAt;
+      if (dialogueSince && (!lastDialogueAt || lastDialogueAt < dialogueSince)) continue;
+      if (dialogueUntil && (!lastDialogueAt || lastDialogueAt > dialogueUntil)) continue;
+
+      if (typeof filter.hasPurchase === 'boolean' && (client?.hasPurchase ?? false) !== filter.hasPurchase) continue;
+      if (filter.minPurchasesCount !== undefined && (client?.purchasesCount ?? 0) < filter.minPurchasesCount) continue;
+      if (filter.maxPurchasesCount !== undefined && (client?.purchasesCount ?? 0) > filter.maxPurchasesCount) continue;
+      const totalSpent = client?.totalSpent ? Number(client.totalSpent) : 0;
+      if (filter.minSpent !== undefined && totalSpent < filter.minSpent) continue;
+      if (filter.maxSpent !== undefined && totalSpent > filter.maxSpent) continue;
+
+      if (lastPurchaseSince && (!client?.lastPurchaseAt || client.lastPurchaseAt < lastPurchaseSince)) continue;
+      if (lastPurchaseUntil && (!client?.lastPurchaseAt || client.lastPurchaseAt > lastPurchaseUntil)) continue;
+
+      if (typeof filter.isSubscribed === 'boolean' && (client?.isSubscribed ?? false) !== filter.isSubscribed) continue;
+      if (subscribedSince && (!client?.subscribedAt || client.subscribedAt < subscribedSince)) continue;
+      if (subscribedUntil && (!client?.subscribedAt || client.subscribedAt > subscribedUntil)) continue;
+      if (unsubscribedSince && (!client?.unsubscribedAt || client.unsubscribedAt < unsubscribedSince)) continue;
+      if (unsubscribedUntil && (!client?.unsubscribedAt || client.unsubscribedAt > unsubscribedUntil)) continue;
+
+      if (filter.country?.length && (!client?.country || !filter.country.includes(client.country))) continue;
+
+      // Неактивность — без Client-строки нет lastActiveAt вообще; используем дату последнего
+      // сообщения в диалоге как единственный доступный признак активности внешнего контакта.
+      if (inactiveBefore) {
+        const lastActive = client?.lastActiveAt ?? dialog.lastMessageAt;
+        if (lastActive && lastActive > inactiveBefore) continue;
+      }
+
+      result.push({ tgUserId: dialog.tgUserId, clientId: client?.id, firstName: dialog.firstName, username: dialog.username });
+    }
+    return result;
   }
 
   async previewAudience(projectId: string, filter: PersonalBroadcastFilterDto): Promise<number> {
-    const where = await this.buildAudienceWhere(projectId, filter);
-    return this.prisma.client.count({ where });
+    const channel = await this.getPersonalChannel(projectId);
+    if (!channel) return 0;
+    return (await this.resolveAudience(projectId, channel, filter)).length;
   }
 
   // round-robin по вариантам (запрос пользователя: "половине аудитории один вариант а второй
@@ -123,8 +146,7 @@ export class PersonalBroadcastsService {
     const channel = await this.getPersonalChannel(projectId);
     if (!channel) throw new BadRequestException('К проекту не подключён личный Telegram-аккаунт');
 
-    const where = await this.buildAudienceWhere(projectId, dto.filter);
-    const matching = await this.prisma.client.findMany({ where, select: { id: true } });
+    const matching = await this.resolveAudience(projectId, channel, dto.filter);
 
     const broadcast = await this.prisma.$transaction(async (tx) => {
       const b = await tx.personalBroadcast.create({
@@ -144,9 +166,12 @@ export class PersonalBroadcastsService {
 
       if (matching.length) {
         await tx.personalBroadcastLog.createMany({
-          data: matching.map((c, i) => ({
+          data: matching.map((m, i) => ({
             broadcastId: b.id,
-            clientId: c.id,
+            clientId: m.clientId,
+            tgUserId: m.tgUserId,
+            tgFirstName: m.firstName,
+            tgUsername: m.username,
             variantIndex: i % dto.variants.length,
           })),
         });

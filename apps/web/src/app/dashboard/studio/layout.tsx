@@ -26,7 +26,7 @@ const PLAN_LABELS: Record<string, string> = {
 interface ProjectSummary {
   id: string;
   name: string;
-  channel: { isActive: boolean } | null;
+  channel: { isActive: boolean; tgPersonalLastError: string | null } | null;
 }
 
 // Шелл дизайна "Studio" — единственный оставшийся вариант нового дизайна и, с 2026-07-30,
@@ -61,6 +61,12 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
     queryFn: async () => (await api.get<ProjectSummary[]>('/projects')).data,
   });
   const inactiveProjects = (projects ?? []).filter((p) => p.channel && !p.channel.isActive);
+  // Запрос пользователя 2026-08-06: "проверять раз в некоторое время... уведомление и изменение
+  // статуса" — TelegramPersonalHealthCron (раз в 30 минут) сам чистит tgSessionEncrypted при
+  // обнаружении отозванной сессии и заодно проставляет tgPersonalLastError (в отличие от ручного
+  // отключения из настроек, которое его не трогает) — этим полем и отличаем "было подключено, но
+  // Telegram отозвал сессию" от "личный аккаунт вообще не подключён" (для большинства проектов).
+  const disconnectedPersonalAccounts = (projects ?? []).filter((p) => p.channel?.tgPersonalLastError);
 
   const daysLeft = user?.company?.planExpiresAt
     ? Math.ceil((new Date(user.company.planExpiresAt).getTime() - Date.now()) / 86_400_000)
@@ -70,6 +76,7 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
   const notifications: string[] = [
     ...(expiringSoon ? [`Подписка истекает через ${daysLeft} дн.`] : []),
     ...inactiveProjects.map((p) => `Бот проекта «${p.name}» отключён`),
+    ...disconnectedPersonalAccounts.map((p) => `Личный аккаунт проекта «${p.name}» отключён — сессия отозвана Telegram, переподключите`),
   ];
 
   return (

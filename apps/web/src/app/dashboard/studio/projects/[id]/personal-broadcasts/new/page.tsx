@@ -57,6 +57,7 @@ export default function StudioNewPersonalBroadcastPage() {
 
   const [audienceTotal, setAudienceTotal] = useState<number | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
+  const [calcError, setCalcError] = useState(false);
   useEffect(() => {
     if (!project?.channel?.tgPersonalConnected) return;
     setIsCalculating(true);
@@ -67,6 +68,9 @@ export default function StudioNewPersonalBroadcastPage() {
           buildPersonalBroadcastFilterPayload(filter),
         );
         setAudienceTotal(res.data.audienceTotal);
+        setCalcError(false);
+      } catch {
+        setCalcError(true);
       } finally {
         setIsCalculating(false);
       }
@@ -160,6 +164,7 @@ export default function StudioNewPersonalBroadcastPage() {
           folders={folders ?? []}
           audienceTotal={audienceTotal}
           isCalculating={isCalculating}
+          calcError={calcError}
           containerClassName={STUDIO_CARD}
         />
       </div>

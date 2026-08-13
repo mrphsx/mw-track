@@ -101,9 +101,13 @@ function StudioClientRow({ projectId, client, onSelect }: { projectId: string; c
             <StudioPill hue="sage">Активен</StudioPill>
           )
         ) : client.externalUnsubscribedAt ? (
-          <StudioPill hue="slate">Покинул канал (внеш.)</StudioPill>
+          <span title={format(new Date(client.externalUnsubscribedAt), 'd MMM yyyy, HH:mm')}>
+            <StudioPill hue="slate">Покинул канал (внеш.)</StudioPill>
+          </span>
         ) : client.externalSubscribedAt ? (
-          <StudioPill hue="slate">Подписан (внеш.)</StudioPill>
+          <span title={format(new Date(client.externalSubscribedAt), 'd MMM yyyy, HH:mm')}>
+            <StudioPill hue="slate">Подписан (внеш.)</StudioPill>
+          </span>
         ) : (
           <StudioPill hue="slate">Внешний</StudioPill>
         )}
@@ -149,11 +153,11 @@ function StudioClientRow({ projectId, client, onSelect }: { projectId: string; c
         )}
       </td>
       <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF] whitespace-nowrap">
-        {new Date(client.subscribedAt ?? client.externalSubscribedAt ?? client.createdAt).toLocaleDateString('ru-RU')}
+        {format(new Date(client.subscribedAt ?? client.externalSubscribedAt ?? client.createdAt), 'd MMM yyyy, HH:mm')}
       </td>
       <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF] whitespace-nowrap">
         {client.unsubscribedAt || client.externalUnsubscribedAt
-          ? new Date(client.unsubscribedAt ?? client.externalUnsubscribedAt!).toLocaleDateString('ru-RU')
+          ? format(new Date(client.unsubscribedAt ?? client.externalUnsubscribedAt!), 'd MMM yyyy, HH:mm')
           : '—'}
       </td>
       <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF] whitespace-nowrap">

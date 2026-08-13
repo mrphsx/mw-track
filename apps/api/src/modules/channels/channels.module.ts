@@ -17,6 +17,7 @@ import { WhatsAppProvider } from './providers/whatsapp.provider';
 import { InstagramProvider } from './providers/instagram.provider';
 import { JoinRequestApprovalProcessor } from './join-request-approval.processor';
 import { BotScenarioStepProcessor } from './bot-scenario-step.processor';
+import { TelegramPersonalHealthCron } from './telegram-personal-health.cron';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { BotScenarioStepProcessor } from './bot-scenario-step.processor';
     InstagramProvider,
     JoinRequestApprovalProcessor,
     BotScenarioStepProcessor,
+    TelegramPersonalHealthCron,
   ],
   // ChannelMediaService экспортирован дополнительно (запрос пользователя 2026-07-17,
   // "загружать медиа для рассылок") — PushesModule уже импортирует ChannelsModule (см.

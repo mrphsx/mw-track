@@ -22,6 +22,16 @@ interface PendingConnection {
 
 const ATTEMPT_TTL_MS = 10 * 60 * 1000;
 
+// Кеш живого списка диалогов (запрос-инцидент 2026-08-13: аккаунт с 7500+ диалогами — каждый
+// client.getDialogs({}) без лимита ловит жёсткий Telegram-side flood-wait на несколько минут
+// суммарно, и это раньше вызывалось заново на КАЖДЫЙ чих фильтра в PersonalBroadcastsService,
+// т.е. многократно за один сеанс редактирования одной рассылки — сам по себе риск бана за
+// спам-паттерн доступа, вдобавок к тому что превышает nginx proxy_read_timeout). Список диалогов
+// не зависит от фильтра рассылки — кешируем результат по каналу на TTL, все фильтр-превью внутри
+// одного захода бьют по одному кешу вместо N живых походов в Telegram.
+const DIALOGS_CACHE_TTL_MS = 5 * 60 * 1000;
+type DialogEntry = { tgUserId: string; firstName?: string; lastName?: string; username?: string; lastMessageAt?: Date };
+
 // Подключение личного Telegram-аккаунта через MTProto (не Bot API) — запрос пользователя
 // 2026-07-04, "диалоги с клиентами" для режима PERSONAL_DM, который сегодня вообще не имеет
 // бэкенда (статичная ссылка, ни токена, ни вебхука). Использует GramJS (пакет `telegram`,
@@ -34,6 +44,8 @@ export class TelegramPersonalService {
   private readonly logger = new Logger(TelegramPersonalService.name);
   private pending = new Map<string, PendingConnection>();
   private liveClients = new Map<string, TelegramClient>();
+  private dialogsCache = new Map<string, { data: DialogEntry[]; fetchedAt: number }>();
+  private dialogsInFlight = new Map<string, Promise<DialogEntry[]>>();
 
   constructor(
     private config: ConfigService,
@@ -65,6 +77,11 @@ export class TelegramPersonalService {
       const { phoneCodeHash } = await client.sendCode({ apiId, apiHash }, phone);
       this.pending.set(channel.id, { client, phoneCodeHash, phone, createdAt: Date.now() });
     } catch (error) {
+      // Логируем всегда (запрос пользователя 2026-08-07: "логировать все ошибки от тг, если
+      // этого ещё нет") — ошибка и так долетает до пользователя через исключение ниже, но без
+      // строки в логе не остаётся следа для последующего разбора (например FloodWait на
+      // SendCode после недавнего LogOut — ровно то, что произошло вживую с этим сервисом).
+      this.logger.warn(`startConnect (sendCode) failed for channel ${channel.id}, phone ${phone}: ${(error as Error).message}`);
       await client.destroy();
       throw new BadRequestException(`Не удалось отправить код: ${(error as Error).message}`);
     }
@@ -83,6 +100,7 @@ export class TelegramPersonalService {
       if (error instanceof RPCError && error.errorMessage === 'SESSION_PASSWORD_NEEDED') {
         return { needsPassword: true };
       }
+      this.logger.warn(`submitCode (SignIn) failed for channel ${channel.id}: ${(error as Error).message}`);
       this.pending.delete(channel.id);
       throw new BadRequestException('Неверный код или срок его действия истёк, начните заново');
     }
@@ -106,7 +124,8 @@ export class TelegramPersonalService {
           },
         },
       );
-    } catch {
+    } catch (error) {
+      this.logger.warn(`submitPassword (2FA) failed for channel ${channel.id}: ${(error as Error).message}`);
       this.pending.delete(channel.id);
       throw new BadRequestException('Неверный пароль двухфакторной аутентификации, начните заново');
     }
@@ -114,7 +133,12 @@ export class TelegramPersonalService {
     await this.finalizeConnection(channel, attempt);
   }
 
-  async disconnect(channel: Channel): Promise<void> {
+  // reason (запрос пользователя 2026-08-06: "проверять раз в некоторое время... уведомление и
+  // изменение статуса") — только для АВТОМАТИЧЕСКОГО отключения при обнаружении мёртвой сессии
+  // (handleDeadSession/checkSessionHealth ниже). Ручной вызов (кнопка в настройках, каскад
+  // ProjectsService.archive()) передаёт reason не указывая — tgPersonalLastError остаётся/
+  // становится null, это осознанное действие пользователя, а не ошибка, о которой нужно уведомлять.
+  async disconnect(channel: Channel, reason?: string): Promise<void> {
     const live = this.liveClients.get(channel.id);
     if (live) {
       try {
@@ -129,7 +153,7 @@ export class TelegramPersonalService {
 
     await this.prisma.channel.update({
       where: { id: channel.id },
-      data: { tgPersonalPhone: null, tgPersonalUserId: null, tgSessionEncrypted: null },
+      data: { tgPersonalPhone: null, tgPersonalUserId: null, tgSessionEncrypted: null, tgPersonalLastError: reason ?? null },
     });
   }
 
@@ -164,6 +188,50 @@ export class TelegramPersonalService {
     return this.liveClients.get(channel.id);
   }
 
+  // Живая сессия может быть отозвана НЕ нами (запрос пользователя 2026-08-06, диагностика
+  // реального инцидента — проект Maria Lopez: "открываю список папок, а там нет папок" оказался
+  // не багом фильтрации папок, а мёртвой сессией — пользователь сам завершил её в приложении
+  // Telegram, "Активные сеансы", либо Telegram отозвал её сама). До этого метода такая ошибка
+  // тонула в bare catch { return [] } без единого предупреждения в логах — снаружи выглядело
+  // неотличимо от "у аккаунта реально нет папок/диалогов". Теперь любой вызывающий метод здесь
+  // (getDialogFilters/getFolderTgUserIds/getAllDialogs/sendDirectMessage) при этой ошибке зовёт
+  // disconnect() — тот же метод, что и ручное отключение из настроек: чистит tgSessionEncrypted и
+  // т.д., из-за чего уже существующий индикатор "личный аккаунт не подключён" в UI подхватывает
+  // это само, без отдельной новой плашки.
+  private isDeadSessionError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /AUTH_KEY_UNREGISTERED|AUTH_KEY_INVALID|SESSION_REVOKED|USER_DEACTIVATED/.test(message);
+  }
+
+  private async handleDeadSession(channel: Channel, error: unknown): Promise<void> {
+    if (!this.isDeadSessionError(error)) return;
+    this.logger.warn(
+      `Личный аккаунт канала ${channel.id} отключён на стороне Telegram (сессия недействительна) — очищаем подключение, требуется переподключение: ${(error as Error).message}`,
+    );
+    await this.disconnect(channel, 'Сессия отозвана Telegram — переподключите личный аккаунт');
+  }
+
+  // Проактивная проверка живости (запрос пользователя 2026-08-06: "чтобы как-то проверялось раз
+  // в некоторое время... уведомление и изменение статуса, не тратить сильно ресурсы") — раньше
+  // мёртвая сессия обнаруживалась только РЕАКТИВНО, когда какая-то другая операция (папки,
+  // рассылка) случайно на неё натыкалась — между реальным отзывом сессии и обнаружением могло
+  // пройти сколько угодно, если проектом никто не пользовался. client.getMe() — тот же самый
+  // вызов, что уже используется здесь один раз в finalizeConnection сразу после входа, это
+  // самый дешёвый авторизованный MTProto-запрос (никого не перечисляет, не грузит медиа) — им же
+  // здесь и пингуем. Вызывается из TelegramPersonalHealthCron.
+  async checkSessionHealth(channel: Channel): Promise<boolean> {
+    try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return false;
+      await client.getMe();
+      return true;
+    } catch (error) {
+      this.logger.warn(`checkSessionHealth failed for channel ${channel.id}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
+      return false;
+    }
+  }
+
   // Публикация Telegram Story через личный аккаунт (запрос пользователя 2026-07-21, модуль
   // "Истории") — в GramJS нет готовой обёртки sendStory(), вызываем сырой MTProto-метод
   // напрямую, тем же приёмом, что уже используется здесь для Api.auth.SignIn/LogOut.
@@ -174,10 +242,14 @@ export class TelegramPersonalService {
     channel: Channel,
     params: { buffer: Buffer; mimeType: string; isVideo: boolean; caption?: string },
   ): Promise<{ success: boolean; error?: string }> {
-    const client = await this.getLiveClient(channel);
-    if (!client) return { success: false, error: 'Личный аккаунт не подключён или недоступен' };
-
+    // getLiveClient — ВНУТРИ try (запрос пользователя 2026-08-07, "логировать все ошибки от
+    // тг") — раньше стоял снаружи: если startListening/client.connect() бросает (например
+    // сессия недействительна), ошибка улетала наружу совсем необработанной, минуя и лог, и
+    // handleDeadSession.
     try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return { success: false, error: 'Личный аккаунт не подключён или недоступен' };
+
       const file = new CustomFile(
         params.isVideo ? 'story.mp4' : 'story.jpg',
         params.buffer.length,
@@ -200,6 +272,8 @@ export class TelegramPersonalService {
       );
       return { success: true };
     } catch (error) {
+      this.logger.warn(`sendStory failed for channel ${channel.id}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -208,21 +282,32 @@ export class TelegramPersonalService {
   // похорошему по папкам которые уже созданы в телеграме") — сырой MTProto-вызов, GramJS не
   // даёт готовой обёртки, тот же приём, что уже используется здесь для Api.stories.SendStory.
   // Без кеша в БД — папки живые на стороне Telegram, фетчатся заново при каждом открытии формы
-  // создания рассылки. DialogFilterDefault ("Все чаты") и DialogFilterChatlist (папки-ссылки)
-  // отфильтрованы — у обычных DialogFilter есть includePeers, у остальных двух — другая форма,
-  // не нужная для явного membership-фильтра ниже.
+  // создания рассылки.
+  //
+  // ИСПРАВЛЕНО 2026-08-06 (баг-репорт: "открываю список папок, а там нет папок, но они есть в
+  // телеграме", проект Maria Lopez): первая версия принимала только className==='DialogFilter',
+  // отбрасывая ВСЕ 'DialogFilterChatlist' (папки, добавленные по shared-ссылке t.me/addlist/...,
+  // а не созданные вручную "New Folder") — у этого аккаунта, судя по всему, папки именно такие.
+  // DialogFilterChatlist структурно несёт те же title/includePeers, что и обычный DialogFilter
+  // (проверено по TL-схеме telegram@2.26.22), поэтому оба типа теперь принимаются одинаково.
+  // DialogFilterDefault ("Все чаты") по-прежнему исключён — у него нет includePeers вообще.
   async getDialogFilters(channel: Channel): Promise<{ id: number; title: string }[]> {
     // getLiveClient/invoke могут бросить (протухшая сессия, обрыв соединения) — по тому же
     // приёму "никогда не бросает наружу", что sendStory/sendDirectMessage: недоступность папок
-    // не должна валить previewAudience/create целиком, деградируем до пустого списка.
+    // не должна валить previewAudience/create целиком, деградируем до пустого списка. Но, в
+    // отличие от того приёма, теперь ЛОГИРУЕМ причину (баг выше был невидим в логах вообще —
+    // bare catch без единого warn, при живом протухании сессии выглядело неотличимо от "у
+    // аккаунта реально нет папок").
     try {
       const client = await this.getLiveClient(channel);
       if (!client) return [];
       const result = await client.invoke(new Api.messages.GetDialogFilters());
       return result.filters
-        .filter((f): f is Api.DialogFilter => f.className === 'DialogFilter')
+        .filter((f): f is Api.DialogFilter | Api.DialogFilterChatlist => f.className === 'DialogFilter' || f.className === 'DialogFilterChatlist')
         .map((f) => ({ id: f.id, title: f.title.text }));
-    } catch {
+    } catch (error) {
+      this.logger.warn(`getDialogFilters failed for channel ${channel.id}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
       return [];
     }
   }
@@ -232,17 +317,93 @@ export class TelegramPersonalService {
   // сознательно НЕ резолвятся — GramJS не отдаёт "кто попадает под правило" напрямую, это
   // потребовало бы кросс-сверки с полным списком диалогов аккаунта на каждый вызов. Покрывает
   // обычный случай "руками раскидал контакты по папкам", что и является типичным использованием.
+  // Тот же фикс с DialogFilterChatlist, что и в getDialogFilters выше — иначе папка могла бы
+  // появиться в списке (после фикса там), но здесь по-прежнему резолвилась бы в пустой список.
   async getFolderTgUserIds(channel: Channel, folderId: number): Promise<string[]> {
     try {
       const client = await this.getLiveClient(channel);
       if (!client) return [];
 
       const result = await client.invoke(new Api.messages.GetDialogFilters());
-      const filter = result.filters.find((f): f is Api.DialogFilter => f.className === 'DialogFilter' && f.id === folderId);
+      const filter = result.filters.find(
+        (f): f is Api.DialogFilter | Api.DialogFilterChatlist =>
+          (f.className === 'DialogFilter' || f.className === 'DialogFilterChatlist') && f.id === folderId,
+      );
       if (!filter) return [];
 
       return filter.includePeers.filter((p): p is Api.InputPeerUser => p.className === 'InputPeerUser').map((p) => String(p.userId));
-    } catch {
+    } catch (error) {
+      this.logger.warn(`getFolderTgUserIds failed for channel ${channel.id}, folder ${folderId}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
+      return [];
+    }
+  }
+
+  // Полный живой список диалогов аккаунта (запрос пользователя 2026-08-06: "не только клиентов
+  // пришедших через нашу срм, но и всех остальных, даже внешних, все абсолютно чаты должны
+  // пушится") — раньше аудитория рассылки с личного аккаунта была ограничена строкой Client с
+  // dialogueSource='PERSONAL_ACCOUNT' (см. PersonalBroadcastsService), т.е. только теми, кого
+  // наша CRM уже успела создать как клиента. Реальных диалогов у аккаунта в Telegram может быть
+  // (и обычно есть) больше — люди, написавшие ДО подключения личного аккаунта к CRM, добавленные
+  // руками контакты, и т.д. client.getDialogs() — единственный способ увидеть их: только 1:1
+  // диалоги с пользователями (isUser), боты и сам аккаунт (self) исключены — рассылка не имеет
+  // смысла ни для того, ни для другого. limit не задан — тянем весь список (GramJS сам делает
+  // постранично, с паузами при FloodWait).
+  // Кеш с TTL + дедупликация параллельных вызовов (см. DIALOGS_CACHE_TTL_MS выше) — на холодном
+  // кеше всё ещё может занять несколько минут для аккаунта с тысячами диалогов (Telegram сам
+  // решает, сколько ждать flood-wait), но за это время в кеш не улетает вторая live-попытка:
+  // все параллельные вызовы (например несколько правок фильтра подряд) ждут один и тот же
+  // in-flight промис вместо N отдельных походов в Telegram.
+  async getAllDialogs(channel: Channel, opts?: { forceRefresh?: boolean }): Promise<DialogEntry[]> {
+    const cached = this.dialogsCache.get(channel.id);
+    if (!opts?.forceRefresh && cached && Date.now() - cached.fetchedAt < DIALOGS_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    const inFlight = this.dialogsInFlight.get(channel.id);
+    if (inFlight) return inFlight;
+
+    const promise = this.fetchAllDialogsLive(channel).finally(() => this.dialogsInFlight.delete(channel.id));
+    this.dialogsInFlight.set(channel.id, promise);
+    return promise;
+  }
+
+  // Прогрев кеша без блокировки вызывающей стороны (запрос-инцидент 2026-08-13) — вызывается при
+  // открытии формы создания рассылки (GET .../folders, тот же момент, что и раньше), чтобы к
+  // моменту, когда пользователь дойдёт до фильтров (дебаунс 500мс в UI), холодный ~2-минутный
+  // фетч для больших аккаунтов уже был в процессе/готов, а не стартовал только на первый
+  // preview-audience и упирался в таймаут nginx.
+  prewarmDialogsCache(channel: Channel): void {
+    const cached = this.dialogsCache.get(channel.id);
+    if (cached && Date.now() - cached.fetchedAt < DIALOGS_CACHE_TTL_MS) return;
+    if (this.dialogsInFlight.has(channel.id)) return;
+    this.getAllDialogs(channel).catch(() => undefined);
+  }
+
+  private async fetchAllDialogsLive(channel: Channel): Promise<DialogEntry[]> {
+    try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return [];
+
+      const dialogs = await client.getDialogs({});
+      const result: DialogEntry[] = [];
+      for (const d of dialogs) {
+        if (!d.isUser || !d.entity || d.entity.className !== 'User') continue;
+        const user = d.entity;
+        if (user.bot || user.self) continue;
+        result.push({
+          tgUserId: user.id.toString(),
+          firstName: user.firstName ?? undefined,
+          lastName: user.lastName ?? undefined,
+          username: user.username ?? undefined,
+          lastMessageAt: d.date ? new Date(d.date * 1000) : undefined,
+        });
+      }
+      this.dialogsCache.set(channel.id, { data: result, fetchedAt: Date.now() });
+      return result;
+    } catch (error) {
+      this.logger.warn(`getAllDialogs failed for channel ${channel.id}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
       return [];
     }
   }
@@ -261,10 +422,12 @@ export class TelegramPersonalService {
     tgUserId: string,
     params: { text: string; mediaUrl?: string; buttons?: { text: string; url?: string }[] },
   ): Promise<{ success: boolean; error?: string; floodWaitSeconds?: number }> {
-    const client = await this.getLiveClient(channel);
-    if (!client) return { success: false, error: 'Личный аккаунт не подключён или недоступен' };
-
+    // getLiveClient — ВНУТРИ try, тот же фикс, что и у sendStory выше (запрос пользователя
+    // 2026-08-07: "логировать все ошибки от тг, если этого ещё нет").
     try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return { success: false, error: 'Личный аккаунт не подключён или недоступен' };
+
       const entity = await client.getInputEntity(Number(tgUserId));
       const buttons = params.buttons?.filter((b) => b.url).map((b) => [Button.url(b.text, b.url)]);
 
@@ -277,8 +440,12 @@ export class TelegramPersonalService {
       return { success: true };
     } catch (error) {
       if (error instanceof FloodWaitError || error instanceof SlowModeWaitError) {
+        // FloodWait уже логируется вызывающей стороной (PersonalBroadcastsProcessor.logger.warn,
+        // с указанием broadcastId) — не дублируем здесь тем же уровнем.
         return { success: false, error: error.message, floodWaitSeconds: error.seconds };
       }
+      this.logger.warn(`sendDirectMessage failed for channel ${channel.id}, tgUserId ${tgUserId}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -315,14 +482,39 @@ export class TelegramPersonalService {
     this.pending.delete(channel.id);
 
     const me = await attempt.client.getMe();
+    const tgUserId = String(me.id);
+
+    // Один и тот же личный Telegram-аккаунт не должен иметь больше одной живой сессии с этого
+    // сервера одновременно — даже в другой компании (запрос пользователя 2026-08-07, после
+    // реального инцидента: параллельные MTProto-соединения под одним аккаунтом из разных
+    // процессов привели к нестабильности и вынужденным отключениям). Тот же класс проблемы, что
+    // уже чинили для повторного использования бот-токена между проектами (см.
+    // feedback_archived_project_webhook_hijack) — там конфликтовал вебхук, здесь конфликтовало
+    // бы MTProto-соединение. Ищем по ВСЕЙ таблице Channel, без companyId — намеренно, аккаунт
+    // может физически принадлежать другой компании. id: {not: channel.id} — переподключение
+    // ТОГО ЖЕ канала к тому же аккаунту (например, после протухшей сессии) остаётся разрешено.
+    const conflicting = await this.prisma.channel.findFirst({
+      where: { tgPersonalUserId: tgUserId, tgSessionEncrypted: { not: null }, id: { not: channel.id } },
+      include: { project: { select: { name: true } } },
+    });
+    if (conflicting) {
+      await attempt.client.destroy();
+      throw new BadRequestException(
+        `Этот Telegram-аккаунт уже подключён к другому проекту («${conflicting.project.name}») — сначала отключите его там, прежде чем подключать здесь.`,
+      );
+    }
+
     const sessionString = (attempt.client.session as StringSession).save() as unknown as string;
 
     await this.prisma.channel.update({
       where: { id: channel.id },
       data: {
         tgPersonalPhone: attempt.phone,
-        tgPersonalUserId: String(me.id),
+        tgPersonalUserId: tgUserId,
         tgSessionEncrypted: this.encryption.encrypt(sessionString),
+        // Свежий успешный вход сбрасывает прошлую пометку "сессию отозвал Telegram" (если она
+        // была) — новая сессия ни при чём.
+        tgPersonalLastError: null,
       },
     });
 

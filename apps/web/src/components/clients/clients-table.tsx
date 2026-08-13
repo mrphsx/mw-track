@@ -164,9 +164,9 @@ export function CrossProjectOverlapBadge({ overlap }: { overlap: ClientRow['cros
           {overlap.projects.map((p) => (
             <div key={p.projectId} className="text-xs">
               <span className="font-medium">{p.projectName}</span>
-              {p.joinedAt && <> — вступил {format(new Date(p.joinedAt), 'd MMM yyyy')}</>}
+              {p.joinedAt && <> — вступил {format(new Date(p.joinedAt), 'd MMM yyyy, HH:mm')}</>}
               {' · '}
-              {p.hasDialogue ? `диалог${p.dialogueAt ? ` (${format(new Date(p.dialogueAt), 'd MMM yyyy')})` : ''}` : 'диалога нет'}
+              {p.hasDialogue ? `диалог${p.dialogueAt ? ` (${format(new Date(p.dialogueAt), 'd MMM yyyy, HH:mm')})` : ''}` : 'диалога нет'}
             </div>
           ))}
         </TooltipContent>
@@ -183,7 +183,7 @@ export function CrossProjectOverlapBadge({ overlap }: { overlap: ClientRow['cros
       </TooltipTrigger>
       <TooltipContent className="text-xs">
         Есть в другом нашем проекте
-        {overlap.hasDialogue ? ` — там был диалог${overlap.dialogueAt ? ` (${format(new Date(overlap.dialogueAt), 'd MMM yyyy')})` : ''}` : ', диалога там нет'}
+        {overlap.hasDialogue ? ` — там был диалог${overlap.dialogueAt ? ` (${format(new Date(overlap.dialogueAt), 'd MMM yyyy, HH:mm')})` : ''}` : ', диалога там нет'}
       </TooltipContent>
     </Tooltip>
   );

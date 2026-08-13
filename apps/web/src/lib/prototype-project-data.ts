@@ -127,11 +127,21 @@ export interface PrototypeAdRow {
   cr: number;
 }
 
+export interface PrototypeUnattributedBucket {
+  clients: number;
+  revenue: number;
+}
+
 export interface PrototypeLeaderboards {
   buyers: { buyerId: string; name: string; clients: number; revenue: number }[];
   pixels: { pixelId: string | null; label: string; clients: number; revenue: number }[];
   landings: { landingId: string; name: string; subscribers: number; revenue: number }[];
   campaigns: { campaignId: string; campaignName: string | null; clients: number; revenue: number }[];
+  // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09) — см. полный комментарий у
+  // classic-версии этого же интерфейса (apps/web/src/app/(dashboard)/projects/[id]/page.tsx).
+  buyersUnattributed: PrototypeUnattributedBucket;
+  pixelsUnattributed: PrototypeUnattributedBucket;
+  campaignsUnattributed: PrototypeUnattributedBucket;
 }
 
 export type PrototypePeriod = 'today' | 'yesterday' | '7d' | '30d' | 'custom';

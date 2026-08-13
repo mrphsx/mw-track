@@ -382,6 +382,13 @@ model Channel {
   tgPersonalPhone    String?  // номер, использованный при входе
   tgPersonalUserId   String?  // свой Telegram user id — чтобы отличать свои исходящие от входящих в live-слушателе
   tgSessionEncrypted String?  // GramJS StringSession, AES-256-GCM (apps/api/src/common/encryption.service.ts)
+  // Причина автоматического отключения (запрос пользователя 2026-08-06: "проверять раз в
+  // некоторое время... уведомление и изменение статуса") — заполняется ТОЛЬКО когда
+  // TelegramPersonalService.handleDeadSession сам отозвал сессию (AUTH_KEY_UNREGISTERED и т.п.),
+  // НЕ при обычном ручном отключении из настроек (там disconnect() зовётся без reason, поле
+  // остаётся/становится null) — так отличаем "никогда не было подключено" и "отключили сами" от
+  // "было подключено, но Telegram отозвал сессию", не заводя отдельный булев флаг.
+  tgPersonalLastError String?
 
   // Метаданные, подтянутые из Telegram в initialize() (getMe/getChat/getChatMemberCount) —
   // только для отображения в карточке канала в UI, не используются в бизнес-логике.
@@ -1221,14 +1228,23 @@ model PersonalBroadcast {
 model PersonalBroadcastLog {
   id           String    @id @default(cuid())
   broadcastId  String
-  clientId     String
+  // clientId стал опциональным (запрос пользователя 2026-08-06: "пушить не только клиентов
+  // пришедших через нашу срм, но и всех остальных, даже внешних") — получатель теперь может
+  // быть живым Telegram-диалогом без соответствующей строки Client вообще (см.
+  // TelegramPersonalService.getAllDialogs). tgUserId/tgFirstName/tgUsername — снапшот на момент
+  // создания рассылки, единственный надёжный источник для получателей БЕЗ clientId (join через
+  // client в этом случае невозможен).
+  clientId     String?
+  tgUserId     String
+  tgFirstName  String?
+  tgUsername   String?
   variantIndex Int
   status       String    @default("pending") // pending, sending (claimed, in-flight), sent, failed, skipped
   error        String?
   sentAt       DateTime?
 
   broadcast PersonalBroadcast @relation(fields: [broadcastId], references: [id])
-  client    Client            @relation(fields: [clientId], references: [id])
+  client    Client?           @relation(fields: [clientId], references: [id])
 
   @@index([broadcastId, status])
 }
