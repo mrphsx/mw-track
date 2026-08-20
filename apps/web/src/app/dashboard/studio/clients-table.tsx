@@ -13,7 +13,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { MessageCircle, Star } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ClientAvatar } from '@/components/clients/client-avatar';
-import { ClientRow, CrossProjectOverlapBadge, DIALOGUE_SOURCE_LABEL, formatDuration } from '@/components/clients/clients-table';
+import { ClientRow, CrossProjectOverlapBadge, DIALOGUE_SOURCE_LABEL, TrafficSourceLabel, formatDuration } from '@/components/clients/clients-table';
 import { StudioPill } from './ui';
 
 const CHANNEL_SHORT_LABEL: Record<string, string> = { TELEGRAM: 'TG' };
@@ -25,10 +25,14 @@ export function StudioClientsTable({
   projectId,
   clients,
   onSelect,
+  showTrafficSource,
 }: {
   projectId: string;
   clients: ClientRow[];
   onSelect: (clientId: string) => void;
+  // Колонка "Источник" (запрос пользователя 2026-08-18: "везде, кроме аккаунта оператора") —
+  // родитель решает по роли (user.role !== 'OPERATOR').
+  showTrafficSource?: boolean;
 }) {
   return (
     <div className="rounded-xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm overflow-x-auto">
@@ -41,6 +45,7 @@ export function StudioClientsTable({
             <th className="px-5 py-3 font-medium text-right">Потрачено</th>
             <th className="px-5 py-3 font-medium">Статус</th>
             <th className="px-5 py-3 font-medium">Бот</th>
+            {showTrafficSource && <th className="px-5 py-3 font-medium">Источник</th>}
             <th className="px-5 py-3 font-medium">Диалог</th>
             <th className="px-5 py-3 font-medium">Подписан</th>
             <th className="px-5 py-3 font-medium">Отписан</th>
@@ -50,7 +55,7 @@ export function StudioClientsTable({
         </thead>
         <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
           {clients.map((client) => (
-            <StudioClientRow key={client.id} projectId={projectId} client={client} onSelect={() => onSelect(client.id)} />
+            <StudioClientRow key={client.id} projectId={projectId} client={client} onSelect={() => onSelect(client.id)} showTrafficSource={showTrafficSource} />
           ))}
         </tbody>
       </table>
@@ -58,7 +63,17 @@ export function StudioClientsTable({
   );
 }
 
-function StudioClientRow({ projectId, client, onSelect }: { projectId: string; client: ClientRow; onSelect: () => void }) {
+function StudioClientRow({
+  projectId,
+  client,
+  onSelect,
+  showTrafficSource,
+}: {
+  projectId: string;
+  client: ClientRow;
+  onSelect: () => void;
+  showTrafficSource?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [dialogueJustRegistered, setDialogueJustRegistered] = useState(false);
   const registerDialogue = useMutation({
@@ -121,7 +136,16 @@ function StudioClientRow({ projectId, client, onSelect }: { projectId: string; c
           <StudioPill hue="sage">Активирован</StudioPill>
         )}
       </td>
-      <td className="px-5 py-3">
+      {showTrafficSource && (
+        <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF]">
+          <TrafficSourceLabel client={client} />
+        </td>
+      )}
+      {/* whitespace-nowrap (запрос пользователя 2026-08-18) — без него длинный текст dialogueSource
+          ("через бота (режим \"Прямой бот\")") переносился на 2-3 строки и раздувал высоту всей
+          строки таблицы; остальные date-ячейки этой таблицы (Подписан/Отписан/Длительность ниже)
+          уже имели этот класс, здесь его просто не хватало. */}
+      <td className="px-5 py-3 whitespace-nowrap">
         {client.firstDialogueAt ? (
           <div className="space-y-0.5">
             <div className="flex items-center gap-1 text-sm text-[#131A24] dark:text-[#E9EDF3]">

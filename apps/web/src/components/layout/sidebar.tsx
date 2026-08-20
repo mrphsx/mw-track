@@ -26,6 +26,7 @@ import {
   Monitor,
   BarChart3,
   BookOpen,
+  Contact,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
@@ -96,13 +97,16 @@ const navItems: NavItem[] = [
   { href: '/settings', label: 'Настройки', icon: Settings },
 ];
 
-// Жёсткий 2-пунктный сайдбар для Operator (запрос пользователя 2026-07-30: "нужно давать
+// Жёстко ограниченный сайдбар для Operator (запрос пользователя 2026-07-30: "нужно давать
 // только одну страницу, страницу клиентов их проекта и свою страницу общей статистики") —
 // полностью заменяет navItems, а не добавляется к нему; не завязан на requiredPermission/
-// ownerAdminOnly, поэтому проходит через существующие фильтры ниже без изменений.
+// ownerAdminOnly, поэтому проходит через существующие фильтры ниже без изменений. 3-й пункт
+// добавлен запросом пользователя 2026-08-14 ("вкладка для пушей с личного аккаунта, на проектах
+// где он есть") — та же company-wide-с-пикером страница, что и первые два пункта.
 const OPERATOR_NAV_ITEMS: NavItem[] = [
   { href: '/my-clients', label: 'Клиенты', icon: Users },
   { href: '/my-stats', label: 'Моя статистика', icon: BarChart3 },
+  { href: '/my-personal-broadcasts', label: 'Личный аккаунт', icon: Contact },
 ];
 
 // Платформенная админка (Фаза 4.3, запрос пользователя 2026-07-19) переехала в полностью

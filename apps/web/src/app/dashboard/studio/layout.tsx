@@ -56,6 +56,19 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
   useEffect(() => setMounted(true), []);
   const isDark = mounted && resolvedTheme === 'dark';
 
+  // Класс-маркер на <html> (запрос пользователя 2026-08-18: "все попапы и дропдауны
+  // черно-серого цвета, поправь все") — Dialog/Select/DropdownMenu/Drawer рендерят контент через
+  // Portal в document.body, вне дерева этого layout'а, так что класс, отличающий Studio от
+  // классики для CSS-переопределения токенов (globals.css, .studio.dark), обязан жить на общем
+  // предке <html>, а не на каком-то вложенном div — только так его подхватят и портальные попапы.
+  // Ставится/убирается в эффекте, а не статичной JSX-разметкой — <html> общий для обоих деревьев
+  // (Studio и классика, домены на одном Next.js-процессе), брендировать его вложенным layout'ом
+  // напрямую нельзя.
+  useEffect(() => {
+    document.documentElement.classList.add('studio');
+    return () => document.documentElement.classList.remove('studio');
+  }, []);
+
   const { data: projects } = useQuery({
     queryKey: ['projects'],
     queryFn: async () => (await api.get<ProjectSummary[]>('/projects')).data,

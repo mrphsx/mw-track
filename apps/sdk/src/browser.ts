@@ -13,10 +13,21 @@
   // fbclid/utm) — landingId привязан к ТЕКУЩЕЙ странице, не должен персистить, если SDK
   // вдруг загрузится на другом лендинге в той же сессии.
   const landingId = script?.getAttribute('data-landing-id') || undefined;
+  // Группа A/B/n-теста, если этот конкретный заход пришёл через её сплит (запрос пользователя
+  // 2026-08-20: "группа лэндингов как отдельная сущность со своей статой разделенной") —
+  // отсутствует, если лендинг открыт напрямую (даже если он параллельно СОСТОИТ в какой-то
+  // группе через другую ссылку, см. LandingRendererService.injectTrackingScripts).
+  const abTestGroupId = script?.getAttribute('data-ab-test-group-id') || undefined;
   // Авторедирект (тумблер на лендинге, LandingRendererService.injectTrackingScripts) —
   // страница сразу уводит в Telegram без клика по кнопке. URL уже собран на сервере
   // (тот же /tg-redirect, что и у кнопки), SDK просто трекает Lead и уходит по нему.
   const autoRedirectUrl = script?.getAttribute('data-auto-redirect-url') || undefined;
+  // Отложенный авторедирект (запрос пользователя 2026-08-18, шаблон age-gate-invite с двумя
+  // попапами) — вместо немедленного срабатывания на загрузке страницы функция редиректа
+  // складывается в window.tcrm.triggerAutoRedirect, и сам template.html вызывает её вручную в
+  // нужный момент (переход на попап 2). Без этого атрибута поведение не меняется — редирект
+  // срабатывает немедленно, как и раньше, у всех остальных шаблонов.
+  const autoRedirectDeferred = script?.getAttribute('data-auto-redirect-defer') === 'true';
 
   // Карта имён query-параметров трекинг-ссылки (пиксель + ad_id/campaign_id/... — запрос
   // пользователя 2026-07-04, "получить ссылку" с кастомными именами параметров, чтобы
@@ -56,13 +67,26 @@
   // браузера для самого query-string), но если после этого в значении всё ещё остался паттерн
   // %XX — значит исходно было закодировано ДВАЖДЫ, декодируем ещё раз. Для уже нормальных
   // значений (без %XX) — no-op, ничего не меняет.
+  // Иногда рекламная площадка не подставляет часть макросов в конкретной доставке (баг-репорт
+  // пользователя 2026-08-20: campaign_id/campaign_name пришли буквально "{{campaign.id}}" и
+  // т.п., хотя соседние поля в той же ссылке подставились нормально — сбой на стороне площадки,
+  // не обрезка URL) — такое буквальное значение считается отсутствием данных (null), не
+  // настоящим значением, тем же приёмом, что и в LandingRendererService (бэкенд). По подстроке,
+  // не по полному совпадению — реальная обрезка URL (тот же баг-репорт) может оборвать макрос
+  // ПОСЕРЕДИНЕ ("{{site_source_name" без закрывающих "}}"), полное совпадение это бы пропустило.
+  const UNSUBSTITUTED_MACRO_PATTERN = /\{\{|\}\}|^__[A-Z]/;
+
   function decodeAdMacro(value: string | null): string | null {
-    if (!value || !/%[0-9A-Fa-f]{2}/.test(value)) return value;
-    try {
-      return decodeURIComponent(value);
-    } catch {
-      return value;
+    if (!value) return value;
+    let decoded = value;
+    if (/%[0-9A-Fa-f]{2}/.test(decoded)) {
+      try {
+        decoded = decodeURIComponent(decoded);
+      } catch {
+        // оставляем как есть — лучше сырое значение, чем брошенное исключение
+      }
     }
+    return UNSUBSTITUTED_MACRO_PATTERN.test(decoded) ? null : decoded;
   }
 
   // _fbp — ставится базовым пикселем Facebook (fbevents.js, уже подключён на странице через
@@ -108,6 +132,7 @@
       eventName,
       pageUrl: window.location.href,
       landingId,
+      abTestGroupId,
       // fbp — баг-репорт пользователя 2026-07-29: читалось только на клике по кнопке Telegram
       // (withFbp/tgRedirect ниже), но НЕ для обычных браузерных событий (PageView/Lead/
       // InitiateCheckout), которые тоже уходят в Facebook CAPI через TrackingService — читаем
@@ -133,6 +158,19 @@
     }
   }
 
+  // Публичный API для ручного использования: window.tcrm.track('Purchase', {value: 99}).
+  // Определяется здесь (а не в самом конце файла, как раньше) — отложенному авторедиректу
+  // (autoRedirectDeferred, ниже) нужно дописать в этот же объект triggerAutoRedirect ДО того,
+  // как выполнение дойдёт до конца скрипта.
+  const tcrm: Record<string, unknown> = {
+    track,
+    pageView: (data?: Record<string, unknown>) => track('PageView', data || {}),
+    lead: (data?: Record<string, unknown>) => track('Lead', data || {}),
+    purchase: (amount: number, currency = 'USD', data?: Record<string, unknown>) =>
+      track('Purchase', { value: amount, currency, ...(data || {}) }),
+  };
+  (window as unknown as { tcrm: unknown }).tcrm = tcrm;
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => track('PageView'));
   } else {
@@ -151,33 +189,27 @@
   }
 
   // fetch(..., {keepalive:true}) переживает уход со страницы, поэтому не ждём ответа перед
-  // редиректом. fbp тут часто не успевал проставиться (авторедирект срабатывает почти сразу
-  // после загрузки страницы, cookie от fbevents.js может ещё не дойти) — баг-репорт пользователя
-  // 2026-07-30 (реальное событие без fbp у autoRedirect-лендинга, при том что fbc пришёл
-  // нормально, т.к. берётся прямо из URL без зависимости от стороннего скрипта). Раньше здесь
-  // редиректили немедленно; теперь — короткое опрос-ожидание cookie максимум FBP_WAIT_MAX_MS,
-  // с шагом FBP_WAIT_STEP_MS, редирект уходит сразу, как только cookie появилась, а не всегда
-  // ждёт полный потолок. Потолок поднят с 300мс до 3с тем же днём (запрос пользователя: "чтобы
-  // fpb точно считывалось, увеличь ещё время... 2-3 секунды") — 300мс оказалось мало для части
-  // реальных случаев; 3с — верхняя граница названного диапазона, ради максимальной надёжности
-  // ценой более заметной задержки редиректа в худшем случае (среднем случае fbevents.js всё
-  // ещё обычно успевает куда раньше потолка, редирект уходит сразу).
-  const FBP_WAIT_MAX_MS = 3000;
-  const FBP_WAIT_STEP_MS = 50;
+  // редиректом. Раньше здесь был переменный по длительности вейт: редирект сразу, если _fbp уже
+  // есть, иначе опрос-ожидание до 3с (баг-репорт 2026-07-30 — fbp часто не успевал проставиться
+  // при мгновенном авторедиректе). Запрос пользователя 2026-08-19 ("всё равно увеличь время до
+  // авторедиректа, поставь чтобы было 2 секунды ВСЕГДА") — заменено на фиксированную паузу без
+  // условий: не влияет на то, что баер/кампания и т.п. читаются сервером ещё до этого скрипта
+  // (см. разбор бага в LandingRendererService), это просто явная, предсказуемая пауза перед
+  // уходом с лендинга, независимо от состояния cookie.
+  const AUTO_REDIRECT_DELAY_MS = 2000;
+
+  function fireAutoRedirect(): void {
+    track('Lead');
+    window.setTimeout(() => {
+      window.location.href = withFbp(autoRedirectUrl!);
+    }, AUTO_REDIRECT_DELAY_MS);
+  }
 
   if (autoRedirectUrl) {
-    track('Lead');
-    if (readCookie('_fbp')) {
-      window.location.href = withFbp(autoRedirectUrl);
+    if (autoRedirectDeferred) {
+      tcrm.triggerAutoRedirect = fireAutoRedirect;
     } else {
-      let waited = 0;
-      const poll = window.setInterval(() => {
-        waited += FBP_WAIT_STEP_MS;
-        if (readCookie('_fbp') || waited >= FBP_WAIT_MAX_MS) {
-          window.clearInterval(poll);
-          window.location.href = withFbp(autoRedirectUrl);
-        }
-      }, FBP_WAIT_STEP_MS);
+      fireAutoRedirect();
     }
   }
 
@@ -217,13 +249,4 @@
     e.preventDefault();
     window.location.href = withFbp(link.href);
   });
-
-  // Публичный API для ручного использования: window.tcrm.track('Purchase', {value: 99})
-  (window as unknown as { tcrm: unknown }).tcrm = {
-    track,
-    pageView: (data?: Record<string, unknown>) => track('PageView', data || {}),
-    lead: (data?: Record<string, unknown>) => track('Lead', data || {}),
-    purchase: (amount: number, currency = 'USD', data?: Record<string, unknown>) =>
-      track('Purchase', { value: amount, currency, ...(data || {}) }),
-  };
 })(window, document);

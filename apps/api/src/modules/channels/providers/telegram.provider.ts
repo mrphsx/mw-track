@@ -44,6 +44,9 @@ interface CachedLandingAttribution {
   placement?: string | null;
   siteSourceName?: string | null;
   buyerRef?: string | null;
+  // Запрос пользователя 2026-08-20 — тот же мост, что и остальные поля выше, для PRIVATE_
+  // CHANNEL_REQUEST (см. LandingRendererService.injectTrackingScripts).
+  abTestGroupId?: string | null;
 }
 
 @Injectable()
@@ -336,18 +339,71 @@ export class TelegramProvider implements ChannelProvider {
     return cached ?? undefined;
   }
 
+  // Сколько последних визитов заглядываем вперёд очереди, выбирая заявку на вступление (см.
+  // getCachedLandingAttribution ниже) — баг-репорт пользователя 2026-08-20: при плотном трафике
+  // на один лендинг (десяток+ визитов за считанные минуты) строгий FIFO мог выдать реальному
+  // человеку атрибуцию визита, где Facebook сам не подставил рекламные макросы (campaign_id и
+  // т.п. остались {{...}} и корректно обнулились ещё в injectTrackingScripts, см. UNSUBSTITUTED_
+  // MACRO_PATTERN) — хотя буквально следом в той же очереди стоял визит с полностью рабочей
+  // атрибуцией. Небольшое окно, не вся очередь — иначе можно было бы выдать атрибуцию визита,
+  // который по времени сильно разошёлся с реальным моментом вступления.
+  private static readonly ATTRIBUTION_LOOKAHEAD = 10;
+
   // Полный блок атрибуции (fbclid/ttclid/utm/пиксель/рекламные макросы + метка баера, Фаза 3.6)
   // — тот же приём и та же приблизительность, что и у getCachedLandingCountry выше, тот же
   // 30-минутный кэш по landingId (LandingRendererService.injectTrackingScripts). Раньше здесь
   // читался только buyerRef — баг-репорт пользователя 2026-07-23: у новых подписчиков
   // PRIVATE_CHANNEL_REQUEST не было вообще никаких FB-данных, и Subscribe/Dialogue-события не
   // доходили до Facebook (TrackingService.recordEvent требует реальную атрибуцию с 2026-07-21).
+  // FIFO-очередь, не последнее значение (см. запись в LandingRendererService.
+  // injectTrackingScripts, тот же баг-репорт 2026-08-19) — разбирает визиты в порядке
+  // поступления, поэтому визит ДРУГОГО человека на тот же лендинг больше не перезаписывает и не
+  // ворует атрибуцию текущей заявки на вступление.
+  //
+  // Баг-репорт пользователя 2026-08-20 (реальный кейс — баер Игорь, клиент Sandra): при плотном
+  // трафике (15 визитов за 15 минут на один лендинг) строгий LPOP иногда выдавал визит, у
+  // которого Facebook НЕ подставил ad_id/campaign_id и т.п. (сбой на стороне площадки, не наш
+  // баг — см. UNSUBSTITUTED_MACRO_PATTERN), хотя рядом в очереди стояли визиты с полной рабочей
+  // атрибуцией. Теперь заглядываем вперёд на ATTRIBUTION_LOOKAHEAD визитов и предпочитаем первый
+  // с непустым campaignId (признак, что макросы Facebook реально подставились для этого показа);
+  // если во всём окне ни у одного нет campaignId — забираем самый старый как раньше (чистый
+  // FIFO), лучше приблизительная атрибуция, чем вообще никакой.
   private async getCachedLandingAttribution(landingId: string | undefined): Promise<CachedLandingAttribution | undefined> {
     if (!landingId) return undefined;
-    const cached = await this.redis.get(`landing-visit-attribution:${landingId}`);
-    if (!cached) return undefined;
+    const key = `landing-visit-attribution:${landingId}`;
+    let candidates: string[];
     try {
-      return JSON.parse(cached);
+      candidates = await this.redis.lrange(key, 0, TelegramProvider.ATTRIBUTION_LOOKAHEAD - 1);
+    } catch (error) {
+      // Переходный период сразу после деплоя (см. rpushSelfHealing в LandingRendererService) —
+      // ключ ещё может быть старой строкой (SET), LRANGE на неё бросает WRONGTYPE. Подчищаем и
+      // считаем так же, как отсутствие атрибуции — не должно ронять регистрацию подписчика.
+      if (String(error).includes('WRONGTYPE')) {
+        await this.redis.del(key);
+      }
+      return undefined;
+    }
+    if (!candidates.length) return undefined;
+
+    let chosenRaw = candidates[0];
+    for (const raw of candidates) {
+      try {
+        if ((JSON.parse(raw) as CachedLandingAttribution).campaignId) {
+          chosenRaw = raw;
+          break;
+        }
+      } catch {
+        // мусор вместо валидного JSON — пропускаем при выборе, LREM ниже его не тронет, если он
+        // в итоге не оказался выбранным; если единственный кандидат — отвалится на JSON.parse
+        // ниже, как и раньше.
+      }
+    }
+    // LREM удаляет ИМЕННО выбранную запись по значению — не весь LRANGE-диапазон, остальные
+    // просмотренные-но-непригодные визиты остаются в очереди для следующей заявки.
+    await this.redis.lrem(key, 1, chosenRaw);
+
+    try {
+      return JSON.parse(chosenRaw);
     } catch {
       return undefined;
     }
@@ -404,6 +460,7 @@ export class TelegramProvider implements ChannelProvider {
       const client = await this.clientsService.findOrCreate({
         projectId: channel.projectId,
         landingId,
+        abTestGroupId: attribution?.abTestGroupId ?? undefined,
         buyerId: attribution?.buyerRef ?? undefined,
         fbclid: attribution?.fbclid ?? undefined,
         ttclid: attribution?.ttclid ?? undefined,
@@ -446,6 +503,7 @@ export class TelegramProvider implements ChannelProvider {
         clientId: client.id,
         tgUserId: String(tgUser.id),
         landingId,
+        abTestGroupId: attribution?.abTestGroupId ?? undefined,
         source: 'SERVER',
       });
 

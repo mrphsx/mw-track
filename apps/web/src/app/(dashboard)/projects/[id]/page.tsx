@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Users,
@@ -35,6 +35,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { StatsCard, DualStatsCard } from '@/components/shared/stats-card';
 import { PeriodSelector, PeriodValue } from '@/components/shared/period-selector';
+import { usePeriodQueryState } from '@/lib/use-period-query-state';
 import { TRACKING_EVENT_TYPES } from '@/lib/tracking-events';
 import { ClientsTable, ClientRow, formatSecondsDuration } from '@/components/clients/clients-table';
 import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
@@ -140,20 +141,31 @@ interface UnattributedBucket {
 }
 
 interface Leaderboards {
-  buyers: { buyerId: string; name: string; clients: number; revenue: number }[];
+  // isDeleted (запрос пользователя 2026-08-19: "в разделе топ баеров показывает удалённых
+  // пользователей, так и должно быть, но лучше показать его имя только красным и при наведении
+  // подсказка что он удалённый") — раньше такие баеры показывались НЕВООРУЖЁННЫМ глазом
+  // неотличимо от активных (backend не фильтровал User.deletedAt в этом конкретном запросе —
+  // намеренно, история клиентов/выручки должна остаться видна даже после увольнения баера), но
+  // фронт никак не показывал разницу. Теперь сервер отдаёт флаг, фронт красит имя и добавляет title.
+  buyers: { buyerId: string; name: string; isDeleted?: boolean; clients: number; revenue: number }[];
   // Багфикс 2026-07-28 ("пиксель с реальным подписчиком отсутствовал в топе") — раньше только
   // `conversions` (счётчик Purchase-событий, из-за чего пиксель без покупок пропадал из списка
   // целиком), теперь как у остальных категорий: clients (новых подписчиков за период) + revenue.
   pixels: { pixelId: string | null; label: string; clients: number; revenue: number }[];
   landings: { landingId: string; name: string; subscribers: number; revenue: number }[];
   campaigns: { campaignId: string; campaignName: string | null; clients: number; revenue: number }[];
-  // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09: "104 клиента, а в топ баеров
-  // только 27, где остальные?") — buyers/pixels/campaigns выше намеренно исключают клиентов без
-  // атрибуции (ранжировать "неизвестно кого" бессмысленно), эти три поля — честный остаток,
-  // чтобы сумма по категории видимо сходилась с общим числом клиентов за период.
+  // Топ источников — Facebook/TikTok (запрос пользователя 2026-08-18) — та же форма, что и
+  // остальные категории; source — производное от Client.fbclid/ttclid, не настоящий id.
+  sources: { source: 'FACEBOOK' | 'TIKTOK'; clients: number; revenue: number }[];
+  // "Без баера/пикселя/кампании/источника" (запрос пользователя 2026-08-09: "104 клиента, а в
+  // топ баеров только 27, где остальные?") — buyers/pixels/campaigns/sources выше намеренно
+  // исключают клиентов без атрибуции (ранжировать "неизвестно кого" бессмысленно), эти четыре
+  // поля — честный остаток, чтобы сумма по категории видимо сходилась с общим числом клиентов
+  // за период.
   buyersUnattributed: UnattributedBucket;
   pixelsUnattributed: UnattributedBucket;
   campaignsUnattributed: UnattributedBucket;
+  sourcesUnattributed: UnattributedBucket;
 }
 
 // Предпросмотр лендинга (запрос пользователя 2026-07-17, "топ лэндингов... ссылка на превью
@@ -183,7 +195,9 @@ interface LeaderboardFunnelRow {
   revenue: number;
 }
 
-type LeaderboardCategory = 'buyers' | 'pixels' | 'landings' | 'campaigns';
+type LeaderboardCategory = 'buyers' | 'pixels' | 'landings' | 'campaigns' | 'sources';
+
+const SOURCE_LABEL: Record<'FACEBOOK' | 'TIKTOK', string> = { FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
 
 // Компактная строка-воронка под каждым элементом лидерборда — сознательно НЕ полноразмерный
 // ConversionFunnel (5 карточек × 4 категории на странице было бы избыточно тяжело визуально),
@@ -234,9 +248,10 @@ function LeaderboardCard({
   funnelLoading,
   unattributed,
   unattributedLabel,
+  compareHref,
 }: {
   title: string;
-  items: { id: string; label: string; primary: string; secondary?: string; previewId?: string }[];
+  items: { id: string; label: string; primary: string; secondary?: string; previewId?: string; detailHref?: string; isDeleted?: boolean }[];
   funnelById?: Map<string, LeaderboardFunnelRow>;
   funnelLoading?: boolean;
   // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09: "104 клиента, а в топ баеров
@@ -246,11 +261,20 @@ function LeaderboardCard({
   // проектов атрибуция полная, лишняя строка с нулём была бы просто шумом.
   unattributed?: UnattributedBucket;
   unattributedLabel?: string;
+  // Ссылка на полный список этой категории (запрос пользователя 2026-08-19: "под каждым топ
+  // разделом кнопка на отдельную страницу со списком всех записей для сравнения") — уже несёт
+  // текущий период в query, чтобы страница открылась с тем же окном, а не сбрасывалась на дефолт.
+  compareHref?: string;
 }) {
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
         <CardTitle className="text-base">{title}</CardTitle>
+        {compareHref && (
+          <Link href={compareHref} className="text-xs text-blue-600 hover:underline dark:text-blue-400 shrink-0">
+            Сравнить все →
+          </Link>
+        )}
       </CardHeader>
       <CardContent className="space-y-3">
         {items.length === 0 && !unattributed?.clients && <p className="text-sm text-muted-foreground">Нет данных за период.</p>}
@@ -261,7 +285,26 @@ function LeaderboardCard({
               <div className="flex items-center justify-between text-sm gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-muted-foreground shrink-0">{i + 1}.</span>
-                  <span className="truncate">{item.label}</span>
+                  {/* Клик по названию ведёт на саму сущность (запрос пользователя 2026-08-20:
+                      "при нажатии на название лэндинга должна открыться страница этого
+                      лэндинга") — сейчас есть только у лендингов (detailHref), для остальных
+                      категорий страницы сущности нет. */}
+                  {item.detailHref ? (
+                    <Link
+                      href={item.detailHref}
+                      className={`truncate hover:underline ${item.isDeleted ? 'text-red-600 dark:text-red-400' : ''}`}
+                      title={item.isDeleted ? 'Удалённый пользователь' : undefined}
+                    >
+                      {item.label}
+                    </Link>
+                  ) : (
+                    <span
+                      className={`truncate ${item.isDeleted ? 'text-red-600 dark:text-red-400' : ''}`}
+                      title={item.isDeleted ? 'Удалённый пользователь' : undefined}
+                    >
+                      {item.label}
+                    </span>
+                  )}
                   {item.previewId && (
                     <button
                       type="button"
@@ -379,51 +422,21 @@ const PERIOD_LABELS: Record<PeriodValue['period'], string> = {
   custom: 'за период',
 };
 
-const PERIOD_VALUES = ['today', 'yesterday', '7d', '30d', 'custom'] as const;
-
-// Читает период из query-параметров ссылки (?period=...&from=...&to=...) — запрос пользователя
-// 2026-07-25: "при обновлении страницы должен остаться выбранный период" (раньше был просто
-// useState, сбрасывался на дефолт при каждой перезагрузке). По умолчанию — "Сегодня" (тот же
-// запрос: "изначально ставь период СЕГОДНЯ"), не "30 дней", как было.
-function readPeriodFromSearchParams(params: URLSearchParams): PeriodValue {
-  const period = params.get('period');
-  if (period === 'custom') {
-    const from = params.get('from') || undefined;
-    const to = params.get('to') || undefined;
-    if (from && to) return { period: 'custom', from, to };
-  }
-  if (period && (PERIOD_VALUES as readonly string[]).includes(period)) return { period: period as PeriodValue['period'] };
-  return { period: 'today' };
-}
-
 export default function ProjectOverviewPage() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
   const queryClient = useQueryClient();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const canViewRevenue = hasPermission(user, id, 'STATS_VIEW_REVENUE');
   const canViewTeamLeaderboards = hasPermission(user, id, 'STATS_VIEW_TEAM_LEADERBOARDS');
-  const [periodValue, setPeriodValueState] = useState<PeriodValue>(() => readPeriodFromSearchParams(searchParams));
+  // Персистентность периода в URL (запрос пользователя 2026-07-25) — вынесено в общий хук
+  // 2026-08-18 (usePeriodQueryState), переиспользуется теперь несколькими страницами. Дефолт —
+  // "Сегодня" (запрос пользователя: "изначально ставь период СЕГОДНЯ"), не "30 дней".
+  const [periodValue, setPeriodValue] = usePeriodQueryState('today');
   // Запрос пользователя 2026-07-27: "показывай сразу как список на странице клиентов, со всеми
   // параметрами, только без фильтров" — переиспользуем ClientsTable/ClientDetailDrawer 1:1,
   // тот же компонент, что и на /projects/[id]/clients, а не свой урезанный рендер.
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
 
-  const setPeriodValue = (next: PeriodValue) => {
-    setPeriodValueState(next);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('period', next.period);
-    if (next.period === 'custom') {
-      if (next.from) params.set('from', next.from); else params.delete('from');
-      if (next.to) params.set('to', next.to); else params.delete('to');
-    } else {
-      params.delete('from');
-      params.delete('to');
-    }
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  };
   const periodLabel = PERIOD_LABELS[periodValue.period];
   // Графики по дням не показываем для однодневного периода (запрос пользователя 2026-07-29) —
   // см. комментарий у Tabs ниже.
@@ -433,6 +446,10 @@ export default function ProjectOverviewPage() {
   const periodReady = periodValue.period !== 'custom' || (!!periodValue.from && !!periodValue.to);
   const periodParams =
     periodValue.period === 'custom' ? { period: periodValue.period, from: periodValue.from, to: periodValue.to } : { period: periodValue.period };
+  // Ссылка на страницу "сравнить все" (запрос пользователя 2026-08-19) — несёт текущий период,
+  // чтобы открыть список сразу с тем же окном, а не сбрасывать на дефолт "Сегодня".
+  const compareHref = (category: string) =>
+    `/projects/${id}/leaderboards/${category}?${new URLSearchParams(periodParams as Record<string, string>).toString()}`;
 
   const { data: project } = useQuery({
     queryKey: ['project', id],
@@ -500,7 +517,9 @@ export default function ProjectOverviewPage() {
         ? leaderboards.pixels.map((p) => p.pixelId).filter((v): v is string => !!v)
         : activeLeaderboardTab === 'landings'
           ? leaderboards.landings.map((l) => l.landingId)
-          : leaderboards.campaigns.map((c) => c.campaignId).filter(Boolean);
+          : activeLeaderboardTab === 'sources'
+            ? leaderboards.sources.map((s) => s.source)
+            : leaderboards.campaigns.map((c) => c.campaignId).filter(Boolean);
 
   const { data: leaderboardFunnel, isFetching: leaderboardFunnelLoading } = useQuery({
     queryKey: ['project', id, 'leaderboard-funnel', activeLeaderboardTab, periodParams, activeLeaderboardIds.join(',')],
@@ -893,6 +912,7 @@ export default function ProjectOverviewPage() {
             <TabsTrigger value="pixels">Топ пикселей</TabsTrigger>
             <TabsTrigger value="landings">Топ лэндингов</TabsTrigger>
             <TabsTrigger value="campaigns">Топ кампаний</TabsTrigger>
+            <TabsTrigger value="sources">Топ источников</TabsTrigger>
           </TabsList>
           {/* Запрос пользователя 2026-07-28: данные лидербордов/воронки больше не обновляются
               сами по себе (staleTime: Infinity выше) — только по этой кнопке, чтобы не грузить
@@ -911,11 +931,13 @@ export default function ProjectOverviewPage() {
               label: b.name,
               primary: `$${b.revenue.toFixed(2)}`,
               secondary: `${b.clients} клиентов`,
+              isDeleted: b.isDeleted,
             }))}
             funnelById={activeLeaderboardTab === 'buyers' ? leaderboardFunnelById : undefined}
             funnelLoading={activeLeaderboardTab === 'buyers' && leaderboardFunnelLoading}
             unattributed={leaderboards?.buyersUnattributed}
             unattributedLabel="Без баера"
+            compareHref={compareHref('buyers')}
           />
         </TabsContent>
         <TabsContent value="pixels" className="mt-4">
@@ -931,6 +953,7 @@ export default function ProjectOverviewPage() {
             funnelLoading={activeLeaderboardTab === 'pixels' && leaderboardFunnelLoading}
             unattributed={leaderboards?.pixelsUnattributed}
             unattributedLabel="Без пикселя"
+            compareHref={compareHref('pixels')}
           />
         </TabsContent>
         <TabsContent value="landings" className="mt-4">
@@ -942,9 +965,11 @@ export default function ProjectOverviewPage() {
               primary: `$${l.revenue.toFixed(2)}`,
               secondary: `${l.subscribers} подписчиков`,
               previewId: l.landingId,
+              detailHref: `/projects/${id}/landings/${l.landingId}`,
             }))}
             funnelById={activeLeaderboardTab === 'landings' ? leaderboardFunnelById : undefined}
             funnelLoading={activeLeaderboardTab === 'landings' && leaderboardFunnelLoading}
+            compareHref={compareHref('landings')}
           />
         </TabsContent>
         <TabsContent value="campaigns" className="mt-4">
@@ -960,6 +985,23 @@ export default function ProjectOverviewPage() {
             funnelLoading={activeLeaderboardTab === 'campaigns' && leaderboardFunnelLoading}
             unattributed={leaderboards?.campaignsUnattributed}
             unattributedLabel="Без кампании"
+            compareHref={compareHref('campaigns')}
+          />
+        </TabsContent>
+        <TabsContent value="sources" className="mt-4">
+          <LeaderboardCard
+            title="Топ источников"
+            items={(leaderboards?.sources ?? []).map((s) => ({
+              id: s.source,
+              label: SOURCE_LABEL[s.source],
+              primary: `$${s.revenue.toFixed(2)}`,
+              secondary: `${s.clients} клиентов`,
+            }))}
+            funnelById={activeLeaderboardTab === 'sources' ? leaderboardFunnelById : undefined}
+            funnelLoading={activeLeaderboardTab === 'sources' && leaderboardFunnelLoading}
+            unattributed={leaderboards?.sourcesUnattributed}
+            unattributedLabel="Без источника"
+            compareHref={compareHref('sources')}
           />
         </TabsContent>
       </Tabs>
@@ -971,7 +1013,12 @@ export default function ProjectOverviewPage() {
         <CardContent className="space-y-2">
           {recentClients?.length === 0 && <p className="text-sm text-muted-foreground">Пока нет клиентов.</p>}
           {recentClients && recentClients.length > 0 && (
-            <ClientsTable projectId={id} clients={recentClients} onSelect={setSelectedClientId} />
+            <ClientsTable
+              projectId={id}
+              clients={recentClients}
+              onSelect={setSelectedClientId}
+              showTrafficSource={user?.role !== 'OPERATOR'}
+            />
           )}
           <Link href={`/projects/${id}/clients`} className="text-sm text-blue-600 dark:text-blue-400 hover:underline inline-block pt-1">
             Все клиенты →

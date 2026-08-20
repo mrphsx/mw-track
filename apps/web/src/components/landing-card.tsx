@@ -196,7 +196,15 @@ export function LandingCard({
             <Checkbox checked={!!selected} disabled={selectDisabled} className="shrink-0" />
           ) : (
             !hideStatusBadge && (
-              <Badge variant={landing.status === 'PUBLISHED' ? 'default' : 'secondary'} className="shrink-0">
+              // DRAFT — destructive (красный), не secondary (запрос пользователя 2026-08-20:
+              // "не активный лэндинг подмечай не серым кружком а красным" — тот же принцип, что
+              // применён к цветной точке Studio, здесь эквивалент — цвет бейджа). ARCHIVED
+              // остаётся secondary — это осознанно другое, "снятое с публикации" состояние, не
+              // "забыли включить".
+              <Badge
+                variant={landing.status === 'PUBLISHED' ? 'default' : landing.status === 'DRAFT' ? 'destructive' : 'secondary'}
+                className="shrink-0"
+              >
                 {STATUS_LABEL[landing.status]}
               </Badge>
             )
@@ -469,7 +477,12 @@ export function LandingDomainDialog({
 // значит "создаём новую" (preselectedIds — с чего начать отметки, из клика по карточкам или
 // из иконки одного лендинга), иначе редактируем/останавливаем существующую.
 export interface AbTestDialogTarget {
-  projectId: string;
+  // null — компания-wide "Создать тест" без фиксированного проекта (запрос пользователя
+  // 2026-08-20: "на странице всех лендингов... если в группах нет групп, пусть будет кнопка
+  // создать") — тот же приём, что уже есть у CreateLandingFromTemplateDialog (fixedProjectId
+  // необязателен, сам диалог тогда показывает выбор проекта). На проектных страницах всегда
+  // передаётся реальный projectId, выбор не показывается.
+  projectId: string | null;
   groupId: string | null;
   preselectedIds: string[];
 }
@@ -493,11 +506,20 @@ export function AbTestGroupDialog({
   const [name, setName] = useState('');
   const [domainSelection, setDomainSelection] = useState(NO_DOMAIN);
   const [error, setError] = useState('');
+  // Выбор проекта внутри диалога — только когда target.projectId===null (company-wide создание).
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const effectiveProjectId = target?.projectId || selectedProjectId;
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: async () => (await api.get<{ id: string; name: string }[]>('/projects')).data,
+    enabled: !!target && !target.projectId,
+  });
 
   const { data: projectLandings } = useQuery({
-    queryKey: ['landings', target?.projectId, 'ab-options'],
-    queryFn: async () => (await api.get<LandingItem[]>(`/projects/${target!.projectId}/landings`)).data,
-    enabled: !!target,
+    queryKey: ['landings', effectiveProjectId, 'ab-options'],
+    queryFn: async () => (await api.get<LandingItem[]>(`/projects/${effectiveProjectId}/landings`)).data,
+    enabled: !!effectiveProjectId,
   });
 
   const currentGroupAttachment = target?.groupId ? findGroupAttachment(domains, target.groupId) : null;
@@ -514,17 +536,28 @@ export function AbTestGroupDialog({
     return next;
   };
 
+  // Сброс выбора проекта при каждом новом открытии диалога — иначе company-wide "Создать тест"
+  // после закрытия сохранял бы ранее выбранный проект.
   useEffect(() => {
-    if (!target || !projectLandings) return;
+    setSelectedProjectId('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!target]);
+
+  useEffect(() => {
+    if (!target || !effectiveProjectId || !projectLandings) return;
     const members = target.groupId ? projectLandings.filter((l) => l.abTestGroupId === target.groupId) : [];
     const initialIds = target.groupId ? members.map((l) => l.id) : target.preselectedIds;
     setCheckedIds(new Set(initialIds));
-    setWeights(equalize(initialIds));
+    // Редактирование существующего теста — реальные сохранённые проценты (Landing.abTestWeight),
+    // не equalize() (тот только для НОВОГО набора чекбоксов при создании) — иначе застывшая
+    // read-only карточка участников показывала бы неверные, всегда поровну разделённые проценты
+    // вместо фактических (найдено при живой проверке блокировки состава 2026-08-20).
+    setWeights(target.groupId ? Object.fromEntries(members.map((l) => [l.id, l.abTestWeight ?? 0])) : equalize(initialIds));
     setName(members.find((l) => l.abTestGroup?.name)?.abTestGroup?.name ?? '');
     setDomainSelection(currentGroupAttachment?.domainId ?? NO_DOMAIN);
     setError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target?.groupId, target?.projectId, target?.preselectedIds.join(','), !!projectLandings]);
+  }, [target?.groupId, effectiveProjectId, target?.preselectedIds.join(','), !!projectLandings]);
 
   const toggle = (id: string) => {
     setCheckedIds((prev) => {
@@ -543,11 +576,14 @@ export function AbTestGroupDialog({
 
   const save = useMutation({
     mutationFn: async (members: { landingId: string; weight: number }[]) => {
-      if (!target) return;
+      if (!target || !effectiveProjectId) return;
       let groupId = target.groupId;
-      if (groupId) await api.patch(`/ab-test-groups/${groupId}`, { name: name || undefined, members });
+      // Редактирование существующего теста — только название (запрос пользователя 2026-08-20:
+      // "после создания группы... уже нельзя будет их менять" — состав/веса фиксируются раз и
+      // навсегда при создании, см. UpdateAbTestGroupDto на бэкенде).
+      if (groupId) await api.patch(`/ab-test-groups/${groupId}`, { name: name || undefined });
       else {
-        const res = await api.post<{ id: string }>(`/projects/${target.projectId}/ab-test-groups`, { name: name || undefined, members });
+        const res = await api.post<{ id: string }>(`/projects/${effectiveProjectId}/ab-test-groups`, { name: name || undefined, members });
         groupId = res.data.id;
       }
 
@@ -562,7 +598,7 @@ export function AbTestGroupDialog({
         }
       }
       if (domainSelection !== NO_DOMAIN && groupId) {
-        await attachGroupToDomain(target.projectId, groupId, domainSelection, domains);
+        await attachGroupToDomain(effectiveProjectId, groupId, domainSelection, domains);
       }
     },
     onSuccess: () => {
@@ -586,6 +622,12 @@ export function AbTestGroupDialog({
   });
 
   const trySave = () => {
+    // Редактирование — состав уже зафиксирован, проверять/отправлять members не нужно.
+    if (target?.groupId) {
+      setError('');
+      save.mutate([]);
+      return;
+    }
     const members = Array.from(checkedIds).map((id) => ({ landingId: id, weight: weights[id] ?? 0 }));
     if (members.length < 2) {
       setError('Выберите минимум 2 лендинга');
@@ -608,18 +650,64 @@ export function AbTestGroupDialog({
           <DialogTitle>{target.groupId ? 'A/B/n-тест' : 'Новый A/B/n-тест'}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
+          {/* Выбор проекта — только при создании без фиксированного (запрос пользователя
+              2026-08-20, company-wide "Создать тест"); на проектных страницах target.projectId
+              уже задан, этот блок не показывается. */}
+          {!target.projectId && (
+            <div className="space-y-1.5">
+              <Label htmlFor="ab-group-project">Проект</Label>
+              <Select value={selectedProjectId || undefined} onValueChange={(v) => setSelectedProjectId(v ?? '')}>
+                <SelectTrigger id="ab-group-project">
+                  <SelectValue placeholder="Выберите проект">
+                    {(v: string) => (projects ?? []).find((p) => p.id === v)?.name ?? v}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="w-auto min-w-(--anchor-width)">
+                  {(projects ?? []).map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <Label htmlFor="ab-group-name">Название теста (необязательно)</Label>
             <Input id="ab-group-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Например, «Летняя акция»" />
           </div>
 
-          {!projectLandings ? (
+          {!effectiveProjectId ? (
+            <p className="text-sm text-muted-foreground">Сначала выберите проект.</p>
+          ) : !projectLandings ? (
             <p className="text-sm text-muted-foreground">Загрузка...</p>
+          ) : target.groupId ? (
+            // Редактирование существующего теста (запрос пользователя 2026-08-20: "после
+            // создания группы... уже нельзя будет их менять, так как статистика будет
+            // неверной") — состав/веса только для просмотра, менять нельзя.
+            <div className="space-y-1.5">
+              <Label>Участники теста</Label>
+              <div className="max-h-80 overflow-y-auto space-y-1 rounded-md border p-2">
+                {Array.from(checkedIds).map((id) => (
+                  <div key={id} className="flex items-center justify-between gap-2 py-0.5 text-sm">
+                    <span className="truncate">{projectLandings.find((pl) => pl.id === id)?.name ?? id}</span>
+                    <span className="text-muted-foreground shrink-0">{weights[id] ?? 0}%</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Состав и проценты нельзя изменить после запуска — иначе сравнение вариантов станет нечестным.
+                Чтобы изменить состав, завершите этот тест и запустите новый.
+              </p>
+            </div>
           ) : (
             <div className="max-h-80 overflow-y-auto space-y-0.5">
               {projectLandings.map((l) => {
                 const checked = checkedIds.has(l.id);
-                const disabled = !!l.abTestGroupId && l.abTestGroupId !== target.groupId;
+                // Эта ветка рендерится только при создании нового теста (target.groupId ===
+                // null, см. ветку выше) — исключение "уже состоит в СВОЕЙ группе" тут не нужно.
+                const disabled = !!l.abTestGroupId;
                 return (
                   <div key={l.id} className="flex items-center gap-2 py-1">
                     <Checkbox checked={checked} disabled={disabled} onCheckedChange={() => !disabled && toggle(l.id)} />
@@ -666,7 +754,7 @@ export function AbTestGroupDialog({
 
           {error && <p className="text-sm text-red-500">{error}</p>}
           <div className="flex gap-2">
-            <Button onClick={trySave} disabled={save.isPending}>
+            <Button onClick={trySave} disabled={save.isPending || !effectiveProjectId}>
               {save.isPending ? 'Сохраняем...' : target.groupId ? 'Сохранить' : 'Запустить тест'}
             </Button>
             {target.groupId && (

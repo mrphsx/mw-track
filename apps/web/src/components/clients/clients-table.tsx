@@ -54,6 +54,20 @@ export interface ClientRow {
     | { visible: true; projects: { projectId: string; projectName: string; joinedAt: string | null; hasDialogue: boolean; dialogueAt: string | null }[] }
     | { visible: false; hasDialogue: boolean; dialogueAt: string | null }
     | null;
+  // Источник трафика (запрос пользователя 2026-08-18) — сокращённая колонка "Источник" в
+  // списке, скрыта для роли OPERATOR (ClientsController.findMany обнуляет оба поля на бэкенде
+  // для этой роли, тот же критерий, что и canViewTrafficSource на карточке одного клиента —
+  // см. ClientDetailDrawer). null и для "нет привязки", и для "роль не видит" одновременно —
+  // колонка скрывается целиком по роли, поэтому различать эти два случая не нужно.
+  fbclid: string | null;
+  ttclid: string | null;
+}
+
+// "FB"/"TT" — сокращённо, чтобы не занимать много места в таблице (явный запрос пользователя).
+export function TrafficSourceLabel({ client }: { client: Pick<ClientRow, 'fbclid' | 'ttclid'> }) {
+  if (client.fbclid) return <span title="Facebook">FB</span>;
+  if (client.ttclid) return <span title="TikTok">TT</span>;
+  return <span>—</span>;
 }
 
 export const DIALOGUE_SOURCE_LABEL: Record<NonNullable<ClientRow['dialogueSource']>, string> = {
@@ -67,6 +81,10 @@ interface ClientsTableProps {
   projectId: string;
   clients: ClientRow[];
   onSelect: (clientId: string) => void;
+  // Колонка "Источник" (запрос пользователя 2026-08-18: "везде, кроме аккаунта оператора") —
+  // родитель сам решает по роли текущего пользователя (user.role !== 'OPERATOR'), см.
+  // страницы клиентов проекта в обоих деревьях.
+  showTrafficSource?: boolean;
 }
 
 // Короткая подпись канала — запрос пользователя 2026-07-21 ("не пиши так длинго телеграм,
@@ -189,7 +207,7 @@ export function CrossProjectOverlapBadge({ overlap }: { overlap: ClientRow['cros
   );
 }
 
-export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps) {
+export function ClientsTable({ projectId, clients, onSelect, showTrafficSource }: ClientsTableProps) {
   return (
     <Table>
       <TableHeader>
@@ -200,6 +218,7 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
           <TableHead>Потрачено</TableHead>
           <TableHead>Статус</TableHead>
           <TableHead>Бот</TableHead>
+          {showTrafficSource && <TableHead>Источник</TableHead>}
           <TableHead>Диалог</TableHead>
           <TableHead>Подписан</TableHead>
           <TableHead>Отписан</TableHead>
@@ -271,6 +290,11 @@ export function ClientsTable({ projectId, clients, onSelect }: ClientsTableProps
                 <Badge>Активирован</Badge>
               )}
             </TableCell>
+            {showTrafficSource && (
+              <TableCell className="text-muted-foreground">
+                <TrafficSourceLabel client={client} />
+              </TableCell>
+            )}
             <TableCell>
               {/* Раньше время диалога и задержка от подписки жили только в hover-подсказке
                   (title) над бейджем "Есть" — запрос пользователя 2026-07-30: "во первых надо

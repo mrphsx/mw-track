@@ -12,6 +12,7 @@ import { FacebookCAPIService } from '../tracking/facebook-capi.service';
 import { TikTokEventsService } from '../tracking/tiktok-events.service';
 import { PixelSendResult } from '../tracking/providers/pixel.provider.interface';
 import { buildPixelCurlCommand } from '../tracking/curl-command.util';
+import { withUniqueShortCode } from '../../common/short-code.util';
 
 @Injectable()
 export class PixelsService {
@@ -40,7 +41,11 @@ export class PixelsService {
     await this.getProjectsService().assertAccess(dto.projectId, companyId, userId, role, [Permission.PIXELS_CREATE]);
 
     // createdById — запрос пользователя 2026-08-03, тот же паттерн, что у Landing.createdById.
-    return this.prisma.trackingPixel.create({ data: { ...dto, createdById: userId } });
+    // shortCode (запрос пользователя 2026-08-20) — см. комментарий у AuthService.register,
+    // тот же принцип для pixel= в трекинг-ссылке вместо z=.
+    return withUniqueShortCode((shortCode) =>
+      this.prisma.trackingPixel.create({ data: { ...dto, createdById: userId, shortCode } }),
+    );
   }
 
   async findOne(id: string, companyId: string, userId: string, role: UserRole, requiredPermissions: Permission[] = [Permission.PIXELS_VIEW]): Promise<TrackingPixel> {

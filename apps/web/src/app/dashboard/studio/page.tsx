@@ -1,8 +1,6 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Bot, DollarSign, FolderOpen, Repeat, Send, UserX, Users, Wallet, LucideIcon } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -14,9 +12,8 @@ import {
   getSubscriptionWarning,
   usePrototypeHomeData,
   PROTOTYPE_PERIOD_OPTIONS,
-  PrototypePeriod,
-  PrototypePeriodValue,
 } from '@/lib/prototype-project-data';
+import { usePeriodQueryState } from '@/lib/use-period-query-state';
 import { STUDIO_HUES, StudioHueName } from './colors';
 
 interface CompanyStats {
@@ -29,22 +26,6 @@ interface CompanyStats {
   fdRevenue: number;
   rdRevenue: number;
   projectCount: number;
-}
-
-const PERIOD_VALUES = ['today', 'yesterday', '7d', '30d', 'custom'] as const;
-
-// URL-персистентность периода (запрос пользователя 2026-08-06) — впервые портирован в Studio на
-// главную страницу тот же приём, что уже есть на классической странице проекта; сама страница
-// проекта Studio (в отличие от неё) этот приём ещё не использует, см. находки перед реализацией.
-function readPeriodFromSearchParams(params: URLSearchParams): PrototypePeriodValue {
-  const period = params.get('period');
-  if (period === 'custom') {
-    const from = params.get('from') || undefined;
-    const to = params.get('to') || undefined;
-    if (from && to) return { period: 'custom', from, to };
-  }
-  if (period && (PERIOD_VALUES as readonly string[]).includes(period)) return { period: period as PrototypePeriod };
-  return { period: 'today' };
 }
 
 function greeting(): string {
@@ -64,9 +45,6 @@ function greeting(): string {
 // проектов — rounded-xl (заметно менее круглые, для контраста и чтобы влезало больше
 // информации на той же площади).
 export default function StudioDashboardPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const canViewRevenue = hasAnyPermission(user, 'STATS_VIEW_REVENUE');
   const { projects, isLoading, usage } = usePrototypeHomeData();
@@ -77,20 +55,9 @@ export default function StudioDashboardPage() {
   const activeBots = projects?.reduce((sum, p) => sum + (p.channel?.isActive ? 1 : 0), 0) ?? 0;
   const totalProjects = projects?.length ?? 0;
 
-  const [period, setPeriodState] = useState<PrototypePeriodValue>(() => readPeriodFromSearchParams(searchParams));
-  const setPeriod = (next: PrototypePeriodValue) => {
-    setPeriodState(next);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('period', next.period);
-    if (next.period === 'custom') {
-      if (next.from) params.set('from', next.from); else params.delete('from');
-      if (next.to) params.set('to', next.to); else params.delete('to');
-    } else {
-      params.delete('from');
-      params.delete('to');
-    }
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  };
+  // Персистентность периода в URL (запрос пользователя 2026-08-06, вынесено в общий хук
+  // 2026-08-18 — usePeriodQueryState).
+  const [period, setPeriod] = usePeriodQueryState('today');
   const periodReady = period.period !== 'custom' || (!!period.from && !!period.to);
   const periodParams = period.period === 'custom' ? { period: period.period, from: period.from, to: period.to } : { period: period.period };
 

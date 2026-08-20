@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { isElevatedRole } from '../../common/permissions/permission.constants';
+import { generateUniqueBuyerShortCode } from '../../common/short-code.util';
 import { AuthService } from '../auth/auth.service';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { CreateInviteDto } from './dto/create-invite.dto';
@@ -125,6 +126,11 @@ export class TeamInvitesService {
     const legacyFlatList = Array.isArray(raw) ? (raw as Permission[]) : null;
     const payload = !legacyFlatList && raw && typeof raw === 'object' ? (raw as InvitePermissionsPayload) : null;
 
+    // buyerShortCode (запрос пользователя 2026-08-20) — сгенерирован ДО транзакции (см.
+    // generateUniqueBuyerShortCode: catch-и-повтори внутри $transaction здесь небезопасен,
+    // Postgres абортит всю транзакцию при первой же ошибке).
+    const buyerShortCode = await generateUniqueBuyerShortCode(this.prisma);
+
     const user = await this.prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
         data: {
@@ -136,6 +142,7 @@ export class TeamInvitesService {
           role: invite.role,
           landingsVisibilityScope: payload?.landingsVisibilityScope,
           clientsVisibilityScope: payload?.clientsVisibilityScope,
+          buyerShortCode,
           projectAccess: invite.role !== 'ADMIN' && projectIds.length ? { create: projectIds.map((projectId) => ({ projectId })) } : undefined,
         },
         include: { company: true },

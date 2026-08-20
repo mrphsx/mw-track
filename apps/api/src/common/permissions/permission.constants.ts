@@ -33,7 +33,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Partial<Record<UserRole, Permission[]>> =
   ],
   // Саппорт/работа с клиентами — видит меньше, чем баер (не создаёт лендинги/пуши/тесты),
   // зато может редактировать клиентов (регистрация депозитов, заметки), без выручки/
-  // лидербордов.
+  // лидербордов. PERSONAL_BROADCASTS_VIEW/CREATE/DELETE добавлены запросом пользователя
+  // 2026-08-14 ("вкладка для пушей с личного аккаунта на проектах где он есть") — без SEND,
+  // т.к. отправка уже покрыта CREATE (форма всегда шлёт через create() с sendNow) и нет
+  // отдельной кнопки "отправить" у уже созданной рассылки нигде в UI.
   OPERATOR: [
     Permission.LANDINGS_VIEW,
     Permission.PIXELS_VIEW,
@@ -44,6 +47,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Partial<Record<UserRole, Permission[]>> =
     Permission.CLIENTS_VIEW,
     Permission.CLIENTS_EDIT,
     Permission.STATS_VIEW,
+    Permission.PERSONAL_BROADCASTS_VIEW,
+    Permission.PERSONAL_BROADCASTS_CREATE,
+    Permission.PERSONAL_BROADCASTS_DELETE,
   ],
   // Оператор-админ (запрос пользователя 2026-07-30) — намеренно пустой массив, а не
   // отсутствие ключа: роль не потребляет ресурсы проекта сама (не открывает лендинги/

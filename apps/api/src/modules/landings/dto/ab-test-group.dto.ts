@@ -13,7 +13,7 @@ export class AbTestMemberDto {
   weight: number;
 }
 
-export class UpsertAbTestGroupDto {
+export class CreateAbTestGroupDto {
   // Необязательное название теста (запрос пользователя 2026-07-17) — если не задано, фронтенд
   // показывает автосгенерированную подпись из имён участников.
   @IsOptional()
@@ -25,4 +25,17 @@ export class UpsertAbTestGroupDto {
   @ValidateNested({ each: true })
   @Type(() => AbTestMemberDto)
   members: AbTestMemberDto[];
+}
+
+// Запрос пользователя 2026-08-20: "после создания группы лэндингов для тестирования, уже
+// нельзя будет их менять, так как статистика будет неверной" — состав/веса теста фиксируются
+// один раз при создании (CreateAbTestGroupDto выше) и больше не редактируются: изменение
+// участников/весов задним числом делает сравнение вариантов нечестным (по объёму собранных
+// данных), тот же класс проблемы, что и прежний баг с "какой лендинг когда присоединился" (см.
+// LandingsService.computeAbTestGroupMemberStats). Единственное, что остаётся редактируемым
+// после создания, — название теста (не влияет на статистику).
+export class UpdateAbTestGroupDto {
+  @IsOptional()
+  @IsString()
+  name?: string;
 }

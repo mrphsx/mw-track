@@ -1,8 +1,6 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Users, FolderOpen, Send, Bot, Plus, DollarSign, Wallet, Repeat } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -12,7 +10,8 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { StatsCard, DualStatsCard } from '@/components/shared/stats-card';
 import { SubscriptionBanner } from '@/components/shared/subscription-banner';
-import { PeriodSelector, PeriodValue, StatsPeriod } from '@/components/shared/period-selector';
+import { PeriodSelector } from '@/components/shared/period-selector';
+import { usePeriodQueryState } from '@/lib/use-period-query-state';
 import { useAuthStore } from '@/store/auth.store';
 import { hasAnyPermission } from '@/lib/permissions';
 
@@ -26,22 +25,6 @@ interface CompanyStats {
   fdRevenue: number;
   rdRevenue: number;
   projectCount: number;
-}
-
-const PERIOD_VALUES = ['today', 'yesterday', '7d', '30d', 'custom'] as const;
-
-// Тот же приём URL-персистентности периода, что и на странице проекта (запрос пользователя
-// 2026-07-25, projects/[id]/page.tsx readPeriodFromSearchParams) — перенесён сюда впервые для
-// главной страницы (запрос пользователя 2026-08-06: "сегодня, вчера, 7, 30 и кастом").
-function readPeriodFromSearchParams(params: URLSearchParams): PeriodValue {
-  const period = params.get('period');
-  if (period === 'custom') {
-    const from = params.get('from') || undefined;
-    const to = params.get('to') || undefined;
-    if (from && to) return { period: 'custom', from, to };
-  }
-  if (period && (PERIOD_VALUES as readonly string[]).includes(period)) return { period: period as StatsPeriod };
-  return { period: 'today' };
 }
 
 interface ProjectSummary {
@@ -60,9 +43,6 @@ interface CompanyUsage {
 }
 
 export default function OverviewPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const canViewRevenue = hasAnyPermission(user, 'STATS_VIEW_REVENUE');
 
@@ -80,20 +60,9 @@ export default function OverviewPage() {
   const totalPushes = projects?.reduce((sum, p) => sum + p._count.pushes, 0) ?? 0;
   const activeBots = projects?.reduce((sum, p) => sum + (p.channel?.isActive ? 1 : 0), 0) ?? 0;
 
-  const [periodValue, setPeriodValueState] = useState<PeriodValue>(() => readPeriodFromSearchParams(searchParams));
-  const setPeriodValue = (next: PeriodValue) => {
-    setPeriodValueState(next);
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('period', next.period);
-    if (next.period === 'custom') {
-      if (next.from) params.set('from', next.from); else params.delete('from');
-      if (next.to) params.set('to', next.to); else params.delete('to');
-    } else {
-      params.delete('from');
-      params.delete('to');
-    }
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  };
+  // Персистентность периода в URL (запрос пользователя 2026-08-06, вынесено в общий хук
+  // 2026-08-18 — usePeriodQueryState, см. также projects/[id]/page.tsx).
+  const [periodValue, setPeriodValue] = usePeriodQueryState('today');
   const periodReady = periodValue.period !== 'custom' || (!!periodValue.from && !!periodValue.to);
   const periodParams =
     periodValue.period === 'custom' ? { period: periodValue.period, from: periodValue.from, to: periodValue.to } : { period: periodValue.period };

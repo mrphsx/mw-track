@@ -128,7 +128,10 @@ export class TrackingController {
     if (fbp) {
       await Promise.all([
         code ? this.patchCachedAttribution(`start:${code}`, { fbp }) : Promise.resolve(),
-        landingId ? this.patchCachedAttribution(`landing-visit-attribution:${landingId}`, { fbp }) : Promise.resolve(),
+        // landing-visit-attribution:<landingId> стал FIFO-очередью, не одиночным значением
+        // (см. LandingRendererService.injectTrackingScripts, баг-репорт 2026-08-19) — донашиваем
+        // fbp в её ПОСЛЕДНИЙ элемент (patchCachedListTail), не GET/SET одного ключа.
+        landingId ? this.patchCachedListTail(`landing-visit-attribution:${landingId}`, { fbp }) : Promise.resolve(),
       ]);
     }
 
@@ -183,6 +186,33 @@ export class TrackingController {
       await this.redis.set(key, JSON.stringify(merged), 'KEEPTTL');
     } catch {
       // битый JSON в кэше — не должно ронять сам редирект
+    }
+  }
+
+  // Та же донашиваемая fbp-патч-логика, что и patchCachedAttribution выше, но для ключа-СПИСКА
+  // (landing-visit-attribution:<landingId> — FIFO-очередь визитов, см. комментарий у вызова).
+  // Патчим ПОСЛЕДНИЙ элемент (LINDEX/LSET по индексу -1), не первый: RPUSH кладёt новые визиты в
+  // конец, а этот редирект случается почти сразу после того, как ТЕКУЩИЙ визитор сам же
+  // дописал свою запись — она и есть последняя на момент клика (если только кто-то другой не
+  // успел зайти на тот же лендинг в те же секунды между рендером страницы и кликом по кнопке —
+  // узкое окно гонки по сравнению с прежним 30-минутным, и fbp — второстепенное поле, не buyerId).
+  private async patchCachedListTail(key: string, patch: Record<string, string>): Promise<void> {
+    let raw: string | null;
+    try {
+      raw = await this.redis.lindex(key, -1);
+    } catch (error) {
+      // Переходный период сразу после деплоя (см. rpushSelfHealing в LandingRendererService) —
+      // ключ ещё может быть старой строкой (SET), LINDEX на неё бросает WRONGTYPE. Это самый
+      // горячий путь (редирект по клику каждого реального посетителя) — обязательно не ронять
+      // его; следующий RPUSH сам подчистит ключ.
+      return;
+    }
+    if (!raw) return;
+    try {
+      const merged = { ...JSON.parse(raw), ...patch };
+      await this.redis.lset(key, -1, JSON.stringify(merged));
+    } catch {
+      // битый JSON в кэше, либо список успел опустеть между LINDEX и LSET — не должно ронять редирект
     }
   }
 

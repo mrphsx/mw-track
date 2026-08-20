@@ -63,7 +63,9 @@ export function GetLinkDialog({
   const pixels: LinkPixel[] = (project?.pixels ?? []).filter((p: LinkPixel) => p.isActive);
   const selectedPixel = pixels.find((p) => p.id === pixelSelection) ?? null;
   const isElevated = !!currentUser && ELEVATED_ROLES.includes(currentUser.role);
-  const buyerId = isElevated ? null : (currentUser?.id ?? null);
+  // Короткий код (запрос пользователя 2026-08-20) — обычный id как фолбэк, если код почему-то
+  // ещё не сгенерирован (см. common/short-code.util.ts на бэкенде).
+  const buyerId = isElevated ? null : (currentUser?.buyerShortCode || currentUser?.id || null);
   const link = attachment ? buildTrackedLink(attachment, selectedPixel, project?.linkParamMap, buyerId) : null;
 
   return (

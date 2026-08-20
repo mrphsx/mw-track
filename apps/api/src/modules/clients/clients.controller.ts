@@ -35,7 +35,11 @@ export class ClientsController {
       Permission.CLIENTS_VIEW_CROSS_PROJECT,
     );
     const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
-    return this.clientsService.findMany(projectId, filters, companyId, canViewCrossProject, scopedBuyerId);
+    // Источник трафика в списке (запрос пользователя 2026-08-18: "везде, кроме аккаунта
+    // оператора") — тот же критерий, что уже используется для canViewTrafficSource на карточке
+    // одного клиента (getClientDetail ниже).
+    const canViewTrafficSource = user.role !== UserRole.OPERATOR;
+    return this.clientsService.findMany(projectId, filters, companyId, canViewCrossProject, scopedBuyerId, canViewTrafficSource);
   }
 
   @Get('stats')

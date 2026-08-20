@@ -22,6 +22,7 @@ import {
   Undo2,
   BarChart3,
   BookOpen,
+  Contact,
   type LucideIcon,
 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
@@ -64,10 +65,12 @@ const navItems: NavItem[] = [
   { href: '/settings', label: 'Настройки', icon: Settings },
 ];
 
-// Жёсткий 2-пунктный сайдбар для Operator — см. тот же комментарий в classic sidebar.tsx.
+// Жёстко ограниченный сайдбар для Operator — см. тот же комментарий в classic sidebar.tsx
+// (3-й пункт добавлен запросом пользователя 2026-08-14).
 const OPERATOR_NAV_ITEMS: NavItem[] = [
   { href: '/my-clients', label: 'Клиенты', icon: Users },
   { href: '/my-stats', label: 'Моя статистика', icon: BarChart3 },
+  { href: '/my-personal-broadcasts', label: 'Личный аккаунт', icon: Contact },
 ];
 
 // Тёплая палитра "Studio" — кремовый фон вместо нейтрального bg-background/bg-card (те

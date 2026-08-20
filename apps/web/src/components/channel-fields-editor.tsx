@@ -57,10 +57,13 @@ export interface ChannelFormState {
   igAccessToken: string;
 }
 
+// tgMode по умолчанию — приватный канал с заявкой (запрос пользователя 2026-08-18: "пусть
+// изначально будет приватный канал выбрано") — самый частый реальный кейс использования,
+// раньше по умолчанию стоял BOT_DIRECT.
 export const EMPTY_CHANNEL_FORM: ChannelFormState = {
   type: 'TELEGRAM',
   name: '',
-  tgMode: 'BOT_DIRECT',
+  tgMode: 'PRIVATE_CHANNEL_REQUEST',
   botToken: '',
   channelId: '',
   channelUsername: '',
@@ -193,7 +196,13 @@ export function ChannelFieldsEditor({
               <SelectTrigger id="channel-tg-mode">
                 <SelectValue>{(v: TgMode) => TG_MODE_LABEL[v]}</SelectValue>
               </SelectTrigger>
-              <SelectContent>
+              {/* w-auto min-w-(--anchor-width) (запрос пользователя 2026-08-18: "дропдаун
+                  сломан визуально, не помещается текст каждой опции") — дефолт SelectContent
+                  без className растягивается строго под триггер (w-(--anchor-width)), в неё не
+                  влезали длинные подписи вроде "Приватный канал (заявка)"; тот же фикс уже
+                  применён в create-landing-dialog.tsx/landing-content-card.tsx для той же
+                  проблемы. */}
+              <SelectContent className="w-auto min-w-(--anchor-width)">
                 {(Object.keys(TG_MODE_LABEL) as TgMode[]).map((m) => (
                   <SelectItem key={m} value={m}>
                     {TG_MODE_LABEL[m]}

@@ -5,6 +5,7 @@ import { Queue } from 'bull';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AutomationEngineService } from '../automations/automation-engine.service';
+import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { TrackEventDto } from './dto/track-event.dto';
 
 export interface RecordEventDto extends TrackEventDto {
@@ -40,7 +41,17 @@ export class TrackingService {
     private automationEngine: AutomationEngineService,
   ) {}
 
-  async recordEvent(projectId: string, dto: RecordEventDto): Promise<{ eventId: string }> {
+  async recordEvent(projectId: string, rawDto: RecordEventDto): Promise<{ eventId: string }> {
+    // Короткие коды баера/пикселя (запрос пользователя 2026-08-20) — браузерный SDK шлёт z=/pixel=
+    // из URL как есть, минуя LandingRendererService (тот резолвит только для Telegram-веток через
+    // start:<code>/landing-visit-attribution — этот путь их не касается вообще, PageView/Lead с
+    // лендинга идут сюда напрямую). Длина отличает старый формат (полный cuid, no-op) от нового
+    // короткого кода — см. common/short-code.util.ts.
+    const dto: RecordEventDto = {
+      ...rawDto,
+      pixelId: (await resolvePixelShortCode(this.prisma, rawDto.pixelId)) ?? undefined,
+      buyerRef: (await resolveBuyerShortCode(this.prisma, rawDto.buyerRef)) ?? undefined,
+    };
     const eventId = dto.idempotencyKey || `${projectId}_${dto.eventName}_${dto.fbclid || ''}_${Date.now()}_${nanoid(8)}`;
 
     const existing = await this.prisma.trackingEvent.findUnique({ where: { eventId } });
@@ -101,6 +112,7 @@ export class TrackingService {
             utmSource: dto.utmSource,
             utmCampaign: dto.utmCampaign,
             landingId: dto.landingId,
+            abTestGroupId: dto.abTestGroupId,
           },
           // Реальные колонки (не только payload) — для роутинга к конкретному пикселю
           // (TrackingProcessor) и индексируемой разбивки по рекламе/кампании (запрос

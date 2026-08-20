@@ -1,6 +1,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ChannelType, Client, DialogueSource, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { resolveStatsPeriod } from '../../common/timezone.util';
+import { formatUserName } from '../../common/user-name.util';
 import { TrackingService } from '../tracking/tracking.service';
 import { ClientFiltersDto } from './dto/client-filters.dto';
 import { PushFilterDto } from './dto/push-filter.dto';
@@ -17,6 +19,10 @@ export interface FindOrCreateClientInput {
   // Каким лендингом привлечён — см. Client.landingId в schema.prisma. Первое известное
   // значение побеждает (см. ветку "existing" ниже), как и для fbclid/ttclid.
   landingId?: string;
+  // Через какую группу A/B/n-теста пришёл (запрос пользователя 2026-08-20) — см.
+  // Client.abTestGroupId в schema.prisma, тот же принцип "первое известное значение
+  // побеждает", что и у landingId.
+  abTestGroupId?: string;
   channelType: ChannelType;
   tgUserId?: string;
   tgUsername?: string;
@@ -126,6 +132,7 @@ export class ClientsService {
           userAgent: existing.userAgent ?? data.userAgent,
           countryCode: existing.countryCode ?? data.countryCode,
           landingId: existing.landingId ?? data.landingId,
+          abTestGroupId: existing.abTestGroupId ?? data.abTestGroupId,
           pixelId: existing.pixelId ?? data.pixelId,
           adId: existing.adId ?? data.adId,
           adName: existing.adName ?? data.adName,
@@ -158,6 +165,7 @@ export class ClientsService {
         companyId: project.companyId,
         projectId: data.projectId,
         landingId: data.landingId,
+        abTestGroupId: data.abTestGroupId,
         channelType: data.channelType,
         tgUserId: data.tgUserId,
         tgUsername: data.tgUsername,
@@ -324,6 +332,7 @@ export class ClientsService {
         clientId: client.id,
         tgUserId,
         landingId: client.landingId ?? undefined,
+        abTestGroupId: client.abTestGroupId ?? undefined,
         source: 'SERVER',
       });
     } else if (client.externalSubscribedAt) {
@@ -363,6 +372,7 @@ export class ClientsService {
       tgFirstName?: string;
       tgLastName?: string;
       landingId?: string;
+      abTestGroupId?: string;
       buyerId?: string;
       // Полный блок атрибуции — только для случая, когда клиента ещё нет и его создаёт
       // findOrCreate ниже (баг-репорт пользователя 2026-07-23: для BOT_DIRECT первое /start
@@ -414,6 +424,7 @@ export class ClientsService {
       client = await this.findOrCreate({
         projectId,
         landingId: data.landingId,
+        abTestGroupId: data.abTestGroupId,
         buyerId: data.buyerId,
         fbclid: data.fbclid,
         ttclid: data.ttclid,
@@ -524,6 +535,7 @@ export class ClientsService {
         clientId: client.id,
         tgUserId: client.tgUserId ?? undefined,
         landingId: client.landingId ?? landingId,
+        abTestGroupId: client.abTestGroupId ?? undefined,
         source: 'SERVER',
         forceSend: source === 'MANAGER_CONFIRM' || source === 'CRM_BUTTON',
       });
@@ -575,7 +587,7 @@ export class ClientsService {
     return {
       ...client,
       landingName: landing?.name ?? null,
-      buyerName: buyer ? `${buyer.firstName} ${buyer.lastName}`.trim() : null,
+      buyerName: buyer ? formatUserName(buyer) : null,
       pixelLabel: pixel ? pixel.label || pixel.platform : null,
       canViewTrafficSource,
     };
@@ -588,8 +600,23 @@ export class ClientsService {
   // проектов/каналов). Elevated-роли (Owner/Admin) всегда видят полную деталь — companyId и
   // canViewCrossProject уже решены вызывающим контроллером (hasPermission сама бывает elevated
   // bypass), сюда приходит готовый bool.
-  async findMany(projectId: string, filters: ClientFiltersDto, companyId: string, canViewCrossProject: boolean, scopedBuyerId?: string) {
-    const where = this.buildClientFilterWhere(projectId, filters, scopedBuyerId);
+  async findMany(
+    projectId: string,
+    filters: ClientFiltersDto,
+    companyId: string,
+    canViewCrossProject: boolean,
+    scopedBuyerId?: string,
+    canViewTrafficSource = true,
+  ) {
+    // Период (запрос пользователя 2026-08-18) — тот же resolveStatsPeriod, что и на странице
+    // проекта (часовой пояс проекта, календарно выровненные границы) — резолвится здесь, а не
+    // внутри buildClientFilterWhere, чтобы тот остался синхронным (единственный вызывающий).
+    let period: { since: Date; until: Date } | undefined;
+    if (filters.period) {
+      const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
+      period = await resolveStatsPeriod(this.prisma, project.timezone, filters);
+    }
+    const where = this.buildClientFilterWhere(projectId, filters, scopedBuyerId, period);
 
     let orderBy: Prisma.ClientOrderByWithRelationInput = { createdAt: 'desc' };
     if (filters.sortBy === 'totalSpent') orderBy = { totalSpent: 'desc' };
@@ -613,8 +640,18 @@ export class ClientsService {
     const tgUserIds = items.map((c) => c.tgUserId).filter((id): id is string => id !== null);
     const overlapMap = await this.repository.getCrossProjectOverlap(companyId, projectId, tgUserIds);
 
+    // fbclid/ttclid (запрос пользователя 2026-08-18: колонка "Источник" в списке, "везде кроме
+    // аккаунта оператора") — до этого момента весь бандл рекламной атрибуции (fbclid/ttclid,
+    // buyerId, pixelId, campaign*/ad*, utm*) уходил в JSON нефильтрованным для ЛЮБОЙ роли, т.к.
+    // this.prisma.client.findMany выше не использует select — единственное, что уже скрывалось
+    // от Operator, было на отдельном эндпоинте деталей одного клиента (getClientDetail,
+    // canViewTrafficSource). Раз мы теперь показываем производную от этих двух полей колонку в
+    // списке, стрипаем именно их здесь же — тот же принцип, что и getClientDetail, но не трогаем
+    // остальные ad-attribution поля (buyerId и т.д.) — они не показаны ни в одной колонке списка
+    // ни для одной роли, отдельная тема, не по этому запросу.
     const enrichedItems = items.map((client) => ({
       ...client,
+      ...(canViewTrafficSource ? {} : { fbclid: null, ttclid: null }),
       crossProjectOverlap: this.buildCrossProjectOverlapField(client.tgUserId, overlapMap, canViewCrossProject),
     }));
 
@@ -730,8 +767,20 @@ export class ClientsService {
   // scopedBuyerId (запрос пользователя 2026-08-03, "только свои клиенты") — жёстко перекрывает
   // любой buyerId, который мог прислать сам мульти-select-фильтр выше: скоуп-баер не может
   // обойти собственное ограничение, выбрав в фильтре кого-то другого.
-  private buildClientFilterWhere(projectId: string, filters: ClientFiltersDto, scopedBuyerId?: string): Prisma.ClientWhereInput {
+  private buildClientFilterWhere(
+    projectId: string,
+    filters: ClientFiltersDto,
+    scopedBuyerId?: string,
+    period?: { since: Date; until: Date },
+  ): Prisma.ClientWhereInput {
     const where: Prisma.ClientWhereInput = { projectId, deletedAt: null };
+
+    if (period) where.createdAt = { gte: period.since, lt: period.until };
+
+    // Источник трафика — fbclid/ttclid (запрос пользователя 2026-08-18), см. комментарий у поля
+    // в client-filters.dto.ts на предмет того, почему не через TrackingPixel.platform.
+    if (filters.adSource === 'FACEBOOK') where.fbclid = { not: null };
+    else if (filters.adSource === 'TIKTOK') where.ttclid = { not: null };
 
     if (filters.channelType?.length) where.channelType = { in: filters.channelType };
     if (typeof filters.hasPurchase === 'boolean') where.hasPurchase = filters.hasPurchase;

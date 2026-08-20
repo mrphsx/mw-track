@@ -71,6 +71,13 @@ export class TrackEventDto {
   @IsString()
   landingId?: string;
 
+  // Проставляется SDK (data-ab-test-group-id, только когда заход пришёл через сплит A/B/n-
+  // группы, запрос пользователя 2026-08-20) — группа считает строго свой собственный трафик,
+  // не весь трафик лендинга-участника (см. LandingRendererService.injectTrackingScripts).
+  @IsOptional()
+  @IsString()
+  abTestGroupId?: string;
+
   @IsOptional()
   @IsDateString()
   timestamp?: string;

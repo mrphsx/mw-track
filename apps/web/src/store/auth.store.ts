@@ -59,6 +59,11 @@ export interface User {
   lastName?: string | null;
   role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR' | 'OPERATOR_ADMIN';
   avatarUrl?: string | null;
+  // Короткий код баера в трекинг-ссылке (запрос пользователя 2026-08-20, вместо полного id в
+  // скрытом параметре z=) — сгенерирован на бэкенде при создании пользователя, может быть null
+  // только для очень старых записей до этой правки (buildTrackedLink тогда просто подставляет
+  // обычный id, ссылка чуть длиннее, но рабочая).
+  buyerShortCode?: string | null;
   company?: Company;
   // Гранулярные права, per-project (запрос пользователя 2026-07-28) — {} для elevated ролей
   // (OWNER/ADMIN/SUPER_ADMIN, см. @/lib/permissions.ts hasPermission — они не проверяются по

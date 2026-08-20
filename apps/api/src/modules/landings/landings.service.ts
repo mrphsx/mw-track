@@ -2,17 +2,18 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import AdmZip from 'adm-zip';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AbTestGroup, Landing, LandingStatus, Prisma, UserRole } from '@prisma/client';
+import { AbTestGroup, Landing, LandingStatus, Permission, Prisma, UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql } from '../../common/timezone.util';
 import { TelegramProvider } from '../channels/providers/telegram.provider';
 import { ChannelsService } from '../channels/channels.service';
+import { ProjectsService } from '../projects/projects.service';
 import { StorageService } from './storage.service';
 import { CreateLandingFromTemplateDto } from './dto/create-landing-from-template.dto';
 import { UploadCustomLandingDto } from './dto/upload-custom-landing.dto';
 import { UpdateLandingDto } from './dto/update-landing.dto';
-import { AbTestMemberDto, UpsertAbTestGroupDto } from './dto/ab-test-group.dto';
+import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -87,6 +88,7 @@ export class LandingsService {
     private storage: StorageService,
     private telegramProvider: TelegramProvider,
     private channelsService: ChannelsService,
+    private projectsService: ProjectsService,
   ) {}
 
   async getTemplates(): Promise<TemplateInfo[]> {
@@ -149,6 +151,20 @@ export class LandingsService {
         previewUrl: `${process.env.CDN_URL}/templates/tg-invite-light/preview.jpg`,
         customizableFields: ['PRIMARY_COLOR', 'JOIN_BUTTON_TEXT'],
       },
+      // Из архива, который прислал пользователь 2026-08-18 (new_landing.7z) — единственный
+      // шаблон с двумя попапами вместо одного экрана: попап 1 — вопрос "18+?" (Да/Нет), попап 2
+      // открывается только по "Да" и несёт финальный призыв к действию. "Нет" в попапе 1 и
+      // кнопка попапа 2 оба ведут на TG_REDIRECT_URL — единственный переход, который НЕ ведёт
+      // туда, это "Да" (только раскрывает попап 2 на той же странице). Если на лендинге включён
+      // авторедирект — он срабатывает только при переходе на попап 2, см. комментарий в
+      // LandingRendererService.injectTrackingScripts.
+      {
+        id: 'age-gate-invite',
+        name: 'Проверка возраста + приглашение',
+        description: 'Два попапа: подтверждение возраста 18+, затем приглашение подписаться на канал — все тексты и кнопки обоих попапов редактируются',
+        previewUrl: `${process.env.CDN_URL}/templates/age-gate-invite/preview.jpg`,
+        customizableFields: ['POPUP1_TITLE', 'POPUP1_TEXT', 'POPUP1_YES_TEXT', 'POPUP1_NO_TEXT', 'POPUP2_TITLE', 'POPUP2_TEXT', 'POPUP2_BUTTON_TEXT'],
+      },
     ];
   }
 
@@ -171,7 +187,7 @@ export class LandingsService {
       }
     }
 
-    return this.prisma.landing.create({
+    const created = await this.prisma.landing.create({
       data: {
         projectId,
         companyId,
@@ -190,6 +206,18 @@ export class LandingsService {
           CHANNEL_AVATAR: dto.channelAvatar || '',
           SUBSCRIBERS_COUNT: subscribersCount || '',
           SUBSCRIBERS_LABEL: dto.subscribersLabel || 'подписчиков',
+          // age-gate-invite (запрос пользователя 2026-08-18, доперевод 2026-08-18) — оба попапа
+          // на испанском (html lang="es"): попап 1 изначально был на итальянском при испанском
+          // lang — пользователь считал его испанским с самого начала, переведено на настоящий
+          // испанский, а не оставлено рассинхроном; попап 2 был на русском ("подписаться на
+          // канал") — тоже переведён на испанский, чтобы оба попапа были на одном языке.
+          POPUP1_TITLE: dto.popup1Title || '¿Tienes más de 18 años?',
+          POPUP1_TEXT: dto.popup1Text || 'Debes tener 18 años para continuar',
+          POPUP1_YES_TEXT: dto.popup1YesText || 'Sí',
+          POPUP1_NO_TEXT: dto.popup1NoText || 'No',
+          POPUP2_TITLE: dto.popup2Title || '¡Suscríbete a nuestro canal!',
+          POPUP2_TEXT: dto.popup2Text || '',
+          POPUP2_BUTTON_TEXT: dto.popup2ButtonText || 'Unirse al canal',
         },
         metaTitle: dto.metaTitle,
         metaDescription: dto.metaDescription,
@@ -200,6 +228,12 @@ export class LandingsService {
         cloakingRedirectUrl: dto.cloakingRedirectUrl || null,
       },
     });
+    // Автопубликация (запрос пользователя 2026-08-20: "при создании лэндинга он автоматом
+    // должен быть включен") — раньше лендинг создавался DRAFT и оставался невидимым в трекинге,
+    // пока пользователь не нажмёт "Опубликовать" отдельно; через publish(), а не голое
+    // status: PUBLISHED в create() выше, чтобы не терять существующую логику первой публикации
+    // (создание персональной invite-ссылки для PRIVATE_CHANNEL_REQUEST-атрибуции, см. publish()).
+    return this.publish(created.id, companyId);
   }
 
   async findAll(projectId: string, companyId: string): Promise<LandingWithContext[]> {
@@ -281,8 +315,12 @@ export class LandingsService {
       this.prisma.client.count({ where: { landingId: id, deletedAt: null } }),
       this.prisma.client.count({ where: { landingId: id, deletedAt: null, isSubscribed: true } }),
       this.prisma.client.count({ where: { landingId: id, deletedAt: null, isSubscribed: false } }),
-      this.prisma.trackingEvent.count({ where: { projectId: landing.projectId, eventName: 'PageView', payload: { path: ['landingId'], equals: id } } }),
-      this.prisma.trackingEvent.count({ where: { projectId: landing.projectId, eventName: 'Lead', payload: { path: ['landingId'], equals: id } } }),
+      this.prisma.trackingEvent.count({
+        where: { projectId: landing.projectId, eventName: 'PageView', payload: { path: ['landingId'], equals: id } },
+      }),
+      this.prisma.trackingEvent.count({
+        where: { projectId: landing.projectId, eventName: 'Lead', payload: { path: ['landingId'], equals: id } },
+      }),
       // Диалоги, атрибутированные этому лендингу (запрос пользователя 2026-07-04, "откуда
       // пришёл диалог") — Client.landingId уже несёт атрибуцию (invite-ссылка лендинга для
       // ботовых каналов, разобранный трекинг-код для PERSONAL_DM, см. TelegramPersonalService).
@@ -316,6 +354,74 @@ export class LandingsService {
     };
   }
 
+  // Статистика ОДНОГО участника A/B/n-теста СТРОГО в рамках самой группы (запрос пользователя
+  // 2026-08-20: "не нужно учитывать статистику каждого лэндинга по отдельности, даже если эти
+  // лэндинги проливаются отдельно... группа лэндингов как отдельная сущность со своей статой
+  // разделенной") — заменяет более раннюю попытку через computeLandingStats(..., since:
+  // group.createdAt): тот подход всё ещё приплюсовывал к тесту ЛЮБОЙ трафик на лендинг-участника
+  // после старта теста, включая его собственную отдельную рекламу через прямую ссылку на тот же
+  // лендинг. Здесь фильтр строго по Client.abTestGroupId/TrackingEvent.payload.abTestGroupId —
+  // стемпится ТОЛЬКО когда конкретный визит реально пришёл через сплит ЭТОЙ группы (см.
+  // LandingRendererService.injectTrackingScripts) — независимо от Landing.abTestGroupId (текущее
+  // членство) и независимо от того, что ещё происходит с этим лендингом по другим ссылкам.
+  // Не ретроактивно: трафик, случившийся ДО деплоя этой правки, никогда не получал тег и не
+  // войдёт в счёт, даже для уже запущенных на тот момент тестов — тот же принцип, что и у
+  // pixelId/campaignId/buyerId в своё время (см. комментарии в schema.prisma).
+  private async computeAbTestGroupMemberStats(
+    landing: Landing,
+    groupId: string,
+    timezone: string,
+  ) {
+    const id = landing.id;
+    const subscribedBucket = dailyBucketSql('subscribedAt', timezone);
+    const dialogueBucket = dailyBucketSql('firstDialogueAt', timezone);
+
+    const [total, active, unsubscribed, pageViews, leads, dialogues, dailySubscribers, dailyDialogues, domainPath] = await Promise.all([
+      this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null } }),
+      this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null, isSubscribed: true } }),
+      this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null, isSubscribed: false } }),
+      this.prisma.trackingEvent.count({
+        where: {
+          projectId: landing.projectId,
+          eventName: 'PageView',
+          AND: [{ payload: { path: ['landingId'], equals: id } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
+        },
+      }),
+      this.prisma.trackingEvent.count({
+        where: {
+          projectId: landing.projectId,
+          eventName: 'Lead',
+          AND: [{ payload: { path: ['landingId'], equals: id } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
+        },
+      }),
+      this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null, firstDialogueAt: { not: null } } }),
+      this.prisma.$queryRaw<{ date: Date; count: number }[]>`
+        SELECT ${subscribedBucket} as date, COUNT(*)::int as count
+        FROM "Client"
+        WHERE "landingId" = ${id} AND "abTestGroupId" = ${groupId} AND "deletedAt" IS NULL AND "subscribedAt" IS NOT NULL
+        GROUP BY date
+        ORDER BY date ASC
+      `,
+      this.prisma.$queryRaw<{ date: Date; count: number }[]>`
+        SELECT ${dialogueBucket} as date, COUNT(*)::int as count
+        FROM "Client"
+        WHERE "landingId" = ${id} AND "abTestGroupId" = ${groupId} AND "deletedAt" IS NULL AND "firstDialogueAt" IS NOT NULL
+        GROUP BY date
+        ORDER BY date ASC
+      `,
+      this.prisma.domainPath.findFirst({ where: { landingId: id }, include: { domain: { select: { domain: true } } } }),
+    ]);
+
+    return {
+      landing: { id: landing.id, name: landing.name, type: landing.type, status: landing.status, createdBy: null },
+      subscribers: { total, active, unsubscribed },
+      funnel: { pageViews, leads, subscribes: total },
+      dialogues: { total: dialogues, dailyDialogues },
+      dailySubscribers,
+      attachment: domainPath ? { domain: domainPath.domain.domain, path: domainPath.path } : null,
+    };
+  }
+
   async getStats(id: string, companyId: string) {
     const landing = await this.findOne(id, companyId);
     // Часовой пояс проекта (запрос пользователя 2026-07-04) — "сутки" на дневных графиках
@@ -325,12 +431,16 @@ export class LandingsService {
 
     if (!landing.abTestGroupId) return stats;
 
-    // Остальные живые участники той же группы (сам landing включён в findMany — проще
-    // посчитать его ещё раз через computeLandingStats, чем городить "stats + остальные").
+    // Остальные живые участники той же группы — сравнение вариантов внутри теста считается
+    // строго по трафику, реально пришедшему через сплит ЭТОЙ группы (запрос пользователя
+    // 2026-08-20, см. комментарий у computeAbTestGroupMemberStats), не по "всё время жизни
+    // лендинга" и не по грубой отсечке с момента старта теста. Сам stats выше (не в контексте
+    // сравнения) намеренно берёт полную историю лендинга — собственная страница лендинга не
+    // должна терять данные о его прямом трафике независимо от того, участвует ли он в тесте.
     const members = await this.prisma.landing.findMany({ where: { abTestGroupId: landing.abTestGroupId, deletedAt: null } });
     if (members.length < 2) return stats;
     const memberStats = await Promise.all(
-      members.map(async (m) => ({ weight: m.abTestWeight ?? 0, ...(await this.computeLandingStats(m, project.timezone)) })),
+      members.map(async (m) => ({ weight: m.abTestWeight ?? 0, ...(await this.computeAbTestGroupMemberStats(m, landing.abTestGroupId!, project.timezone)) })),
     );
 
     return { ...stats, abTestGroup: { groupId: landing.abTestGroupId, members: memberStats } };
@@ -368,8 +478,10 @@ export class LandingsService {
     if (!members.length) throw new NotFoundException('В группе не осталось лендингов');
 
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: group.projectId }, select: { timezone: true } });
+    // Строго трафик группы (запрос пользователя 2026-08-20) — см. полный комментарий у
+    // computeAbTestGroupMemberStats выше.
     const memberStats = await Promise.all(
-      members.map(async (m) => ({ weight: m.abTestWeight ?? 0, ...(await this.computeLandingStats(m, project.timezone)) })),
+      members.map(async (m) => ({ weight: m.abTestWeight ?? 0, ...(await this.computeAbTestGroupMemberStats(m, groupId, project.timezone)) })),
     );
 
     const totals = memberStats.reduce(
@@ -410,6 +522,13 @@ export class LandingsService {
     if (dto.channelAvatar !== undefined) templateDataPatch.CHANNEL_AVATAR = dto.channelAvatar;
     if (dto.subscribersCount !== undefined) templateDataPatch.SUBSCRIBERS_COUNT = dto.subscribersCount;
     if (dto.subscribersLabel !== undefined) templateDataPatch.SUBSCRIBERS_LABEL = dto.subscribersLabel;
+    if (dto.popup1Title !== undefined) templateDataPatch.POPUP1_TITLE = dto.popup1Title;
+    if (dto.popup1Text !== undefined) templateDataPatch.POPUP1_TEXT = dto.popup1Text;
+    if (dto.popup1YesText !== undefined) templateDataPatch.POPUP1_YES_TEXT = dto.popup1YesText;
+    if (dto.popup1NoText !== undefined) templateDataPatch.POPUP1_NO_TEXT = dto.popup1NoText;
+    if (dto.popup2Title !== undefined) templateDataPatch.POPUP2_TITLE = dto.popup2Title;
+    if (dto.popup2Text !== undefined) templateDataPatch.POPUP2_TEXT = dto.popup2Text;
+    if (dto.popup2ButtonText !== undefined) templateDataPatch.POPUP2_BUTTON_TEXT = dto.popup2ButtonText;
 
     return this.prisma.landing.update({
       where: { id },
@@ -434,7 +553,9 @@ export class LandingsService {
     const landing = await this.prisma.landing.create({
       data: { projectId, companyId, createdById, name: dto.name, type: 'CUSTOM', status: LandingStatus.DRAFT },
     });
-    return this.processZipUpload(landing, file);
+    const uploaded = await this.processZipUpload(landing, file);
+    // Автопубликация (запрос пользователя 2026-08-20) — см. полный комментарий в createFromTemplate.
+    return this.publish(uploaded.id, companyId);
   }
 
   // Перезалить ZIP в существующий лендинг (первая загрузка переводит его в CUSTOM,
@@ -529,11 +650,13 @@ export class LandingsService {
   // лендингов в группу с процентами трафика на каждый, сплит делается в
   // LandingRendererService.resolveAbTestVariant.
 
-  // Общая валидация create/update: id'ы без повторов, сумма weight === 100, все лендинги из
+  // Валидация состава при создании: id'ы без повторов, сумма weight === 100, все лендинги из
   // одного projectId (и текущей компании — findMany ниже уже неявно заскопирован
-  // PrismaService-мидлварой), никто не состоит в ЧУЖОЙ группе (currentGroupId — своя группа
-  // разрешена, актуально при редактировании).
-  private async assertValidMembers(projectId: string, members: AbTestMemberDto[], currentGroupId: string | null): Promise<void> {
+  // PrismaService-мидлварой), никто не состоит в чужой группе. Только для create — состав/веса
+  // после создания больше не редактируются (запрос пользователя 2026-08-20, см.
+  // UpdateAbTestGroupDto), поэтому currentGroupId-исключение "своя группа разрешена" больше не
+  // нужно.
+  private async assertValidMembers(projectId: string, members: AbTestMemberDto[]): Promise<void> {
     const ids = members.map((m) => m.landingId);
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Лендинг не может быть указан в тесте дважды');
@@ -551,7 +674,7 @@ export class LandingsService {
       if (landing.projectId !== projectId) {
         throw new BadRequestException('Все лендинги теста должны принадлежать одному проекту');
       }
-      if (landing.abTestGroupId && landing.abTestGroupId !== currentGroupId) {
+      if (landing.abTestGroupId) {
         throw new BadRequestException(`Лендинг «${landing.name}» уже участвует в другом тесте`);
       }
     }
@@ -568,8 +691,26 @@ export class LandingsService {
     });
   }
 
-  async createAbTestGroup(projectId: string, companyId: string, dto: UpsertAbTestGroupDto): Promise<AbTestGroup> {
-    await this.assertValidMembers(projectId, dto.members, null);
+  // Company-wide список групп — тот же переключатель "обычные лендинги / группы", что и на
+  // company-wide /landings (запрос пользователя 2026-08-20: "добавь этот список груп и на
+  // странице всех лендингов"). Видимость — по AB_TESTS_VIEW (та же проверка, что уже применяет
+  // project-scoped listAbTestGroups через контроллер), не через landingsVisibilityScope: у
+  // группы нет своего createdById/"OWN_GROUPS"-концепции, только реальный проектный грант.
+  async findAllGroupsForCompany(companyId: string, userId: string, role: UserRole) {
+    const projectIds = await this.projectsService.getAccessibleProjectIds(companyId, userId, role, Permission.AB_TESTS_VIEW);
+    if (!projectIds.length) return [];
+    return this.prisma.abTestGroup.findMany({
+      where: { projectId: { in: projectIds }, companyId, deletedAt: null },
+      include: {
+        landings: { select: { id: true, name: true, abTestWeight: true }, orderBy: { name: 'asc' } },
+        project: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async createAbTestGroup(projectId: string, companyId: string, dto: CreateAbTestGroupDto): Promise<AbTestGroup> {
+    await this.assertValidMembers(projectId, dto.members);
 
     return this.prisma.$transaction(async (tx) => {
       const group = await tx.abTestGroup.create({ data: { projectId, companyId, name: dto.name } });
@@ -586,36 +727,42 @@ export class LandingsService {
     return group.projectId;
   }
 
-  async updateAbTestGroup(groupId: string, dto: UpsertAbTestGroupDto): Promise<AbTestGroup> {
+  // Запрос пользователя 2026-08-20: "после создания группы лэндингов для тестирования, уже
+  // нельзя будет их менять, так как статистика будет неверной" — состав/веса теста фиксируются
+  // раз и навсегда при создании (createAbTestGroup выше). Единственное, что здесь можно
+  // изменить, — название (см. UpdateAbTestGroupDto), поэтому больше нет ни assertValidMembers,
+  // ни транзакции с перепривязкой лендингов.
+  async updateAbTestGroup(groupId: string, dto: UpdateAbTestGroupDto): Promise<AbTestGroup> {
     const group = await this.prisma.abTestGroup.findFirst({ where: { id: groupId } });
     if (!group) throw new NotFoundException('Группа A/B-теста не найдена');
-    await this.assertValidMembers(group.projectId, dto.members, groupId);
-
-    const newIds = dto.members.map((m) => m.landingId);
-    return this.prisma.$transaction(async (tx) => {
-      // Лендинги, которых больше нет в новом списке участников, — просто выходят из теста.
-      await tx.landing.updateMany({
-        where: { abTestGroupId: groupId, id: { notIn: newIds } },
-        data: { abTestGroupId: null, abTestWeight: null },
-      });
-      for (const m of dto.members) {
-        await tx.landing.update({ where: { id: m.landingId }, data: { abTestGroupId: groupId, abTestWeight: m.weight } });
-      }
-      return tx.abTestGroup.update({ where: { id: groupId }, data: { name: dto.name } });
-    });
+    return this.prisma.abTestGroup.update({ where: { id: groupId }, data: { name: dto.name } });
   }
 
-  // Статистика ОДНОГО участника теста ЗА ПЕРИОД (запрос пользователя 2026-07-17: "хотелось бы
-  // куда-то сохранять стату за период теста") — отдельно от computeLandingStats (та считает
-  // "всё время жизни лендинга", включая активность до вступления в группу; здесь строго с
-  // since, момента старта теста). Компактно — без daily-массивов/attachment, не нужны для
-  // застывшего снэпшота.
-  private async computeAbTestMemberSnapshot(landingId: string, projectId: string, since: Date, weight: number | null) {
+  // Статистика ОДНОГО участника теста ДЛЯ ЗАСТЫВШЕГО СНЭПШОТА (запрос пользователя 2026-07-17:
+  // "хотелось бы куда-то сохранять стату за период теста") — отдельно от computeLandingStats
+  // (та считает "всё время жизни лендинга"). Строго трафик, пришедший через сплит ЭТОЙ группы
+  // (запрос пользователя 2026-08-20, тот же фильтр, что и у computeAbTestGroupMemberStats), не
+  // просто "после старта теста" — та более ранняя версия ещё приплюсовывала любой отдельный
+  // трафик лендинга-участника после этой даты. Компактно — без daily-массивов/attachment, не
+  // нужны для застывшего снэпшота.
+  private async computeAbTestMemberSnapshot(landingId: string, projectId: string, groupId: string, weight: number | null) {
     const [subscribes, pageViews, leads, dialogues] = await Promise.all([
-      this.prisma.client.count({ where: { landingId, deletedAt: null, subscribedAt: { gte: since } } }),
-      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'PageView', payload: { path: ['landingId'], equals: landingId }, eventTime: { gte: since } } }),
-      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'Lead', payload: { path: ['landingId'], equals: landingId }, eventTime: { gte: since } } }),
-      this.prisma.client.count({ where: { landingId, deletedAt: null, firstDialogueAt: { gte: since } } }),
+      this.prisma.client.count({ where: { landingId, abTestGroupId: groupId, deletedAt: null } }),
+      this.prisma.trackingEvent.count({
+        where: {
+          projectId,
+          eventName: 'PageView',
+          AND: [{ payload: { path: ['landingId'], equals: landingId } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
+        },
+      }),
+      this.prisma.trackingEvent.count({
+        where: {
+          projectId,
+          eventName: 'Lead',
+          AND: [{ payload: { path: ['landingId'], equals: landingId } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
+        },
+      }),
+      this.prisma.client.count({ where: { landingId, abTestGroupId: groupId, deletedAt: null, firstDialogueAt: { not: null } } }),
     ]);
     return { pageViews, leads, subscribes, dialogues, weight };
   }
@@ -632,7 +779,7 @@ export class LandingsService {
       group.landings.map(async (l) => ({
         landingId: l.id,
         name: l.name,
-        ...(await this.computeAbTestMemberSnapshot(l.id, group.projectId, group.createdAt, l.abTestWeight)),
+        ...(await this.computeAbTestMemberSnapshot(l.id, group.projectId, groupId, l.abTestWeight)),
       })),
     );
 

@@ -539,11 +539,14 @@ export class TelegramPersonalService {
 
       const existingClient = await this.clientsService.findByTgId(tgUserId, channel.projectId);
       let landingId: string | undefined;
+      let abTestGroupId: string | undefined;
       let buyerId: string | undefined;
 
       // Атрибуция лендинга — только на первом сообщении (см. telegram-link.util.ts &text=,
       // "честное ограничение": код виден и может быть стёрт до отправки). Метка баера
-      // (Фаза 3.6) — из того же блока, тем же путём, что и landingId.
+      // (Фаза 3.6) — из того же блока, тем же путём, что и landingId. abTestGroupId (запрос
+      // пользователя 2026-08-20) — тот же мост, задан только если заход пришёл через сплит
+      // группы (см. LandingRendererService.injectTrackingScripts).
       if (!existingClient) {
         const text = event.message.text?.trim();
         if (text) {
@@ -552,6 +555,7 @@ export class TelegramPersonalService {
             try {
               const parsed = JSON.parse(cached);
               landingId = parsed.landingId ?? undefined;
+              abTestGroupId = parsed.abTestGroupId ?? undefined;
               buyerId = parsed.buyerRef ?? undefined;
             } catch {
               // мусор вместо валидного JSON — просто нет атрибуции, не ошибка
@@ -566,6 +570,7 @@ export class TelegramPersonalService {
         tgFirstName: user.firstName ?? undefined,
         tgLastName: user.lastName ?? undefined,
         landingId,
+        abTestGroupId,
         buyerId,
         // Правка 2026-07-21 (запрос пользователя: "не нужно ставить фейковые заглушки... если
         // это personal dm то никаких подписчиков нет получается") — раньше PERSONAL_DM был

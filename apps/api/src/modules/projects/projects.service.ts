@@ -6,6 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql, resolveStatsPeriod } from '../../common/timezone.util';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
+import { formatUserName } from '../../common/user-name.util';
 import { ChannelsService } from '../channels/channels.service';
 import { TelegramPersonalService } from '../channels/providers/telegram-personal.service';
 import { LINK_PARAM_KEYS, LINK_PARAM_NAME_REGEX } from '../tracking/link-params.const';
@@ -347,7 +348,7 @@ export class ProjectsService {
         // отредактировать/убрать его перед запуском реальной рекламы (раньше такой возможности
         // не было вообще — единственный способ был удалить пиксель и создать заново).
         // createdBy — запрос пользователя 2026-08-03, показать в UI, кто добавил пиксель.
-        pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true, testEventCode: true, createdBy: { select: { id: true, firstName: true, lastName: true } } } },
+        pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true, testEventCode: true, shortCode: true, createdBy: { select: { id: true, firstName: true, lastName: true } } } },
         _count: { select: { pushes: true } },
       },
     });
@@ -801,7 +802,7 @@ requests.post(
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
     const buyerFilterSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
 
-    const [buyerRows, users, pixelRows, landingRows, campaignRows, [unattributed]] = await Promise.all([
+    const [buyerRows, users, pixelRows, landingRows, campaignRows, sourceRows, [unattributed]] = await Promise.all([
       this.prisma.$queryRaw<{ buyerId: string; clients: bigint; revenue: string | null }[]>`
         SELECT c."buyerId",
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
@@ -813,7 +814,12 @@ requests.post(
         ORDER BY revenue DESC, clients DESC
         LIMIT 5
       `,
-      this.prisma.user.findMany({ where: { companyId }, select: { id: true, firstName: true, lastName: true } }),
+      // deletedAt: true (запрос пользователя 2026-08-19: "показывает удалённых пользователей,
+      // так и должно быть, но лучше показать красным + подсказка") — без deletedAt: null в where
+      // намеренно (см. ниже, буер мог быть уволен, но исторические клиенты/выручка на нём должны
+      // остаться видны, не пропасть молча в "Удалённый пользователь" — тот фолбэк только для
+      // случая, когда buyerId вообще не резолвится ни в какого пользователя компании).
+      this.prisma.user.findMany({ where: { companyId }, select: { id: true, firstName: true, lastName: true, deletedAt: true } }),
       this.prisma.$queryRaw<{ pixelId: string; label: string | null; platform: string; clients: bigint; revenue: string | null }[]>`
         SELECT tp.id as "pixelId", tp.label, tp.platform,
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
@@ -850,6 +856,25 @@ requests.post(
         ORDER BY revenue DESC, clients DESC
         LIMIT 5
       `,
+      // Топ источников — Facebook/TikTok (запрос пользователя 2026-08-18) — та же форма, что и
+      // campaigns выше (нет отдельной сущности-таблицы, группируем прямо по Client), source —
+      // производное выражение от fbclid/ttclid (тот же критерий, что уже использует
+      // ClientsService.buildClientFilterWhere для adSource-фильтра на странице клиентов), не
+      // реальная колонка — поэтому GROUP BY по CASE-выражению, а не по имени столбца.
+      this.prisma.$queryRaw<{ source: string; clients: bigint; revenue: string | null }[]>`
+        SELECT
+          CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END as source,
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+        FROM "Client" c
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
+          AND (c."fbclid" IS NOT NULL OR c."ttclid" IS NOT NULL)
+          ${buyerFilterSql}
+        GROUP BY CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END
+        ORDER BY revenue DESC, clients DESC
+        LIMIT 5
+      `,
       // "Без баера"/"Без пикселя"/"Без кампании" (запрос пользователя 2026-08-09, проект ROLANDO
       // ACUNA: "за сегодня пишет 104 клиента а в списке топ баеров только один баер у которого
       // 27 клиентов, где остальные клиенты???") — buyerRows/pixelRows/campaignRows выше НАМЕРЕННО
@@ -869,6 +894,8 @@ requests.post(
           pixelsRevenue: string | null;
           campaignsClients: bigint;
           campaignsRevenue: string | null;
+          sourcesClients: bigint;
+          sourcesRevenue: string | null;
         }[]
       >`
         SELECT
@@ -877,7 +904,9 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."pixelId" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "pixelsClients",
           COALESCE(SUM(p.amount) FILTER (WHERE c."pixelId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "pixelsRevenue",
           COUNT(DISTINCT c.id) FILTER (WHERE c."campaignId" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "campaignsClients",
-          COALESCE(SUM(p.amount) FILTER (WHERE c."campaignId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "campaignsRevenue"
+          COALESCE(SUM(p.amount) FILTER (WHERE c."campaignId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "campaignsRevenue",
+          COUNT(DISTINCT c.id) FILTER (WHERE c."fbclid" IS NULL AND c."ttclid" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "sourcesClients",
+          COALESCE(SUM(p.amount) FILTER (WHERE c."fbclid" IS NULL AND c."ttclid" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "sourcesRevenue"
         FROM "Client" c
         LEFT JOIN "Purchase" p ON p."clientId" = c.id
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
@@ -891,7 +920,20 @@ requests.post(
         const user = usersById.get(r.buyerId);
         return {
           buyerId: r.buyerId,
-          name: user ? `${user.firstName} ${user.lastName}`.trim() : 'Удалённый пользователь',
+          // "Удалённый пользователь" — вводящая в заблуждение подпись для этого случая (баг-
+          // репорт пользователя 2026-08-20, живой пример): раз usersById строится БЕЗ фильтра
+          // deletedAt (см. выше), сюда попадает user===undefined ТОЛЬКО когда buyerId вообще не
+          // совпал ни с одним пользователем компании — а это на практике не "баера уволили", а
+          // испорченное/усечённое значение (найден и исправлен отдельный баг-репорт того же
+          // дня — см. buildTrackedLink в apps/web/src/lib/landings.ts, buyerRef мог обрезаться
+          // Facebook при подстановке длинных макросов, т.к. стоял последним параметром ссылки).
+          // Настоящий удалённый баер теперь корректно находится (usersById его видит) и красится
+          // красным ниже через isDeleted — этот фолбэк остаётся только для действительно битых id.
+          name: user ? formatUserName(user) : 'Некорректный ID баера',
+          // isDeleted — сотрудник удалён (User.deletedAt), но у него остались реальные
+          // клиенты/выручка в истории проекта, поэтому он не должен пропадать из топа, только
+          // визуально помечаться (фронт красит имя красным + подсказка при наведении).
+          isDeleted: !!user?.deletedAt,
           clients: Number(r.clients),
           revenue: Number(r.revenue || 0),
         };
@@ -914,10 +956,142 @@ requests.post(
         clients: Number(r.clients),
         revenue: Number(r.revenue || 0),
       })),
+      // Топ источников — Facebook/TikTok (запрос пользователя 2026-08-18). source — сырое
+      // 'FACEBOOK'/'TIKTOK' (тот же формат, что уже принимает ClientFiltersDto.adSource),
+      // подпись под конкретную платформу — на фронте, тем же паттерном, что channelType→"TG".
+      sources: sourceRows.map((r) => ({
+        source: r.source as 'FACEBOOK' | 'TIKTOK',
+        clients: Number(r.clients),
+        revenue: Number(r.revenue || 0),
+      })),
       buyersUnattributed: { clients: Number(unattributed?.buyersClients ?? 0), revenue: Number(unattributed?.buyersRevenue ?? 0) },
       pixelsUnattributed: { clients: Number(unattributed?.pixelsClients ?? 0), revenue: Number(unattributed?.pixelsRevenue ?? 0) },
       campaignsUnattributed: { clients: Number(unattributed?.campaignsClients ?? 0), revenue: Number(unattributed?.campaignsRevenue ?? 0) },
+      sourcesUnattributed: { clients: Number(unattributed?.sourcesClients ?? 0), revenue: Number(unattributed?.sourcesRevenue ?? 0) },
     };
+  }
+
+  // Полный (не top-5) список одной категории лидерборда — отдельная страница "сравнить все"
+  // (запрос пользователя 2026-08-19: "под каждым топ разделом кнопка на отдельную страницу со
+  // списком всех записей для сравнения"). Те же 5 запросов, что и в getLeaderboards выше, но по
+  // ОДНОЙ категории за раз (страница открывает ровно одну), без LIMIT 5 — вместо него разумный
+  // потолок 200: реальная защита от патологического случая (тысячи уникальных campaignId и т.п.),
+  // не осмысленное ограничение "сравнения всех" для обычного проекта.
+  async getLeaderboardFull(
+    id: string,
+    companyId: string,
+    category: 'buyers' | 'pixels' | 'landings' | 'campaigns' | 'sources',
+    periodQuery: StatsPeriodDto,
+    buyerId?: string,
+  ) {
+    const project = await this.findOne(id, companyId); // проверка владения + 404
+    const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    const buyerFilterSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
+    const FULL_LIST_CAP = 200;
+
+    if (category === 'buyers') {
+      const [buyerRows, users] = await Promise.all([
+        this.prisma.$queryRaw<{ buyerId: string; clients: bigint; revenue: string | null }[]>`
+          SELECT c."buyerId",
+            COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+            COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+          FROM "Client" c
+          LEFT JOIN "Purchase" p ON p."clientId" = c.id
+          WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."buyerId" IS NOT NULL
+          GROUP BY c."buyerId"
+          ORDER BY revenue DESC, clients DESC
+          LIMIT ${FULL_LIST_CAP}
+        `,
+        this.prisma.user.findMany({ where: { companyId }, select: { id: true, firstName: true, lastName: true, deletedAt: true } }),
+      ]);
+      const usersById = new Map(users.map((u) => [u.id, u]));
+      return buyerRows.map((r) => {
+        const user = usersById.get(r.buyerId);
+        return {
+          id: r.buyerId,
+          // "Удалённый пользователь" — вводящая в заблуждение подпись для этого случая (баг-
+          // репорт пользователя 2026-08-20, живой пример): раз usersById строится БЕЗ фильтра
+          // deletedAt (см. выше), сюда попадает user===undefined ТОЛЬКО когда buyerId вообще не
+          // совпал ни с одним пользователем компании — а это на практике не "баера уволили", а
+          // испорченное/усечённое значение (найден и исправлен отдельный баг-репорт того же
+          // дня — см. buildTrackedLink в apps/web/src/lib/landings.ts, buyerRef мог обрезаться
+          // Facebook при подстановке длинных макросов, т.к. стоял последним параметром ссылки).
+          // Настоящий удалённый баер теперь корректно находится (usersById его видит) и красится
+          // красным ниже через isDeleted — этот фолбэк остаётся только для действительно битых id.
+          name: user ? formatUserName(user) : 'Некорректный ID баера',
+          isDeleted: !!user?.deletedAt,
+          clients: Number(r.clients),
+          revenue: Number(r.revenue || 0),
+        };
+      });
+    }
+
+    if (category === 'pixels') {
+      const rows = await this.prisma.$queryRaw<{ pixelId: string; label: string | null; platform: string; clients: bigint; revenue: string | null }[]>`
+        SELECT tp.id as "pixelId", tp.label, tp.platform,
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+        FROM "TrackingPixel" tp
+        LEFT JOIN "Client" c ON c."pixelId" = tp.id AND c."deletedAt" IS NULL ${buyerFilterSql}
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE tp."projectId" = ${id}
+        GROUP BY tp.id, tp.label, tp.platform
+        ORDER BY revenue DESC, clients DESC
+        LIMIT ${FULL_LIST_CAP}
+      `;
+      return rows.map((r) => ({ id: r.pixelId, name: r.label || r.platform, clients: Number(r.clients), revenue: Number(r.revenue || 0) }));
+    }
+
+    if (category === 'landings') {
+      const rows = await this.prisma.$queryRaw<{ landing_id: string; name: string; subscribers: bigint; revenue: string | null }[]>`
+        SELECT l.id as landing_id, l.name,
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as subscribers,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+        FROM "Landing" l
+        LEFT JOIN "Client" c ON c."landingId" = l.id AND c."deletedAt" IS NULL ${buyerFilterSql}
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE l."projectId" = ${id} AND l."deletedAt" IS NULL
+        GROUP BY l.id, l.name
+        ORDER BY revenue DESC, subscribers DESC
+        LIMIT ${FULL_LIST_CAP}
+      `;
+      return rows.map((r) => ({ id: r.landing_id, name: r.name, clients: Number(r.subscribers), revenue: Number(r.revenue || 0) }));
+    }
+
+    if (category === 'campaigns') {
+      const rows = await this.prisma.$queryRaw<{ campaignId: string; campaignName: string | null; clients: bigint; revenue: string | null }[]>`
+        SELECT c."campaignId", MAX(c."campaignName") as "campaignName",
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+        FROM "Client" c
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."campaignId" IS NOT NULL
+          ${buyerFilterSql}
+        GROUP BY c."campaignId"
+        ORDER BY revenue DESC, clients DESC
+        LIMIT ${FULL_LIST_CAP}
+      `;
+      return rows.map((r) => ({ id: r.campaignId, name: r.campaignName || r.campaignId, clients: Number(r.clients), revenue: Number(r.revenue || 0) }));
+    }
+
+    // sources — только 2 возможных значения (FACEBOOK/TIKTOK), LIMIT/cap тут чисто формальность.
+    const rows = await this.prisma.$queryRaw<{ source: string; clients: bigint; revenue: string | null }[]>`
+      SELECT
+        CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END as source,
+        COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+        COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
+      FROM "Client" c
+      LEFT JOIN "Purchase" p ON p."clientId" = c.id
+      WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
+        AND (c."fbclid" IS NOT NULL OR c."ttclid" IS NOT NULL)
+        ${buyerFilterSql}
+      GROUP BY CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END
+      ORDER BY revenue DESC, clients DESC
+      LIMIT ${FULL_LIST_CAP}
+    `;
+    // name — сырое 'FACEBOOK'/'TIKTOK', человекочитаемую подпись накладывает фронт (тот же
+    // SOURCE_LABEL, что уже используется для топ-5 карточки источников), не дублируем словарь тут.
+    return rows.map((r) => ({ id: r.source, name: r.source, clients: Number(r.clients), revenue: Number(r.revenue || 0) }));
   }
 
   // Развёрнутая воронка (PageView→Lead→Subscribe→Dialogue→Purchase) для конкретных top-5 id
@@ -932,7 +1106,7 @@ requests.post(
   async getLeaderboardFunnel(
     id: string,
     companyId: string,
-    category: 'buyers' | 'pixels' | 'landings' | 'campaigns',
+    category: 'buyers' | 'pixels' | 'landings' | 'campaigns' | 'sources',
     ids: string[],
     periodQuery: StatsPeriodDto,
     buyerId?: string,
@@ -944,6 +1118,7 @@ requests.post(
     if (category === 'landings') return { items: await this.getLandingsFunnel(id, ids, since, until, buyerId) };
     if (category === 'pixels') return { items: await this.getEventColumnFunnel('pixelId', id, ids, since, until, buyerId) };
     if (category === 'campaigns') return { items: await this.getEventColumnFunnel('campaignId', id, ids, since, until, buyerId) };
+    if (category === 'sources') return { items: await this.getSourcesFunnel(id, ids, since, until, buyerId) };
     return { items: await this.getBuyersFunnel(id, ids, since, until) };
   }
 
@@ -1128,6 +1303,56 @@ requests.post(
 
     const clientsById = new Map(clientRows.map((r) => [r.id, r]));
     const purchasesById = new Map(purchaseRows.map((r) => [r.id, r]));
+
+    return ids.map((id) => ({
+      id,
+      subscribes: clientsById.get(id)?.subscribes ?? 0,
+      dialogues: clientsById.get(id)?.dialogues ?? 0,
+      purchases: purchasesById.get(id)?.purchases ?? 0,
+      revenue: Number(purchasesById.get(id)?.revenue ?? 0),
+    }));
+  }
+
+  // Разворот "Топ источников" (запрос пользователя 2026-08-18) — та же форма ответа, что и
+  // getBuyersFunnel выше (subscribes/dialogues/purchases/revenue, без pageViews/leads — у
+  // TrackingEvent нет колонки fbclid/ttclid, только у Client, поэтому просмотры/клики сюда не
+  // подтянуть тем же приёмом, что getEventColumnFunnel делает для pixelId/campaignId). ids —
+  // буквально 'FACEBOOK'/'TIKTOK' (не настоящие id из БД), поэтому WHERE — явные предикаты по
+  // fbclid/ttclid, а не IN (ids) по колонке.
+  private async getSourcesFunnel(projectId: string, ids: string[], since: Date, until: Date, buyerId?: string) {
+    const wantFacebook = ids.includes('FACEBOOK');
+    const wantTiktok = ids.includes('TIKTOK');
+    const clientBuyerSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
+    const purchaseBuyerSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
+
+    const [clientRows, purchaseRows] = await Promise.all([
+      this.prisma.$queryRaw<{ source: string; subscribes: number; dialogues: number }[]>`
+        SELECT
+          CASE WHEN "fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN "ttclid" IS NOT NULL THEN 'TIKTOK' END as source,
+          COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+        FROM "Client"
+        WHERE "projectId" = ${projectId} AND "deletedAt" IS NULL
+          AND ((${wantFacebook} AND "fbclid" IS NOT NULL) OR (${wantTiktok} AND "ttclid" IS NOT NULL))
+          ${clientBuyerSql}
+        GROUP BY CASE WHEN "fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN "ttclid" IS NOT NULL THEN 'TIKTOK' END
+      `,
+      this.prisma.$queryRaw<{ source: string; purchases: number; revenue: string | null }[]>`
+        SELECT
+          CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END as source,
+          COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
+        FROM "Purchase" p
+        JOIN "Client" c ON c.id = p."clientId"
+        WHERE c."projectId" = ${projectId} AND c."deletedAt" IS NULL
+          AND ((${wantFacebook} AND c."fbclid" IS NOT NULL) OR (${wantTiktok} AND c."ttclid" IS NOT NULL))
+          AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+          ${purchaseBuyerSql}
+        GROUP BY CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END
+      `,
+    ]);
+
+    const clientsById = new Map(clientRows.map((r) => [r.source, r]));
+    const purchasesById = new Map(purchaseRows.map((r) => [r.source, r]));
 
     return ids.map((id) => ({
       id,

@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { PushPreviewDialog } from '@/components/pushes/push-preview-dialog';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 
@@ -107,73 +107,12 @@ const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'destructive' | '
   CANCELLED: 'destructive',
 };
 
-interface PushLogItem {
-  id: string;
-  status: string;
-  error: string | null;
-  sentAt: string | null;
-  clickedAt: string | null;
-  client: { id: string; tgUsername: string | null; tgFirstName: string | null } | null;
-}
-
-// Логи ошибок при открытии рассылки (запрос пользователя 2026-07-17: "добавь логи ошибок
-// при открытии рассылки") — раньше PushLog.error всегда писал одинаковое "send failed",
-// теперь там реальный текст ответа Telegram/WhatsApp/Instagram (см. SendMessageResult) —
-// эндпоинт GET /pushes/:id/logs уже существовал, просто не было UI, чтобы его открыть.
-function PushLogsDialog({ projectId, pushId, onClose }: { projectId: string; pushId: string; onClose: () => void }) {
-  const { data } = useQuery({
-    queryKey: ['pushes', projectId, pushId, 'logs'],
-    queryFn: async () => (await api.get<{ items: PushLogItem[]; total: number }>(`/projects/${projectId}/pushes/${pushId}/logs`)).data,
-  });
-
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Логи отправки</DialogTitle>
-        </DialogHeader>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Получатель</TableHead>
-              <TableHead>Статус</TableHead>
-              <TableHead>Ошибка</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data?.items.map((log) => (
-              <TableRow key={log.id}>
-                <TableCell className="whitespace-nowrap">
-                  {log.client?.tgUsername ? `@${log.client.tgUsername}` : log.client?.tgFirstName || log.client?.id || '—'}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={log.status === 'sent' ? 'default' : log.status === 'failed' ? 'destructive' : 'secondary'}>
-                    {log.status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-sm text-red-500 max-w-md break-words">{log.error || '—'}</TableCell>
-              </TableRow>
-            ))}
-            {data && data.items.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
-                  Логов пока нет
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export default function PushesPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
-  const [openLogsFor, setOpenLogsFor] = useState<string | null>(null);
+  const [previewPushId, setPreviewPushId] = useState<string | null>(null);
 
   const { data: pushes } = useQuery({
     queryKey: ['pushes', projectId],
@@ -230,7 +169,7 @@ export default function PushesPage() {
           </TableHeader>
           <TableBody>
             {pushes?.map((push) => (
-              <TableRow key={push.id} className="cursor-pointer hover:bg-muted" onClick={() => setOpenLogsFor(push.id)}>
+              <TableRow key={push.id} className="cursor-pointer hover:bg-muted" onClick={() => setPreviewPushId(push.id)}>
                 <TableCell>
                   <Badge variant={STATUS_VARIANT[push.status] || 'secondary'}>{push.status}</Badge>
                 </TableCell>
@@ -275,7 +214,7 @@ export default function PushesPage() {
         </Table>
       </div>
 
-      {openLogsFor && <PushLogsDialog projectId={projectId} pushId={openLogsFor} onClose={() => setOpenLogsFor(null)} />}
+      {previewPushId && <PushPreviewDialog key={previewPushId} projectId={projectId} pushId={previewPushId} onClose={() => setPreviewPushId(null)} />}
     </div>
   );
 }

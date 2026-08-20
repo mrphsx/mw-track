@@ -141,6 +141,14 @@ model User {
   // семантика (тут нет промежуточного "по проектам", проектный скоуп уже даёт ProjectAccess).
   clientsVisibilityScope ClientsVisibilityScope @default(ALL_CLIENTS)
 
+  // Короткий код баера в трекинг-ссылках (запрос пользователя 2026-08-20: "сократим значения
+  // z=... но обязательно с обратной совместимостью для старых ссылок") — заменяет полный User.id
+  // (25 символов) в скрытом параметре z=. Nullable до генерации (см. common/short-code.util.ts,
+  // генерируется при создании пользователя во всех трёх местах, где он создаётся — AuthService.
+  // register/TeamService.create/TeamInvitesService — и лениво не бэкафилится: если по какой-то
+  // причине пуст, GetLinkDialog просто подставляет обычный id, ссылка чуть длиннее, но рабочая).
+  buyerShortCode String? @unique
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   deletedAt DateTime?
@@ -801,6 +809,16 @@ model Client {
   // Landing.tgInviteLink). Для PUBLIC_CHANNEL_DIRECT остаётся null навсегда — Telegram
   // не даёт боту знать, с какой страницы пришёл вступивший в публичный канал.
   landingId   String?
+  // Через какую группу A/B/n-теста пришёл клиент — запрос пользователя 2026-08-20: "не нужно
+  // учитывать статистику каждого лэндинга по отдельности, даже если эти лэндинги проливаются
+  // отдельно... группа лэндингов как отдельная сущность со своей статой разделенной". Ставится
+  // ОДИН РАЗ, только когда заход реально прошёл через сплит группы (LandingRendererService.
+  // pickAbTestGroupVariant, resolved.abTestGroupId — путь ведёт на ГРУППУ, не на конкретный
+  // лендинг напрямую), и с этого момента не меняется, независимо от Landing.abTestGroupId
+  // (тот отражает ТЕКУЩЕЕ членство лендинга, которое после создания группы больше нельзя менять
+  // именно из-за этой статистики — см. assertValidMembers/updateAbTestGroup). Без @relation —
+  // та же мягкая ссылка, что и у buyerId/pixelId выше, не формальный FK.
+  abTestGroupId String?
 
   // Telegram данные
   tgUserId    String?
@@ -954,6 +972,7 @@ model Client {
   @@index([companyId, projectId])
   @@index([tgUserId, projectId])
   @@index([landingId])
+  @@index([abTestGroupId])
   @@index([fbclid])
 }
 
@@ -1034,6 +1053,11 @@ model TrackingPixel {
   // (см. её комментарий) выше по файлу.
   createdById String?
   createdBy   User?   @relation("PixelCreatedBy", fields: [createdById], references: [id])
+
+  // Короткий код пикселя в трекинг-ссылках (запрос пользователя 2026-08-20) — тот же принцип,
+  // что и User.buyerShortCode выше: заменяет полный TrackingPixel.id (25 символов) в параметре
+  // pixel=, генерируется при создании (PixelsService.create), не ретроактивен.
+  shortCode String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

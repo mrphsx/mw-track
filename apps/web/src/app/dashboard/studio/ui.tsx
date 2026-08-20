@@ -7,6 +7,8 @@
 // rounded-xl карточки — см. историю в projects/[id]/page.tsx.
 import Link from 'next/link';
 import { LucideIcon } from 'lucide-react';
+import { PeriodValue, StatsPeriod } from '@/components/shared/period-selector';
+import { Input } from '@/components/ui/input';
 import { STUDIO_HUES, StudioHueName } from './colors';
 
 export const STUDIO_CARD = 'rounded-xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm';
@@ -66,5 +68,83 @@ export function StudioLinkButton({
     <button type="button" onClick={onClick} disabled={disabled} className={cls}>
       {content}
     </button>
+  );
+}
+
+const CLIENTS_PERIOD_OPTIONS: { value: StatsPeriod; label: string }[] = [
+  { value: 'today', label: 'Сегодня' },
+  { value: 'yesterday', label: 'Вчера' },
+  { value: '7d', label: '7 дней' },
+  { value: '30d', label: '30 дней' },
+];
+
+// Studio-версия выбора периода для страниц клиентов (запрос пользователя 2026-08-18: "выбор
+// периода должен быть по дизайну как на странице проекта, а на странице клиенты он прозрачный и
+// других цветов") — та же пилюльная вёрстка/цвета, что уже используется на странице проекта
+// (projects/[id]/page.tsx, не вынесена оттуда — риск трогать уже работающую страницу ради
+// одной новой), плюс явное "Все" (запрос: "изначально не будет выбран период никакой") —
+// страница проекта такого состояния не поддерживает (её статистике всегда нужно окно дат), у
+// списка клиентов "без фильтра по дате" — полноценное персистентное состояние, не просто дефолт.
+export function StudioClientsPeriodPicker({ value, onChange }: { value: PeriodValue | null; onChange: (value: PeriodValue | null) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+            value === null
+              ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+              : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+          }`}
+        >
+          Все
+        </button>
+        {CLIENTS_PERIOD_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange({ period: opt.value })}
+            className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              value?.period === opt.value
+                ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => onChange({ period: 'custom', from: value?.from, to: value?.to })}
+          className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+            value?.period === 'custom'
+              ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+              : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+          }`}
+        >
+          Период
+        </button>
+      </div>
+      {value?.period === 'custom' && (
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            value={value.from ?? ''}
+            max={value.to || undefined}
+            onChange={(e) => onChange({ period: 'custom', from: e.target.value, to: value.to })}
+            className="w-auto rounded-lg bg-white dark:bg-[#171F2B] dark:border-white/10 shadow-sm"
+          />
+          <span className="text-[#5F6B7A] dark:text-[#92A0AF] text-sm">—</span>
+          <Input
+            type="date"
+            value={value.to ?? ''}
+            min={value.from || undefined}
+            onChange={(e) => onChange({ period: 'custom', from: value.from, to: e.target.value })}
+            className="w-auto rounded-lg bg-white dark:bg-[#171F2B] dark:border-white/10 shadow-sm"
+          />
+        </div>
+      )}
+    </div>
   );
 }

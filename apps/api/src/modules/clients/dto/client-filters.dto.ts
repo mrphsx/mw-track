@@ -8,10 +8,12 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   Min,
 } from 'class-validator';
 import { ChannelType } from '@prisma/client';
+import { StatsPeriod } from '../../../common/dto/stats-period.dto';
 
 // Express/qs парсит ?country=US в строку, а ?country=US&country=UK — в массив.
 // Без этой нормализации однозначный фильтр (самый частый случай в UI) валился бы
@@ -94,6 +96,33 @@ export class ClientFiltersDto {
   @IsOptional()
   @IsDateString()
   subscribedTo?: string;
+
+  // Период (запрос пользователя 2026-08-18: "период как у нас стоит на странице проекта") — тот
+  // же period/from/to формат, что и StatsPeriodDto на странице проекта, резолвится через ту же
+  // resolveStatsPeriod (часовой пояс проекта, календарно выровненные границы) — сознательно НЕ
+  // переиспользует subscribedFrom/subscribedTo выше (те не timezone-aware и никогда не были
+  // подключены ни к одному фронтенду, см. ClientsService.buildClientFilterWhere). Фильтрует по
+  // Client.createdAt, а не subscribedAt — универсально работает и для "наших" клиентов, и для
+  // внешних контактов (у которых subscribedAt всегда null), не завязано на origin.
+  @IsOptional()
+  @IsIn(['today', 'yesterday', '7d', '30d', 'custom'])
+  period?: StatsPeriod;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from должен быть в формате YYYY-MM-DD' })
+  from?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to должен быть в формате YYYY-MM-DD' })
+  to?: string;
+
+  // Источник трафика (запрос пользователя 2026-08-18: "добавить еще источник трафика, фб тт") —
+  // производный от fbclid/ttclid (не от TrackingPixel.platform через pixelId — те не всегда
+  // назначены клиенту, а клик-id есть у любого клиента, реально пришедшего по рекламе с этой
+  // платформы, включая тех, кому пиксель ещё не проставлен).
+  @IsOptional()
+  @IsIn(['FACEBOOK', 'TIKTOK'])
+  adSource?: 'FACEBOOK' | 'TIKTOK';
 
   @IsOptional()
   @IsString()

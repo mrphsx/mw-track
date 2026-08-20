@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { usePeriodQueryState } from '@/lib/use-period-query-state';
 import {
   Bot,
   ChevronDown,
@@ -16,6 +17,7 @@ import {
   MessageCircle,
   MousePointerClick,
   Percent,
+  Radar,
   Repeat,
   RefreshCw,
   Send,
@@ -39,7 +41,6 @@ import {
   PROTOTYPE_PERIOD_LABELS,
   PROTOTYPE_PERIOD_OPTIONS,
   PrototypeFunnelStage,
-  PrototypePeriodValue,
   PrototypeUnattributedBucket,
   isSingleDayPeriod,
   previewLanding,
@@ -48,6 +49,7 @@ import {
 import { STUDIO_HUE_HEX, STUDIO_HUES, StudioHueName } from '../../colors';
 import { StudioPill } from '../../ui';
 import { StudioClientsTable } from '../../clients-table';
+import { useAuthStore } from '@/store/auth.store';
 
 const FUNNEL_ICON: Record<string, LucideIcon> = {
   PageView: Eye,
@@ -70,7 +72,9 @@ const FUNNEL_HUE: Record<string, StudioHueName> = {
   RepeatDeposit: 'sage',
 };
 
-type LeaderboardCategory = 'buyers' | 'pixels' | 'landings' | 'campaigns';
+type LeaderboardCategory = 'buyers' | 'pixels' | 'landings' | 'campaigns' | 'sources';
+
+const SOURCE_LABEL: Record<'FACEBOOK' | 'TIKTOK', string> = { FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
 
 // Развёрнутая воронка под элементом топа — /projects/:id/leaderboards/:category/funnel,
 // зеркалит классическую страницу проекта (см. LeaderboardFunnelRow там же). pageViews/leads
@@ -102,10 +106,20 @@ interface LeaderboardFunnelRow {
 //    (full/2xl/3xl) и максимально плоской (md/lg/xl) версиями, ожидаемо не финальное.
 export default function StudioProjectPage() {
   const { id } = useParams<{ id: string }>();
-  const [period, setPeriod] = useState<PrototypePeriodValue>({ period: 'today' });
+  const user = useAuthStore((s) => s.user);
+  // Персистентность периода в URL (запрос пользователя 2026-08-18: "везде где есть период,
+  // пусть хранится в пути ссылки") — тот же общий хук, что теперь и у классической страницы
+  // проекта; PrototypePeriodValue/PeriodValue структурно идентичны ({period, from?, to?}).
+  const [period, setPeriod] = usePeriodQueryState('today');
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards, canViewPersonalBroadcasts } =
     usePrototypeProjectData(id, period);
+  // Ссылка на страницу "сравнить все" (запрос пользователя 2026-08-19) — несёт текущий период,
+  // тот же принцип, что и в classic-версии (apps/web/.../(dashboard)/projects/[id]/page.tsx).
+  const compareHref = (category: string) => {
+    const params = period.period === 'custom' ? { period: period.period, from: period.from, to: period.to } : { period: period.period };
+    return `/projects/${id}/leaderboards/${category}?${new URLSearchParams(params as Record<string, string>).toString()}`;
+  };
 
   const metrics: { key: string; label: string; value: string | number; icon: LucideIcon; hue: StudioHueName; danger?: boolean }[] = [
     { key: 'newClients', label: 'Новые клиенты', value: stats?.newClients ?? '—', icon: Users, hue: 'amber' },
@@ -180,7 +194,9 @@ export default function StudioProjectPage() {
         ? leaderboards.pixels.map((p) => p.pixelId).filter((v): v is string => !!v)
         : activeLeaderboardTab === 'landings'
           ? leaderboards.landings.map((l) => l.landingId)
-          : leaderboards.campaigns.map((c) => c.campaignId).filter(Boolean);
+          : activeLeaderboardTab === 'sources'
+            ? leaderboards.sources.map((s) => s.source)
+            : leaderboards.campaigns.map((c) => c.campaignId).filter(Boolean);
   const { data: leaderboardFunnel, isFetching: leaderboardFunnelLoading } = useQuery({
     queryKey: ['project', id, 'leaderboard-funnel', activeLeaderboardTab, periodParams, activeLeaderboardIds.join(',')],
     queryFn: async () =>
@@ -541,6 +557,17 @@ export default function StudioProjectPage() {
             >
               Топ кампаний
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveLeaderboardTab('sources')}
+              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                activeLeaderboardTab === 'sources'
+                  ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                  : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+              }`}
+            >
+              Топ источников
+            </button>
           </div>
 
           {activeLeaderboardTab === 'buyers' && canViewTeamLeaderboards && (
@@ -553,11 +580,13 @@ export default function StudioProjectPage() {
                 label: b.name,
                 primary: `${b.clients} клиентов`,
                 secondary: `$${b.revenue.toFixed(2)}`,
+                isDeleted: b.isDeleted,
               }))}
               funnelById={leaderboardFunnelById}
               funnelLoading={leaderboardFunnelLoading}
               unattributed={leaderboards.buyersUnattributed}
               unattributedLabel="Без баера"
+              compareHref={compareHref('buyers')}
             />
           )}
           {activeLeaderboardTab === 'pixels' && (
@@ -575,6 +604,7 @@ export default function StudioProjectPage() {
               funnelLoading={leaderboardFunnelLoading}
               unattributed={leaderboards.pixelsUnattributed}
               unattributedLabel="Без пикселя"
+              compareHref={compareHref('pixels')}
             />
           )}
           {activeLeaderboardTab === 'landings' && (
@@ -588,9 +618,11 @@ export default function StudioProjectPage() {
                 primary: `${l.subscribers} подписок`,
                 secondary: `$${l.revenue.toFixed(2)}`,
                 previewId: l.landingId,
+                detailHref: `/projects/${id}/landings/${l.landingId}`,
               }))}
               funnelById={leaderboardFunnelById}
               funnelLoading={leaderboardFunnelLoading}
+              compareHref={compareHref('landings')}
             />
           )}
           {activeLeaderboardTab === 'campaigns' && (
@@ -608,6 +640,25 @@ export default function StudioProjectPage() {
               funnelLoading={leaderboardFunnelLoading}
               unattributed={leaderboards.campaignsUnattributed}
               unattributedLabel="Без кампании"
+              compareHref={compareHref('campaigns')}
+            />
+          )}
+          {activeLeaderboardTab === 'sources' && (
+            <LeaderboardBlock
+              title="Топ источников"
+              icon={Radar}
+              hue="sage"
+              items={leaderboards.sources.map((s) => ({
+                id: s.source,
+                label: SOURCE_LABEL[s.source],
+                primary: `${s.clients} клиентов`,
+                secondary: `$${s.revenue.toFixed(2)}`,
+              }))}
+              funnelById={leaderboardFunnelById}
+              funnelLoading={leaderboardFunnelLoading}
+              unattributed={leaderboards.sourcesUnattributed}
+              unattributedLabel="Без источника"
+              compareHref={compareHref('sources')}
             />
           )}
         </div>
@@ -628,7 +679,12 @@ export default function StudioProjectPage() {
             Клиентов пока нет.
           </div>
         ) : (
-          <StudioClientsTable projectId={id} clients={recentClients ?? []} onSelect={setSelectedClientId} />
+          <StudioClientsTable
+            projectId={id}
+            clients={recentClients ?? []}
+            onSelect={setSelectedClientId}
+            showTrafficSource={user?.role !== 'OPERATOR'}
+          />
         )}
       </div>
 
@@ -689,26 +745,37 @@ function LeaderboardBlock({
   funnelLoading,
   unattributed,
   unattributedLabel,
+  compareHref,
 }: {
   title: string;
   icon: LucideIcon;
   hue: StudioHueName;
-  items: { id: string; label: string; primary: string; secondary?: string; previewId?: string }[];
+  items: { id: string; label: string; primary: string; secondary?: string; previewId?: string; detailHref?: string; isDeleted?: boolean }[];
   funnelById?: Map<string, LeaderboardFunnelRow>;
   funnelLoading?: boolean;
   // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09) — см. полный комментарий у
   // classic-версии (apps/web/src/app/(dashboard)/projects/[id]/page.tsx, LeaderboardCard).
   unattributed?: PrototypeUnattributedBucket;
   unattributedLabel?: string;
+  // Ссылка на полный список (запрос пользователя 2026-08-19) — см. полный комментарий у
+  // classic-версии.
+  compareHref?: string;
 }) {
   const { textClass, bgSoftClass } = STUDIO_HUES[hue];
   return (
     <div className="rounded-xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${bgSoftClass}`}>
-          <Icon className={`w-3.5 h-3.5 ${textClass}`} />
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${bgSoftClass}`}>
+            <Icon className={`w-3.5 h-3.5 ${textClass}`} />
+          </div>
+          <h3 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">{title}</h3>
         </div>
-        <h3 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">{title}</h3>
+        {compareHref && (
+          <Link href={compareHref} className="text-xs text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline shrink-0">
+            Сравнить все →
+          </Link>
+        )}
       </div>
       {items.length === 0 && !unattributed?.clients && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Нет данных за период.</p>}
       <div className="space-y-3">
@@ -719,7 +786,24 @@ function LeaderboardBlock({
               <div className="flex items-center justify-between text-sm gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-[#5F6B7A] dark:text-[#92A0AF] shrink-0">{i + 1}.</span>
-                  <span className="truncate text-[#131A24] dark:text-[#E9EDF3]">{item.label}</span>
+                  {/* Клик по названию ведёт на страницу сущности (запрос пользователя
+                      2026-08-20) — см. полный комментарий в classic-версии. */}
+                  {item.detailHref ? (
+                    <Link
+                      href={item.detailHref}
+                      className={`truncate hover:underline ${item.isDeleted ? 'text-red-600 dark:text-red-400' : 'text-[#131A24] dark:text-[#E9EDF3]'}`}
+                      title={item.isDeleted ? 'Удалённый пользователь' : undefined}
+                    >
+                      {item.label}
+                    </Link>
+                  ) : (
+                    <span
+                      className={`truncate ${item.isDeleted ? 'text-red-600 dark:text-red-400' : 'text-[#131A24] dark:text-[#E9EDF3]'}`}
+                      title={item.isDeleted ? 'Удалённый пользователь' : undefined}
+                    >
+                      {item.label}
+                    </span>
+                  )}
                   {item.previewId && (
                     <button
                       type="button"

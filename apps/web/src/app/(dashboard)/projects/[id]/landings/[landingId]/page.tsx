@@ -25,6 +25,7 @@ import { LandingContentCard } from '@/components/landing-content-card';
 import { GetLinkDialog } from '@/components/get-link-dialog';
 import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog, LandingDomainRef } from '@/components/landing-card';
 import { AbTestComparisonCard, AbTestMemberStats, LandingVariantStats } from '@/components/landings/ab-test-comparison-card';
+import { useAuthStore } from '@/store/auth.store';
 
 interface ProjectChannelInfo {
   channel: { tgChannelMembersCount: number | null } | null;
@@ -107,6 +108,7 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
 export default function LandingStatsPage() {
   const { id: projectId, landingId } = useParams<{ id: string; landingId: string }>();
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
 
   const { data: stats } = useQuery({
     queryKey: ['landing', landingId, 'stats'],
@@ -134,6 +136,17 @@ export default function LandingStatsPage() {
 
   const leadRate = stats && stats.funnel.pageViews > 0 ? Math.round((stats.funnel.leads / stats.funnel.pageViews) * 100) : null;
   const subscribeRate = stats && stats.funnel.leads > 0 ? Math.round((stats.funnel.subscribes / stats.funnel.leads) * 100) : null;
+
+  // Включить/выключить прямо со страницы лендинга (запрос пользователя 2026-08-20) — см. полный
+  // комментарий в Studio-версии.
+  const publish = useMutation({
+    mutationFn: () => api.post(`/landings/${landingId}/publish`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'stats'] }),
+  });
+  const unpublish = useMutation({
+    mutationFn: () => api.post(`/landings/${landingId}/unpublish`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'stats'] }),
+  });
 
   const [showGetLink, setShowGetLink] = useState(false);
   const [showDomainDialog, setShowDomainDialog] = useState(false);
@@ -171,9 +184,20 @@ export default function LandingStatsPage() {
             <h1 className="text-2xl font-bold">{stats.landing.name}</h1>
             <div className="flex items-center gap-2 mt-1.5">
               <Badge variant="outline">{TYPE_LABEL[stats.landing.type]}</Badge>
-              <Badge variant={stats.landing.status === 'PUBLISHED' ? 'default' : 'secondary'}>
+              {/* DRAFT — destructive (красный), не secondary (запрос пользователя 2026-08-20) —
+                  тот же принцип, что и в landing-card.tsx. */}
+              <Badge variant={stats.landing.status === 'PUBLISHED' ? 'default' : stats.landing.status === 'DRAFT' ? 'destructive' : 'secondary'}>
                 {STATUS_LABEL[stats.landing.status]}
               </Badge>
+              {stats.landing.status === 'PUBLISHED' ? (
+                <Button size="sm" variant="outline" onClick={() => unpublish.mutate()} disabled={unpublish.isPending}>
+                  Снять с публикации
+                </Button>
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => publish.mutate()} disabled={publish.isPending}>
+                  Опубликовать
+                </Button>
+              )}
               {stats.attachment && (
                 <a
                   href={`https://${stats.attachment.domain}${stats.attachment.path === '/' ? '' : stats.attachment.path}`}
@@ -301,7 +325,12 @@ export default function LandingStatsPage() {
           </Card>
         ) : (
           <div className="border rounded-lg bg-card">
-            <ClientsTable projectId={projectId} clients={clients.items} onSelect={() => {}} />
+            <ClientsTable
+              projectId={projectId}
+              clients={clients.items}
+              onSelect={() => {}}
+              showTrafficSource={user?.role !== 'OPERATOR'}
+            />
           </div>
         )}
       </div>

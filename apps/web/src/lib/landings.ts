@@ -139,6 +139,10 @@ export interface AbTestGroupItem {
   endedAt: string | null;
   resultsSnapshot: AbTestSnapshotMember[] | null;
   landings: { id: string; name: string; abTestWeight: number | null }[];
+  // Только у company-wide GET /ab-test-groups (запрос пользователя 2026-08-20, "добавь этот
+  // список груп и на странице всех лендингов") — project-scoped listAbTestGroups его не отдаёт,
+  // там проект и так известен из URL.
+  project?: { id: string; name: string };
 }
 
 export function groupAutoLabel(group: Pick<AbTestGroupItem, 'landings'>): string {
@@ -218,6 +222,10 @@ export interface LinkPixel {
   label: string | null;
   pixelId: string;
   isActive: boolean;
+  // Короткий код пикселя в трекинг-ссылке (запрос пользователя 2026-08-20, вместо полного id в
+  // параметре pixel=) — может быть null для очень старых записей (buildTrackedLink тогда
+  // подставляет обычный id).
+  shortCode?: string | null;
 }
 
 // null pixel — "все активные пиксели проекта" (сегодняшнее поведение без привязки к одному).
@@ -238,19 +246,65 @@ export function buildTrackedLink(
   const base = attachmentUrl(attachment);
 
   const parts: string[] = [];
-  // pixel.id (внутренний cuid), НЕ pixel.pixelId (внешний ID пикселя в Facebook/TikTok) — баг
-  // найден и исправлен 2026-07-21: маршрутизация события к одному пикселю в TrackingProcessor
-  // ищет TrackingPixel по внутреннему id, внешний ID туда никогда бы не совпал.
-  if (pixel) parts.push(`${paramMap.pixelId}=${pixel.id}`);
-  parts.push(`${paramMap.adId}={{ad.id}}`);
-  parts.push(`${paramMap.adName}={{ad.name}}`);
-  parts.push(`${paramMap.adsetId}={{adset.id}}`);
-  parts.push(`${paramMap.adsetName}={{adset.name}}`);
-  parts.push(`${paramMap.campaignId}={{campaign.id}}`);
-  parts.push(`${paramMap.campaignName}={{campaign.name}}`);
-  parts.push(`${paramMap.placement}={{placement}}`);
-  parts.push(`${paramMap.siteSourceName}={{site_source_name}}`);
+  // Порядок параметров (запрос пользователя 2026-08-20: баг-репорт с реально усечёнными
+  // buyerId в БД — "cmsddngbo05vfipvusexy80sj" долетал как "cmsddngbo05v"/"cmsddngbo05"/""
+  // на РАЗНУЮ длину на разных кликах одной и той же реальной ссылки) — buyerRef/pixelId
+  // теперь идут ПЕРВЫМИ, макро-поля ({{ad.id}} и т.п.) — последними. Причина: Facebook
+  // подставляет реальные значения в макросы уже на своей стороне (имена кампаний/объявлений
+  // после url-кодирования могут быть длинными), и если у итогового URL после подстановки есть
+  // ограничение по длине где-то на пути (сам Facebook/промежуточный редирект/in-app браузер),
+  // обрезается ХВОСТ строки — раньше им оказывался buyerRef (последний параметр), из-за чего
+  // реальные баеры теряли атрибуцию по деньгам, а не что-то второстепенное. pixel.id
+  // (внутренний cuid), НЕ pixel.pixelId (внешний ID пикселя в Facebook/TikTok) — баг найден и
+  // исправлен 2026-07-21: маршрутизация события к одному пикселю в TrackingProcessor ищет
+  // TrackingPixel по внутреннему id, внешний ID туда никогда бы не совпал.
   if (buyerId) parts.push(`${paramMap.buyerRef}=${buyerId}`);
+  if (pixel) parts.push(`${paramMap.pixelId}=${pixel.shortCode || pixel.id}`);
+
+  // Макро-синтаксис рекламных площадок РАЗНЫЙ — баг-репорт пользователя 2026-08-20: реальная
+  // TikTok-ссылка вернулась с буквальными "{{ad.id}}" и т.п. вместо подставленных значений,
+  // потому что TikTok Ads Manager вообще не понимает синтаксис "{{...}}" — это исключительно
+  // Facebook-нотация ("{{campaign.name}}" и т.п.). TikTok использует свой формат
+  // "__ИМЯ_МАКРОСА__" (двойное подчёркивание с обеих сторон, см. официальную доку TikTok for
+  // Business "Supported macros for Mobile Measurement Partners" + независимая сверка через
+  // utm.new — обе сходятся на одном списке). До этой правки функция ВСЕГДА эмитила
+  // Facebook-макросы, даже когда выбранный пиксель был TIKTOK — реальный клиент получал
+  // нерабочую ссылку, площадка просто пропускала "{{...}}" насквозь как обычный текст, без
+  // единой ошибки. site_source_name у TikTok нет прямого аналога (в отличие от Facebook,
+  // различающего Facebook/Instagram/Audience Network одним и тем же макросом) — параметр
+  // просто не добавляется в TikTok-ссылку, а не подставляется макросом-пустышкой.
+  // pixel === null ("все активные пиксели проекта", без привязки к одной площадке) — платформа
+  // неизвестна заранее (проект может держать активными и Facebook, и TikTok пиксели
+  // одновременно), поведение остаётся прежним (Facebook-макросы) — тот же принцип, что и раньше,
+  // не регрессия, просто нерешённая неоднозначность этого конкретного режима.
+  if (pixel?.platform === 'TIKTOK') {
+    parts.push(`${paramMap.adId}=__CID__`);
+    parts.push(`${paramMap.adName}=__CID_NAME__`);
+    parts.push(`${paramMap.adsetId}=__AID__`);
+    parts.push(`${paramMap.adsetName}=__AID_NAME__`);
+    parts.push(`${paramMap.campaignId}=__CAMPAIGN_ID__`);
+    parts.push(`${paramMap.campaignName}=__CAMPAIGN_NAME__`);
+    parts.push(`${paramMap.placement}=__PLACEMENT__`);
+    // ttclid (запрос пользователя 2026-08-20, продолжение той же проверки готовности к запуску
+    // TikTok) — TikTok обещает подставлять его в URL клика автоматически "с апреля 2024", БЕЗ
+    // явного параметра в ссылке, но живая проверка реального аккаунта показала 0 (!) клиентов
+    // из 14787 с непустым ttclid и 0 живых PageView-событий на реальный TikTok-пиксель этого
+    // проекта с заполненным ttclid — автоподстановка либо не работает для этого аккаунта, либо
+    // не включена. Официальная документация TikTok сама рекомендует ручной фолбэк именно на этот
+    // случай — добавляем его безусловно для TikTok-ссылок, как страховку (TikTok-овский аналог
+    // не через paramMap, читается на бэкенде под фиксированным именем "ttclid", как и fbclid —
+    // см. LandingRendererService.injectTrackingScripts).
+    parts.push(`ttclid=__CLICKID__`);
+  } else {
+    parts.push(`${paramMap.adId}={{ad.id}}`);
+    parts.push(`${paramMap.adName}={{ad.name}}`);
+    parts.push(`${paramMap.adsetId}={{adset.id}}`);
+    parts.push(`${paramMap.adsetName}={{adset.name}}`);
+    parts.push(`${paramMap.campaignId}={{campaign.id}}`);
+    parts.push(`${paramMap.campaignName}={{campaign.name}}`);
+    parts.push(`${paramMap.placement}={{placement}}`);
+    parts.push(`${paramMap.siteSourceName}={{site_source_name}}`);
+  }
 
   return `${base}?${parts.join('&')}`;
 }

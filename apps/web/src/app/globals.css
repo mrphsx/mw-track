@@ -196,6 +196,43 @@
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
   }
+  /* Studio-scoped переопределение переменных тёмной темы (запрос пользователя 2026-08-18: попапы
+     создания лэндинга/домена/A-B-теста, "Получить ссылку", шаги/статистика сценария, дропдаун
+     статусов, попапы команды/подписки, оглавление документации, карточка клиента — "и так же все
+     попапы и дропдауны чёрно-серого цвета, что не подходит под наш дизайн, поправь все"). Dialog/
+     Select/DropdownMenu/Drawer/Card/Accordion/Sheet — все держатся на семейных семантических
+     токенах (bg-popover/bg-card/bg-muted/bg-primary и т.д., см. dialog.tsx/select.tsx/
+     dropdown-menu.tsx/drawer.tsx/card.tsx), а `.dark` выше — нейтральный ахроматичный oklch без
+     оттенка, никогда не подгонялся под настоящую Studio-палитру (#0F1620 фон / #171F2B карточка /
+     #7BA9EE акцент, см. STUDIO_CARD/StudioLinkButton в dashboard/studio/ui.tsx). Точечные
+     containerClassName-переопределения по компоненту (clients-filter.tsx и др., более ранние
+     раунды) не масштабировались на десятки попапов один за другим — этот блок переопределяет сами
+     CSS-переменные один раз, подхватывается ЛЮБЫМ текущим и будущим компонентом на семантических
+     токенах без правки каждого файла отдельно. Класс `.studio` вешается на <html> в
+     dashboard/studio/layout.tsx (не на вложенный div) — Dialog/Select/DropdownMenu/Drawer-контент
+     рендерится через *.Primitive.Portal в document.body, вне дерева Studio-лэйаута, так что
+     переопределение обязано жить на общем предке <html>, иначе не подхватится порталами.
+     Светлая тема Studio не трогается — там `--card`/`--popover` и так белые (oklch(1 0 0)),
+     совпадает с уже используемым в Studio bg-white. */
+  .studio.dark {
+    --background: #0f1620;
+    --foreground: #e9edf3;
+    --card: #171f2b;
+    --card-foreground: #e9edf3;
+    --popover: #171f2b;
+    --popover-foreground: #e9edf3;
+    --primary: #7ba9ee;
+    --primary-foreground: #0f1620;
+    --secondary: #1c2532;
+    --secondary-foreground: #e9edf3;
+    --muted: #1c2532;
+    --muted-foreground: #92a0af;
+    --accent: rgba(123, 169, 238, 0.12);
+    --accent-foreground: #e9edf3;
+    --border: rgba(255, 255, 255, 0.1);
+    --input: rgba(255, 255, 255, 0.15);
+    --ring: rgba(123, 169, 238, 0.4);
+  }
   * {
     @apply border-border outline-ring/50;
   }

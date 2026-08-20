@@ -6,8 +6,9 @@ import { Users, ShoppingCart, DollarSign } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { PeriodSelector, PeriodValue } from '@/components/shared/period-selector';
+import { PeriodSelector } from '@/components/shared/period-selector';
 import { StatsCard } from '@/components/shared/stats-card';
+import { usePeriodQueryState } from '@/lib/use-period-query-state';
 
 interface ProjectSummary {
   id: string;
@@ -26,7 +27,9 @@ interface MyStats {
 // пользователь, НЕ по всем клиентам проекта (см. ClientsRepository.getMyStats).
 export default function MyStatsPage() {
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [periodValue, setPeriodValue] = useState<PeriodValue>({ period: '30d' });
+  // Персистентность периода в URL (запрос пользователя 2026-08-18) — тот же общий хук, что и
+  // на странице проекта; дефолт '30d' сохранён как был здесь исторически.
+  const [periodValue, setPeriodValue] = usePeriodQueryState('30d');
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],

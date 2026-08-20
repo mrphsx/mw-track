@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'crypto';
 import { addDays } from 'date-fns';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
+import { withUniqueShortCode } from '../../common/short-code.util';
 import { PLANS } from '../billing/plans';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -44,15 +45,21 @@ export class AuthService {
       },
     });
 
-    const user = await this.prisma.user.create({
-      data: {
-        companyId: company.id,
-        email: dto.email,
-        passwordHash: await bcrypt.hash(dto.password, 12),
-        firstName: dto.firstName,
-        role: 'OWNER',
-      },
-    });
+    // buyerShortCode (запрос пользователя 2026-08-20) — генерируется сразу при создании, а не
+    // лениво по требованию: так поле никогда не бывает пустым к моменту, когда фронтенд строит
+    // трекинг-ссылку (GetLinkDialog читает его прямо из уже залогиненного пользователя).
+    const user = await withUniqueShortCode(async (buyerShortCode) =>
+      this.prisma.user.create({
+        data: {
+          companyId: company.id,
+          email: dto.email,
+          passwordHash: await bcrypt.hash(dto.password, 12),
+          firstName: dto.firstName,
+          role: 'OWNER',
+          buyerShortCode,
+        },
+      }),
+    );
 
     return this.issueTokens({ ...user, company });
   }

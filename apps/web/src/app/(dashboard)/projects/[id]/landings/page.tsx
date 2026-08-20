@@ -51,6 +51,10 @@ export default function LandingsPage() {
 
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [error, setError] = useState('');
+  // Переключатель "обычные лендинги / группы" (запрос пользователя 2026-08-20) — раньше секция
+  // групп всегда показывалась над обычным списком лендингов, теперь это два отдельных режима
+  // просмотра одной страницы, а не всегда-видимый блок сверху.
+  const [viewMode, setViewMode] = useState<'landings' | 'groups'>('landings');
 
   // null — закрыто, 'new' — создаём новый кастомный лендинг, иначе id существующего (ре-загрузка)
   const [uploadTarget, setUploadTarget] = useState<'new' | string | null>(null);
@@ -224,34 +228,66 @@ export default function LandingsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Лендинги</h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl font-bold">Лендинги</h1>
+          {/* Переключатель режима (запрос пользователя 2026-08-20: "переключатель между
+              обычными лэндингами и группами") — сгруппирован с заголовком на фиксированной
+              левой стороне, чтобы не "прыгать" при смене состава кнопок справа (запрос
+              пользователя 2026-08-20: "кнопка переключения... прыгает когда меняешь"). */}
+          <div className="inline-flex rounded-lg border p-0.5 gap-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('landings')}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                viewMode === 'landings' ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              Лендинги
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('groups')}
+              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                viewMode === 'groups' ? 'bg-blue-600 text-white' : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              Группы (A/B/n)
+            </button>
+          </div>
+        </div>
         <div className="flex gap-2">
-          {compareMode ? (
-            <Button variant="outline" onClick={exitCompareMode}>
-              <X className="w-4 h-4 mr-1.5" /> Отмена
-            </Button>
-          ) : (
-            <>
-              <Button variant="outline" onClick={() => setCompareMode(true)}>
-                <SplitSquareHorizontal className="w-4 h-4 mr-1.5" /> Сравнить лендинги
-              </Button>
-              {hasPermission(user, projectId, 'LANDINGS_CREATE') && (
+            {viewMode === 'landings' &&
+              (compareMode ? (
+                <Button variant="outline" onClick={exitCompareMode}>
+                  <X className="w-4 h-4 mr-1.5" /> Отмена
+                </Button>
+              ) : (
                 <>
-                  <Button variant="outline" onClick={() => setUploadTarget('new')}>
-                    <UploadCloud className="w-4 h-4 mr-1.5" /> Загрузить ZIP
+                  <Button variant="outline" onClick={() => setCompareMode(true)}>
+                    <SplitSquareHorizontal className="w-4 h-4 mr-1.5" /> Сравнить лендинги
                   </Button>
-                  <Button onClick={() => setShowTemplateModal(true)}>
-                    <Plus className="w-4 h-4 mr-1.5" /> Создать из шаблона
-                  </Button>
+                  {hasPermission(user, projectId, 'LANDINGS_CREATE') && (
+                    <>
+                      <Button variant="outline" onClick={() => setUploadTarget('new')}>
+                        <UploadCloud className="w-4 h-4 mr-1.5" /> Загрузить ZIP
+                      </Button>
+                      <Button onClick={() => setShowTemplateModal(true)}>
+                        <Plus className="w-4 h-4 mr-1.5" /> Создать из шаблона
+                      </Button>
+                    </>
+                  )}
                 </>
-              )}
-            </>
-          )}
+              ))}
+            {viewMode === 'groups' && hasPermission(user, projectId, 'AB_TESTS_CREATE') && (
+              <Button onClick={() => setAbTestTarget({ projectId, groupId: null, preselectedIds: [] })}>
+                <Plus className="w-4 h-4 mr-1.5" /> Создать тест
+              </Button>
+            )}
         </div>
       </div>
 
-      {(!!activeAbTestGroups.length || hasEndedAbTestGroups) && (
+      {viewMode === 'groups' && (!!activeAbTestGroups.length || hasEndedAbTestGroups) && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold">A/B/n-тесты</h2>
@@ -352,15 +388,28 @@ export default function LandingsPage() {
         </div>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
+      {viewMode === 'groups' && !activeAbTestGroups.length && !hasEndedAbTestGroups && (
+        <Card>
+          <CardContent className="p-8 text-center space-y-3">
+            <p className="text-muted-foreground">Тестов пока нет.</p>
+            {hasPermission(user, projectId, 'AB_TESTS_CREATE') && (
+              <Button onClick={() => setAbTestTarget({ projectId, groupId: null, preselectedIds: [] })}>
+                <Plus className="w-4 h-4 mr-1.5" /> Создать тест
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-      {!isLoading && landings?.length === 0 && (
+      {viewMode === 'landings' && isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
+
+      {viewMode === 'landings' && !isLoading && landings?.length === 0 && (
         <Card>
           <CardContent className="p-8 text-center text-muted-foreground">Лендингов пока нет.</CardContent>
         </Card>
       )}
 
-      {!!landings?.length && (
+      {viewMode === 'landings' && !!landings?.length && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {landings.map((l) => (
             <LandingCard

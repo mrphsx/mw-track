@@ -20,6 +20,15 @@ function isSharedPath(pathname: string): boolean {
   return SHARED_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+// Специальные файлы метаданных App Router (favicon-иконка, добавлена 2026-08-18) — генерируются
+// Next.js по пути БЕЗ расширения (/icon, не /icon.png), поэтому регэксп на расширение файла ниже
+// их не ловит — тот же класс бага, что и со статикой из public/ выше, просто без точки в пути.
+const METADATA_PATHS = ['/icon', '/apple-icon', '/opengraph-image', '/twitter-image'];
+
+function isMetadataPath(pathname: string): boolean {
+  return METADATA_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 export function middleware(request: NextRequest) {
   const host = request.headers.get('host') || '';
 
@@ -38,7 +47,7 @@ export function middleware(request: NextRequest) {
   // /dashboard/studio/docs/overview.png → 404 (реальный баг, найденный при первом использовании
   // public/ в этом приложении — раньше здесь просто не было статических файлов, которые могли
   // бы столкнуться с этим рерайтом).
-  if (pathname.startsWith(STUDIO_PREFIX) || isSharedPath(pathname) || /\.[a-zA-Z0-9]+$/.test(pathname)) {
+  if (pathname.startsWith(STUDIO_PREFIX) || isSharedPath(pathname) || isMetadataPath(pathname) || /\.[a-zA-Z0-9]+$/.test(pathname)) {
     return NextResponse.next();
   }
 

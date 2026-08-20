@@ -126,12 +126,49 @@ export class ProjectsController {
       // pixels теперь тоже несёт revenue (баг-фикс 2026-07-28, раньше было только conversions —
       // счётчик, не деньги) — та же граница видимости, что и у остальных трёх.
       data.pixels = data.pixels.map((p) => ({ ...p, revenue: 0 }));
+      // sources (запрос пользователя 2026-08-18) — та же граница, что и у pixels/campaigns/
+      // landings (не про людей, просто обнуляем деньги).
+      data.sources = data.sources.map((s) => ({ ...s, revenue: 0 }));
       data.buyersUnattributed.revenue = 0;
       data.pixelsUnattributed.revenue = 0;
       data.campaignsUnattributed.revenue = 0;
+      data.sourcesUnattributed.revenue = 0;
     }
 
     return data;
+  }
+
+  // Полный список одной категории (не top-5) для отдельной страницы "сравнить все" (запрос
+  // пользователя 2026-08-19). Та же видимость прав, что и у getLeaderboards выше — "buyers"
+  // требует STATS_VIEW_TEAM_LEADERBOARDS и пуст при активном "только свои клиенты" скоупе,
+  // выручка везде обнуляется без STATS_VIEW_REVENUE, а не удаляется из ответа.
+  @Get(':id/leaderboards/:category/full')
+  async getLeaderboardFull(
+    @Param('id') id: string,
+    @Param('category') category: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() period: StatsPeriodDto,
+  ) {
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+
+    const categories = ['buyers', 'pixels', 'landings', 'campaigns', 'sources'] as const;
+    if (!(categories as readonly string[]).includes(category)) throw new BadRequestException('Неизвестная категория лидерборда');
+
+    if (
+      category === 'buyers' &&
+      (scopedBuyerId || !(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS)))
+    ) {
+      return { items: [] };
+    }
+
+    const items = await this.projectsService.getLeaderboardFull(id, companyId, category as (typeof categories)[number], period, scopedBuyerId);
+
+    if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
+      return { items: items.map((i) => ({ ...i, revenue: 0 })) };
+    }
+    return { items };
   }
 
   // Развёрнутая воронка по конкретным top-5 id одной категории лидерборда (запрос пользователя
@@ -149,7 +186,7 @@ export class ProjectsController {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
 
-    const categories = ['buyers', 'pixels', 'landings', 'campaigns'] as const;
+    const categories = ['buyers', 'pixels', 'landings', 'campaigns', 'sources'] as const;
     if (!(categories as readonly string[]).includes(category)) throw new BadRequestException('Неизвестная категория лидерборда');
     // scopedBuyerId — та же причина, что и в getLeaderboards выше: "buyers" ранжирует против
     // других баеров, при активном скоупе всегда пусто, независимо от разрешения.
@@ -160,11 +197,16 @@ export class ProjectsController {
       return { items: [] };
     }
 
+    // 200, не 10 (запрос пользователя 2026-08-19: "забыл добавить всю информацию про конверсию,
+    // как это есть в разделе ТОП" — новая страница "Сравнить все" запрашивает воронку сразу для
+    // ВСЕХ строк полного списка, не только top-5) — тот же потолок, что у самого полного списка
+    // (getLeaderboardFull), запросы внутри getLeaderboardFunnel уже батчат IN (...ids) одним
+    // запросом на категорию, не по одному id, так что рост с 10 до 200 не даёт N+1.
     const ids = (query.ids || '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-      .slice(0, 10);
+      .slice(0, 200);
 
     const data = await this.projectsService.getLeaderboardFunnel(id, companyId, category as (typeof categories)[number], ids, query, scopedBuyerId);
 

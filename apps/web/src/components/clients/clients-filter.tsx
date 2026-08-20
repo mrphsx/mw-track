@@ -36,12 +36,55 @@ export interface ClientsFilterState {
   utmMedium?: string;
   utmCampaign?: string;
   utmContent?: string;
+  // Источник трафика (запрос пользователя 2026-08-18) — производный от fbclid/ttclid на
+  // бэкенде, не от конкретного пикселя.
+  adSource?: string;
+}
+
+// Персистентность всех фильтров в URL (запрос пользователя 2026-08-18: "все остальные фильтры
+// так же сохраняй") — единый список полей-строк и полей-массивов, используется и страницей
+// клиентов проекта (обоими деревьями) для чтения/записи query-параметров. minSpent тоже строка
+// здесь (как и в самом ClientsFilterState) — поле ввода на UI, парсится в число только на бэкенде.
+const STRING_FILTER_KEYS: (keyof ClientsFilterState)[] = [
+  'channelType', 'hasPurchase', 'hasDialogue', 'country', 'minSpent', 'landingId',
+  'campaignName', 'adName', 'adsetName', 'siteSourceName',
+  'utmSource', 'utmMedium', 'utmCampaign', 'utmContent', 'adSource',
+];
+const ARRAY_FILTER_KEYS: (keyof ClientsFilterState)[] = ['buyerId', 'pixelId'];
+
+export function readClientsFiltersFromSearchParams(params: URLSearchParams): ClientsFilterState {
+  const result: ClientsFilterState = {};
+  for (const key of STRING_FILTER_KEYS) {
+    const v = params.get(key);
+    if (v) (result as Record<string, string>)[key] = v;
+  }
+  for (const key of ARRAY_FILTER_KEYS) {
+    const v = params.getAll(key);
+    if (v.length) (result as Record<string, string[]>)[key] = v;
+  }
+  return result;
+}
+
+export function writeClientsFiltersToSearchParams(filters: ClientsFilterState, params: URLSearchParams): void {
+  for (const key of STRING_FILTER_KEYS) {
+    const v = filters[key] as string | undefined;
+    if (v !== undefined && v !== '') params.set(key, v);
+  }
+  for (const key of ARRAY_FILTER_KEYS) {
+    const v = filters[key] as string[] | undefined;
+    if (v?.length) for (const item of v) params.append(key, item);
+  }
 }
 
 interface ClientsFilterProps {
   projectId: string;
   value: ClientsFilterState;
   onChange: (value: ClientsFilterState) => void;
+  // Studio (запрос пользователя 2026-08-18: "карточка фильтров серо-черная в тёмной теме, не
+  // подходит под наш дизайн") — тот же containerClassName-паттерн, что уже у LandingContentCard/
+  // StatsCard/PushAudienceStep: обычный bg-card красится в шеймс-плейсхолдер, не в настоящий
+  // Studio #171F2B.
+  containerClassName?: string;
 }
 
 // Без children-рендер-пропа у SelectValue триггер показывает сырое value ("all"/"true"), а не
@@ -50,8 +93,9 @@ interface ClientsFilterProps {
 const CHANNEL_LABEL: Record<string, string> = { all: 'Все', TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', INSTAGRAM: 'Instagram' };
 const PURCHASE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с покупками', false: 'Только без покупок' };
 const DIALOGUE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с диалогом', false: 'Только без диалога' };
+const AD_SOURCE_LABEL: Record<string, string> = { all: 'Все', FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
 
-export function ClientsFilter({ projectId, value, onChange }: ClientsFilterProps) {
+export function ClientsFilter({ projectId, value, onChange, containerClassName }: ClientsFilterProps) {
   const [open, setOpen] = useState(false);
 
   // Точная привязка "подписчик пришёл именно с этого лендинга" сейчас работает только для
@@ -90,7 +134,7 @@ export function ClientsFilter({ projectId, value, onChange }: ClientsFilterProps
       </Button>
 
       {open && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border rounded-lg bg-card">
+        <div className={containerClassName ? `${containerClassName} grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4` : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-4 border rounded-lg bg-card'}>
           <div className="space-y-1.5">
             <Label className="text-xs">Канал</Label>
             <Select value={value.channelType || 'all'} onValueChange={(v) => update({ channelType: !v || v === 'all' ? undefined : v })}>
@@ -130,6 +174,20 @@ export function ClientsFilter({ projectId, value, onChange }: ClientsFilterProps
                 <SelectItem value="all">Все</SelectItem>
                 <SelectItem value="true">Только с диалогом</SelectItem>
                 <SelectItem value="false">Только без диалога</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">Источник трафика</Label>
+            <Select value={value.adSource ?? 'all'} onValueChange={(v) => update({ adSource: !v || v === 'all' ? undefined : v })}>
+              <SelectTrigger className="w-full">
+                <SelectValue>{(v: string) => AD_SOURCE_LABEL[v] ?? v}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все</SelectItem>
+                <SelectItem value="FACEBOOK">Facebook</SelectItem>
+                <SelectItem value="TIKTOK">TikTok</SelectItem>
               </SelectContent>
             </Select>
           </div>

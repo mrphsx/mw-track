@@ -13,6 +13,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CalendarGrid } from '@/components/pushes/calendar-grid';
 import { DayScheduleList, DayScheduleItem } from '@/components/pushes/day-schedule-list';
+import { PushPreviewDialog } from '@/components/pushes/push-preview-dialog';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 
@@ -49,6 +50,7 @@ export default function PushesCalendarPage() {
   const user = useAuthStore((s) => s.user);
   const [visibleMonth, setVisibleMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
+  const [previewPush, setPreviewPush] = useState<{ projectId: string; pushId: string } | null>(null);
 
   const monthKey = format(visibleMonth, 'yyyy-MM');
   const { data: summary } = useQuery({
@@ -184,12 +186,16 @@ export default function PushesCalendarPage() {
               </TableRow>
             )}
             {allPushes?.map((push) => (
-              <TableRow key={push.id}>
+              <TableRow
+                key={push.id}
+                className="cursor-pointer hover:bg-muted"
+                onClick={() => setPreviewPush({ projectId: push.project.id, pushId: push.id })}
+              >
                 <TableCell>
                   <Badge variant={STATUS_VARIANT[push.status] || 'secondary'}>{push.status}</Badge>
                 </TableCell>
                 <TableCell className="font-medium">{push.name}</TableCell>
-                <TableCell>
+                <TableCell onClick={(e) => e.stopPropagation()}>
                   <Link href={`/projects/${push.project.id}/pushes`} className="text-blue-600 hover:underline">
                     {push.project.name}
                   </Link>
@@ -204,7 +210,7 @@ export default function PushesCalendarPage() {
                 <TableCell>{push.audienceReachable}</TableCell>
                 <TableCell>{push.sentCount}</TableCell>
                 <TableCell className={push.failedCount > 0 ? 'text-red-500 font-medium' : undefined}>{push.failedCount}</TableCell>
-                <TableCell className="whitespace-nowrap">
+                <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   {(push.status === 'DRAFT' || push.status === 'SCHEDULED') && hasPermission(user, push.project.id, 'PUSHES_CREATE') && (
                     <Button
                       size="sm"
@@ -249,6 +255,10 @@ export default function PushesCalendarPage() {
           </TableBody>
         </Table>
       </div>
+
+      {previewPush && (
+        <PushPreviewDialog key={previewPush.pushId} projectId={previewPush.projectId} pushId={previewPush.pushId} onClose={() => setPreviewPush(null)} />
+      )}
     </div>
   );
 }

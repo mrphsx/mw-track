@@ -4,7 +4,7 @@ import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ProjectsService } from '../projects/projects.service';
 import { LandingsService } from './landings.service';
-import { UpsertAbTestGroupDto } from './dto/ab-test-group.dto';
+import { CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 
 // Один контроллер с явными полными путями вместо разбивки на два класса с разными базовыми
 // префиксами (как LandingsController/ProjectLandingsController) — группа A/B-теста не 1:1 с
@@ -26,12 +26,22 @@ export class AbTestGroupsController {
     return this.landingsService.listAbTestGroups(projectId);
   }
 
+  // Company-wide список (запрос пользователя 2026-08-20: "добавь этот список груп и на странице
+  // всех лендингов") — та же видимость, что и у обычных company-wide /landings, просто по
+  // AB_TESTS_VIEW вместо LANDINGS_VIEW. Объявлен раньше 'projects/:projectId/ab-test-groups'
+  // ниже — не пересекается по числу сегментов пути, но для ясности рядом с остальными
+  // двухсегментными объявлениями этого контроллера.
+  @Get('ab-test-groups')
+  async findAllForCompany(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.landingsService.findAllGroupsForCompany(companyId, user.userId, user.role);
+  }
+
   @Post('projects/:projectId/ab-test-groups')
   async create(
     @Param('projectId') projectId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
-    @Body() dto: UpsertAbTestGroupDto,
+    @Body() dto: CreateAbTestGroupDto,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.AB_TESTS_CREATE]);
     return this.landingsService.createAbTestGroup(projectId, companyId, dto);
@@ -47,12 +57,14 @@ export class AbTestGroupsController {
     return this.landingsService.getGroupStats(groupId, companyId);
   }
 
+  // Только название (запрос пользователя 2026-08-20: "после создания группы... уже нельзя
+  // будет их менять, так как статистика будет неверной") — см. UpdateAbTestGroupDto.
   @Patch('ab-test-groups/:groupId')
   async update(
     @Param('groupId') groupId: string,
     @Company() companyId: string,
     @CurrentUser() user: AuthUser,
-    @Body() dto: UpsertAbTestGroupDto,
+    @Body() dto: UpdateAbTestGroupDto,
   ) {
     const projectId = await this.landingsService.getAbTestGroupProjectId(groupId);
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.AB_TESTS_EDIT]);

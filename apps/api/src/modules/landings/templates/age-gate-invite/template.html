@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{META_TITLE}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap"
+    rel="stylesheet">
+  <style>
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: inherit;
+    }
+
+    h1,
+    h2,
+    p {
+      margin: 0;
+    }
+
+    a {
+      text-decoration: none;
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      background-color: transparent;
+      font: inherit;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "Inter", sans-serif;
+      background-color: #070707;
+    }
+
+    .bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: -1;
+    }
+
+    .bg__canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.12;
+      filter: blur(60px);
+      transform: scale(1.2);
+    }
+
+    .bg__canvas-inner {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-image: url('https://telegram.org/img/tgme/pattern.svg?1');
+      background-repeat: repeat;
+      background-size: 420px;
+      opacity: 0.35;
+      filter: invert(1) brightness(0.8) contrast(1.2);
+      z-index: 1;
+    }
+
+    .bg::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: radial-gradient(circle at center, transparent 0%, rgba(0, 0, 0, 0.4) 100%);
+      z-index: 2;
+    }
+
+    .popup,
+    .modal {
+      position: relative;
+      z-index: 3;
+      background-color: #fff;
+      padding: 24px 32px;
+      text-align: center;
+      max-width: 360px;
+      width: 100%;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+      border-radius: 20px;
+      margin: auto 10px;
+    }
+
+    .modal {
+      display: none;
+    }
+
+    .popup h1,
+    .modal h2 {
+      font-size: 26px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #2c3038;
+    }
+
+    .popup p,
+    .modal p {
+      color: #727782;
+      margin-bottom: 24px;
+    }
+
+    .popup__btns {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    .popup__btns>*,
+    .modal a {
+      border-radius: 18px;
+      padding: 16px 20px;
+      font-size: 18px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s ease, transform 0.1s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .popup__btns-link {
+      background-color: #f0f2f5;
+      color: #2c3038;
+    }
+
+    .popup__btns-button,
+    .modal a {
+      background-color: #3b76f6;
+      color: #fff;
+    }
+
+    .modal a {
+      width: 100%;
+    }
+
+    @media (hover: hover) {
+      .popup__btns-link:hover {
+        background-color: #e4e6eb;
+      }
+
+      .popup__btns-button:hover,
+      .modal a:hover {
+        background-color: #2563eb;
+      }
+    }
+
+    @media (max-width: 380px) {
+
+      .popup h1,
+      .modal h2 {
+        font-size: 24px;
+        margin-bottom: 4px;
+      }
+
+      .popup,
+      .modal {
+        padding: 24px 18px;
+      }
+
+      .popup p,
+      .modal p {
+        margin-bottom: 18px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="bg">
+    <canvas id="bg__canvas" class="bg__canvas" width="50" height="50"
+      data-colors="dbddbb,6ba587,d5d88d,88b884"></canvas>
+    <div class="bg__canvas-inner"></div>
+  </div>
+
+  <!-- Попап 1 — возрастное подтверждение. "Sì"/{{POPUP1_YES_TEXT}} только открывает попап 2 (без
+       перехода никуда), {{POPUP1_NO_TEXT}} всегда ведёт на конечный ресурс, как и финальная
+       кнопка попапа 2 — см. LandingsService.createFromTemplate/update для дефолтов. -->
+  <div class="popup" id="popup-1">
+    <h1>{{POPUP1_TITLE}}</h1>
+    <p>{{POPUP1_TEXT}}</p>
+    <div class="popup__btns">
+      <a class="popup__btns-link" href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">{{POPUP1_NO_TEXT}}</a>
+      <button class="popup__btns-button" type="button" id="popup-1-yes">{{POPUP1_YES_TEXT}}</button>
+    </div>
+  </div>
+
+  <!-- Попап 2 — приглашение. Открывается только по клику на {{POPUP1_YES_TEXT}} в попапе 1. -->
+  <div class="modal" id="popup-2">
+    <h2>{{POPUP2_TITLE}}</h2>
+    {{#if POPUP2_TEXT}}
+    <p>{{POPUP2_TEXT}}</p>
+    {{/if}}
+    <a href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">{{POPUP2_BUTTON_TEXT}}</a>
+  </div>
+
+  <script>
+    (function () {
+      const canvas = document.getElementById('bg__canvas');
+      const ctx = canvas.getContext('2d');
+      const colors = canvas.getAttribute('data-colors').split(',').map(c => '#' + c);
+
+      ctx.fillStyle = colors[0]; ctx.fillRect(0, 0, 25, 25);
+      ctx.fillStyle = colors[1]; ctx.fillRect(25, 0, 25, 25);
+      ctx.fillStyle = colors[2]; ctx.fillRect(0, 25, 25, 25);
+      ctx.fillStyle = colors[3]; ctx.fillRect(25, 25, 25, 25);
+
+      const yesButton = document.getElementById('popup-1-yes');
+      const popup1 = document.getElementById('popup-1');
+      const popup2 = document.getElementById('popup-2');
+
+      yesButton.addEventListener('click', () => {
+        popup1.style.display = 'none';
+        popup2.style.display = 'block';
+
+        // Авторедирект на этом шаблоне (если включён на лендинге) должен срабатывать только
+        // здесь, при переходе на попап 2 — никогда на попапе 1. track.js читает
+        // data-auto-redirect-defer и не запускает редирект сам, а лишь кладёт функцию сюда
+        // (см. apps/sdk/src/browser.ts, LandingRendererService.injectTrackingScripts).
+        if (window.tcrm && typeof window.tcrm.triggerAutoRedirect === 'function') {
+          window.tcrm.triggerAutoRedirect();
+        }
+      });
+    })();
+  </script>
+
+  <!-- TRACKING_PLACEHOLDER -->
+</body>
+
+</html>

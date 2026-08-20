@@ -23,6 +23,7 @@ import { GetLinkDialog } from '@/components/get-link-dialog';
 import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog, LandingDomainRef } from '@/components/landing-card';
 import { AbTestComparisonCard, AbTestMemberStats, LandingVariantStats } from '@/components/landings/ab-test-comparison-card';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../../../../ui';
+import { useAuthStore } from '@/store/auth.store';
 
 // Приглушённый текст Studio (запрос пользователя 2026-08-03: "карточки просмотров, кликов итд
 // в темной теме серые") — передаётся в StatsCard вместо дефолтного text-muted-foreground
@@ -103,6 +104,7 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
 export default function StudioLandingStatsPage() {
   const { id: projectId, landingId } = useParams<{ id: string; landingId: string }>();
   const queryClient = useQueryClient();
+  const user = useAuthStore((s) => s.user);
 
   const { data: stats } = useQuery({
     queryKey: ['landing', landingId, 'stats'],
@@ -126,6 +128,19 @@ export default function StudioLandingStatsPage() {
 
   const leadRate = stats && stats.funnel.pageViews > 0 ? Math.round((stats.funnel.leads / stats.funnel.pageViews) * 100) : null;
   const subscribeRate = stats && stats.funnel.leads > 0 ? Math.round((stats.funnel.subscribes / stats.funnel.leads) * 100) : null;
+
+  // Включить/выключить прямо со страницы лендинга (запрос пользователя 2026-08-20: "так же это
+  // подметить на странице самого лэндинга и сделать возможность оттуда его включить или
+  // выключить") — раньше publish/unpublish был только в карточке списка (landing-card.tsx), тут
+  // был read-only StudioPill. Те же эндпоинты, что уже использует список.
+  const publish = useMutation({
+    mutationFn: () => api.post(`/landings/${landingId}/publish`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'stats'] }),
+  });
+  const unpublish = useMutation({
+    mutationFn: () => api.post(`/landings/${landingId}/unpublish`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'stats'] }),
+  });
 
   const [showGetLink, setShowGetLink] = useState(false);
   const [showDomainDialog, setShowDomainDialog] = useState(false);
@@ -160,7 +175,31 @@ export default function StudioLandingStatsPage() {
             <h1 className="text-2xl font-bold text-[#131A24] dark:text-[#E9EDF3] truncate">{stats.landing.name}</h1>
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               <StudioPill hue="slate">{TYPE_LABEL[stats.landing.type]}</StudioPill>
-              <StudioPill hue={stats.landing.status === 'PUBLISHED' ? 'sage' : 'slate'}>{STATUS_LABEL[stats.landing.status]}</StudioPill>
+              {/* DRAFT — danger (красный), не slate (запрос пользователя 2026-08-20: "не
+                  активный лэндинг подмечай не серым кружком а красным", и то же самое на
+                  странице самого лэндинга) — см. тот же принцип у STATUS_DOT_CLASS в списке. */}
+              <StudioPill hue={stats.landing.status === 'PUBLISHED' ? 'sage' : 'slate'} danger={stats.landing.status === 'DRAFT'}>
+                {STATUS_LABEL[stats.landing.status]}
+              </StudioPill>
+              {stats.landing.status === 'PUBLISHED' ? (
+                <button
+                  type="button"
+                  onClick={() => unpublish.mutate()}
+                  disabled={unpublish.isPending}
+                  className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] underline-offset-2 hover:underline disabled:opacity-50"
+                >
+                  Снять с публикации
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => publish.mutate()}
+                  disabled={publish.isPending}
+                  className="text-xs text-[#1F4E9C] dark:text-[#7BA9EE] underline-offset-2 hover:underline disabled:opacity-50"
+                >
+                  Опубликовать
+                </button>
+              )}
               {stats.attachment && (
                 <a
                   href={`https://${stats.attachment.domain}${stats.attachment.path === '/' ? '' : stats.attachment.path}`}
@@ -296,7 +335,12 @@ export default function StudioLandingStatsPage() {
           </div>
         ) : (
           <div className={STUDIO_CARD}>
-            <ClientsTable projectId={projectId} clients={clients.items} onSelect={() => {}} />
+            <ClientsTable
+              projectId={projectId}
+              clients={clients.items}
+              onSelect={() => {}}
+              showTrafficSource={user?.role !== 'OPERATOR'}
+            />
           </div>
         )}
       </div>

@@ -5,7 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { Users, ShoppingCart, DollarSign } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PeriodSelector, PeriodValue } from '@/components/shared/period-selector';
+import { PeriodSelector } from '@/components/shared/period-selector';
+import { usePeriodQueryState } from '@/lib/use-period-query-state';
 import { STUDIO_CARD, StudioPill } from '../ui';
 
 interface ProjectSummary {
@@ -24,7 +25,8 @@ interface MyStats {
 // Purchase.registeredBy = этот пользователь, не по всем клиентам проекта.
 export default function StudioMyStatsPage() {
   const [projectId, setProjectId] = useState<string | null>(null);
-  const [periodValue, setPeriodValue] = useState<PeriodValue>({ period: '30d' });
+  // Персистентность периода в URL (запрос пользователя 2026-08-18).
+  const [periodValue, setPeriodValue] = usePeriodQueryState('30d');
 
   const { data: projects } = useQuery({
     queryKey: ['projects'],

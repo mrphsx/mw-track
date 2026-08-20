@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { User, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
+import { formatUserName } from '../../common/user-name.util';
+import { withUniqueShortCode } from '../../common/short-code.util';
 import { CreateTeamMemberDto } from './dto/create-team-member.dto';
 import { UpdateTeamMemberDto } from './dto/update-team-member.dto';
 import {
@@ -83,22 +85,26 @@ export class TeamService {
       await assertProjectsBelongToCompany(this.prisma, companyId, dto.projectIds);
     }
 
-    const user = await this.prisma.user.create({
-      data: {
-        companyId,
-        email: dto.email,
-        passwordHash: await bcrypt.hash(dto.password, 12),
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        role: dto.role,
-        landingsVisibilityScope: dto.landingsVisibilityScope,
-        clientsVisibilityScope: dto.clientsVisibilityScope,
-        projectAccess:
-          dto.role !== 'ADMIN' && dto.projectIds?.length
-            ? { create: dto.projectIds.map((projectId) => ({ projectId })) }
-            : undefined,
-      },
-    });
+    // buyerShortCode (запрос пользователя 2026-08-20) — см. комментарий у AuthService.register.
+    const user = await withUniqueShortCode(async (buyerShortCode) =>
+      this.prisma.user.create({
+        data: {
+          companyId,
+          email: dto.email,
+          passwordHash: await bcrypt.hash(dto.password, 12),
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          role: dto.role,
+          landingsVisibilityScope: dto.landingsVisibilityScope,
+          clientsVisibilityScope: dto.clientsVisibilityScope,
+          buyerShortCode,
+          projectAccess:
+            dto.role !== 'ADMIN' && dto.projectIds?.length
+              ? { create: dto.projectIds.map((projectId) => ({ projectId })) }
+              : undefined,
+        },
+      }),
+    );
 
     if (dto.role !== 'ADMIN' && dto.projectIds?.length) {
       await this.permissionsService.applyProjectPermissions(user.id, user.role, dto.projectIds, dto.projectPermissions, dto.domainsPermissions);
@@ -269,7 +275,7 @@ export class TeamService {
         // равно показываем (это история, не текущий доступ), но findMany выше отфильтровал
         // deletedAt:null, так что для уже удалённых участников имени не будет — честно
         // подписываем как "Удалённый пользователь", а не молча теряем строку.
-        name: user ? `${user.firstName} ${user.lastName}`.trim() : 'Удалённый пользователь',
+        name: user ? formatUserName(user) : 'Удалённый пользователь',
         role: user?.role ?? UserRole.BUYER,
         clients: row.clients,
         revenue,

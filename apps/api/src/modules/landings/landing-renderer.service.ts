@@ -11,6 +11,7 @@ import { StorageService } from './storage.service';
 import { matchDomainPath } from '../domains/domain-path.util';
 import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-link.util';
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
+import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 
 const START_CODE_TTL_SECONDS = 24 * 60 * 60;
 // TTL кэша "последний визит на лендинг" (landing-visit-country/landing-visit-attribution) —
@@ -50,13 +51,38 @@ function isBotUserAgent(userAgent: string | undefined): boolean {
 // если после этого в значении всё ещё остался паттерн %XX — значит исходно было закодировано
 // ДВАЖДЫ, декодируем ещё раз. Для уже нормальных значений (без %XX) — no-op. Тот же приём, что
 // и в apps/sdk/src/browser.ts (SDK получает то же самое от Facebook на клике, до сервера).
+//
+// Иногда рекламная площадка вообще НЕ подставляет часть макросов в конкретной доставке (баг-
+// репорт пользователя 2026-08-20: campaign_id/campaign_name/adset_id/adset_name пришли
+// буквально нерасшифрованными "{{campaign.id}}" и т.п., хотя ad_id/ad_name ДО них и placement/
+// site_source_name ПОСЛЕ них в той же ссылке подставились нормально — не обрезка URL (итоговая
+// строка оказалась КОРОЧЕ рабочих примеров того же объявления), а сбой на стороне площадки при
+// разрешении иерархии объявление→группа→кампания, вне нашего контроля). Раньше такое буквальное
+// значение сохранялось как будто это настоящие данные, засоряя карточку клиента и разбивку по
+// кампаниям фейковой строкой "{{campaign.id}}" — теперь считается отсутствием значения (null),
+// как и подобает несостоявшейся подстановке, а не настоящим значением "campaign.id".
+//
+// Отдельный случай, найденный пользователем в том же баг-репорте: НАСТОЯЩАЯ обрезка URL может
+// оборвать макрос ПОСЕРЕДИНЕ, оставив "{{site_source_name" без закрывающих "}}" — такое значение
+// не матчится полным "^\{\{.*\}\}$" (нет закрывающей части вообще), поэтому раньше проходило бы
+// как "настоящее" значение. Проверка теперь по ПОДСТРОКЕ, не по полному совпадению: любое
+// вхождение "{{"/"}}" где угодно в значении (реальное название кампании/объявления никогда не
+// содержит двойных фигурных скобок) или значение, начинающееся с двойного подчёркивания и
+// заглавной буквы (TikTok-макрос "__ИМЯ__", тот же довод — обрублен он или цел целиком) считается
+// испорченным/несостоявшимся макросом, а не настоящими данными.
+const UNSUBSTITUTED_MACRO_PATTERN = /\{\{|\}\}|^__[A-Z]/;
+
 function decodeAdMacro(value: string | null): string | null {
-  if (!value || !/%[0-9A-Fa-f]{2}/.test(value)) return value;
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
+  if (!value) return value;
+  let decoded = value;
+  if (/%[0-9A-Fa-f]{2}/.test(decoded)) {
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      // оставляем как есть — лучше сырое значение, чем брошенное исключение
+    }
   }
+  return UNSUBSTITUTED_MACRO_PATTERN.test(decoded) ? null : decoded;
 }
 
 // Клоакинг без явно заданной cloakingRedirectUrl — куда отправлять посетителей из
@@ -113,7 +139,17 @@ export class LandingRendererService {
       return;
     }
 
-    await this.renderAndServe(landingId, resolved.subPath, req, res);
+    // abTestGroupId передаётся дальше ТОЛЬКО когда путь ведёт на саму группу (resolved.landingId
+    // отсутствует) — запрос пользователя 2026-08-20: "не нужно в ней учитывать статистику
+    // каждого лэндинга по отдельности, даже если эти лэндинги проливаются отдельно... группа
+    // как отдельная сущность со своей статой разделенной". Раньше группа-статистика считалась
+    // по Landing.abTestGroupId (ТЕКУЩЕЕ членство) + отсечке по времени — это ошибочно приплюсовывало
+    // ЛЮБОЙ трафик на лендинг-участника (включая его собственную отдельную рекламу через прямую
+    // ссылку на тот же лендинг) к тесту. Явный флаг "этот конкретный заход пришёл через сплит
+    // группы" передаётся дальше в injectTrackingScripts и стемпится на Client/TrackingEvent —
+    // так группа считает строго свой собственный трафик, независимо от того, что происходит с
+    // лендингом-участником по его прямым ссылкам.
+    await this.renderAndServe(landingId, resolved.subPath, req, res, resolved.landingId ? undefined : resolved.abTestGroupId);
   }
 
   // A/B/n-тестирование (Фаза 3.2, запрос пользователя 2026-07-15, расширено с пары до
@@ -143,7 +179,9 @@ export class LandingRendererService {
   // subPath — запрошенный путь внутри лендинга после landingId (см. InternalController):
   // '' для корня (index.html у CUSTOM), 'style.css'/'img/logo.png' и т.п. для остальных
   // ассетов CUSTOM-лендинга. Для TEMPLATE игнорируется — там всегда одна страница.
-  async renderAndServe(landingId: string, subPath: string, req: Request, res: Response): Promise<void> {
+  // abTestGroupId — см. комментарий у вызова в renderByDomain: задан только когда этот
+  // конкретный заход пришёл через сплит A/B/n-группы, а не напрямую на лендинг.
+  async renderAndServe(landingId: string, subPath: string, req: Request, res: Response, abTestGroupId?: string): Promise<void> {
     const landing = await this.prisma.landing.findUnique({
       where: { id: landingId },
       include: {
@@ -174,7 +212,7 @@ export class LandingRendererService {
     }
 
     if (landing.type === 'CUSTOM') {
-      await this.serveCustomFile(landing as Landing & { project: ProjectWithLandingData }, subPath, req, res);
+      await this.serveCustomFile(landing as Landing & { project: ProjectWithLandingData }, subPath, req, res, abTestGroupId);
       return;
     }
 
@@ -185,7 +223,7 @@ export class LandingRendererService {
     }
 
     let html = await this.renderTemplate(landing as Landing & { project: ProjectWithLandingData });
-    html = await this.injectTrackingScripts(html, landing.project, req, landing as Landing);
+    html = await this.injectTrackingScripts(html, landing.project, req, landing as Landing, abTestGroupId);
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store');
@@ -209,6 +247,7 @@ export class LandingRendererService {
     subPath: string,
     req: Request,
     res: Response,
+    abTestGroupId?: string,
   ): Promise<void> {
     const isIndex = !subPath || subPath === 'index.html';
     const key = `${landing.customBasePath}/${isIndex ? 'index.html' : subPath}`;
@@ -216,7 +255,7 @@ export class LandingRendererService {
     try {
       if (isIndex) {
         const buffer = await this.storage.getObjectBuffer(key);
-        const html = await this.injectTrackingScripts(buffer.toString('utf-8'), landing.project, req, landing);
+        const html = await this.injectTrackingScripts(buffer.toString('utf-8'), landing.project, req, landing, abTestGroupId);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-store');
         this.removeRestrictiveCsp(res);
@@ -298,6 +337,16 @@ export class LandingRendererService {
       GRADIENT_FROM: '#667eea',
       GRADIENT_TO: '#764ba2',
       CDN_URL: process.env.CDN_URL || '',
+      // age-gate-invite (запрос пользователя 2026-08-18) — без этих ключей все поля
+      // попапов рендерились бы пустыми в живом превью галереи шаблонов (renderTemplate/
+      // replaceAll заменяет отсутствующий {{KEY}} на '').
+      POPUP1_TITLE: '¿Tienes más de 18 años?',
+      POPUP1_TEXT: 'Debes tener 18 años para continuar',
+      POPUP1_YES_TEXT: 'Sí',
+      POPUP1_NO_TEXT: 'No',
+      POPUP2_TITLE: '¡Suscríbete a nuestro canal!',
+      POPUP2_TEXT: '',
+      POPUP2_BUTTON_TEXT: 'Unirse al canal',
     };
 
     html = this.processConditionals(html, vars);
@@ -395,7 +444,28 @@ export class LandingRendererService {
     return html.replace(/<style>[\s\S]*?<\/style>/g, (styleBlock) => styleBlock.replace(/\/\*[\s\S]*?\*\//g, ''));
   }
 
-  private async injectTrackingScripts(html: string, project: ProjectWithLandingData, req: Request, landing: Landing): Promise<string> {
+  // См. комментарий у вызова (injectTrackingScripts) — переживает переходный период сразу после
+  // деплоя, когда ключ landing-visit-attribution:<landingId> ещё может быть старой строкой (SET)
+  // с прежнего кода, до истечения её собственного TTL.
+  private async rpushSelfHealing(key: string, value: string): Promise<void> {
+    try {
+      await this.redis.rpush(key, value);
+    } catch (error) {
+      if (String(error).includes('WRONGTYPE')) {
+        await this.redis.del(key);
+        await this.redis.rpush(key, value);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  // abTestGroupId — задан только когда этот конкретный заход пришёл через сплит A/B/n-группы
+  // (см. renderByDomain), не когда лендинг просто СОСТОИТ в группе. Стемпится дальше на
+  // Client/TrackingEvent (запрос пользователя 2026-08-20) — группа считает строго свой
+  // собственный трафик, отдельно от того, что происходит с лендингом-участником по его прямым
+  // ссылкам/собственной рекламе.
+  private async injectTrackingScripts(html: string, project: ProjectWithLandingData, req: Request, landing: Landing, abTestGroupId?: string): Promise<string> {
     const startCode = nanoid(16);
 
     const urlParams = new URLSearchParams(req.query as Record<string, string>);
@@ -409,6 +479,14 @@ export class LandingRendererService {
     for (const [actualName, semanticKey] of Object.entries(paramLookup)) {
       adMacroData[semanticKey] = decodeAdMacro(urlParams.get(actualName));
     }
+    // Короткие коды баера/пикселя (запрос пользователя 2026-08-20: "сократим значения z=/pixel=
+    // до коротких кодов, ОБЯЗАТЕЛЬНО с обратной совместимостью для старых ссылок") — разворачиваем
+    // здесь же, ДО того как значения попадут в trackingData/attribution (start:<code> Redis-кэш и
+    // PRIVATE_CHANNEL_REQUEST landing-visit-attribution ниже читают их напрямую как уже готовые
+    // User.id/TrackingPixel.id, без своего собственного резолвинга). Длина сама отличает старый
+    // формат (полный cuid) от нового короткого кода — см. common/short-code.util.ts.
+    if (adMacroData.pixelId) adMacroData.pixelId = (await resolvePixelShortCode(this.prisma, adMacroData.pixelId)) ?? null;
+    if (adMacroData.buyerRef) adMacroData.buyerRef = (await resolveBuyerShortCode(this.prisma, adMacroData.buyerRef)) ?? null;
 
     const trackingData = {
       fbclid: urlParams.get('fbclid'),
@@ -429,6 +507,9 @@ export class LandingRendererService {
       // атрибутировать лендинг: код долетает как обычный текст первого сообщения (см.
       // buildTelegramLink &text=), TelegramPersonalService читает этот же блок по коду.
       landingId: landing.id,
+      // Группа A/B/n-теста, через которую пришёл этот конкретный визит (см. комментарий у
+      // параметра метода выше) — тот же мост, что и landingId, для PERSONAL_DM/BOT_DIRECT.
+      abTestGroupId: abTestGroupId ?? null,
     };
 
     await this.redis.set(`start:${startCode}`, JSON.stringify(trackingData), 'EX', START_CODE_TTL_SECONDS);
@@ -484,9 +565,37 @@ export class LandingRendererService {
         placement: adMacroData.placement,
         siteSourceName: adMacroData.siteSourceName,
         buyerRef: adMacroData.buyerRef,
+        // Запрос пользователя 2026-08-20 — тот же мост, что и в trackingData выше, для
+        // PRIVATE_CHANNEL_REQUEST (не проходит через start:<code>, см. комментарий у метода).
+        abTestGroupId: abTestGroupId ?? null,
       };
       if (Object.values(attribution).some((v) => v != null)) {
-        await this.redis.set(`landing-visit-attribution:${landing.id}`, JSON.stringify(attribution), 'EX', LANDING_VISIT_TTL_SECONDS);
+        // Очередь визитов, не последнее значение (баг-репорт пользователя 2026-08-19, реальный
+        // случай: клиент с чужим buyerId + клиенты вообще без buyerId + побитые рекламные
+        // макросы на одном и том же лендинге) — раньше это был обычный SET, и комментарий выше
+        // ("слишком долгий TTL повышает риск, что атрибуция ОДНОГО посетителя пришьётся к
+        // вступлению СОВСЕМ ДРУГОГО человека") был известным, принятым тогда компромиссом; при
+        // реальном трафике с нескольких объявлений/баеров на один лендинг риск оказался не
+        // теоретическим — двое посетителей за 30-минутное окно перезаписывали друг друга, и
+        // ПОСЛЕДНИЙ визит (в т.ч. без buyerRef или с чужим) прирастал к вступлению совсем другого
+        // человека. RPUSH+LPOP вместо SET+GET — каждый визит встаёт в очередь, каждая заявка на
+        // вступление разбирает её с начала (FIFO), а не читает одно и то же общее значение —
+        // сохраняет тот же принцип "визит без явного вступления через TTL просто протухает"
+        // (LTRIM ограничивает список на случай, если лендинг годами получает визиты без единого
+        // вступления — не даёт ему расти бесконечно), но перестаёт путать атрибуцию РАЗНЫХ людей
+        // друг с другом. Единственный оставшийся источник неточности — сам порядок: если кто-то
+        // зашёл вторым, а вступил первым, ему может достаться атрибуция первого — тот же класс
+        // приближения, что уже отдельно согласован для landing-visit-country ниже, но теперь
+        // затрагивает только порядок внутри пары визитов, а не любые N визитов сразу.
+        const key = `landing-visit-attribution:${landing.id}`;
+        // Самоисцеление от переходного периода деплоя (найдено при живой проверке 2026-08-19):
+        // ключ раньше был обычной строкой (SET), у уже существующих ключей, записанных ДО этого
+        // деплоя, тип в Redis не меняется сам по себе, пока ключ не истечёт по старому TTL (до
+        // 30 минут) — RPUSH на такой ключ бросает WRONGTYPE и уронил бы сам рендер лендинга для
+        // живого посетителя. rpushSelfHealing подчищает такой ключ один раз и повторяет попытку.
+        await this.rpushSelfHealing(key, JSON.stringify(attribution));
+        await this.redis.ltrim(key, -500, -1);
+        await this.redis.expire(key, LANDING_VISIT_TTL_SECONDS);
       }
     }
 
@@ -508,6 +617,14 @@ export class LandingRendererService {
         ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${project.publicToken}/tg-redirect?code=${startCode}&landingId=${landing.id}`
         : '';
 
+    // age-gate-invite (запрос пользователя 2026-08-18) — единственный шаблон, где авторедирект
+    // (если включён) не должен срабатывать сразу на загрузке страницы, а только когда
+    // посетитель дойдёт до попапа 2 (попап 1 — просто вопрос "18+?", там редиректу не место).
+    // track.js читает этот атрибут и вместо немедленного редиректа кладёт функцию в
+    // window.tcrm.triggerAutoRedirect — сам template.html вызывает её в JS-обработчике клика
+    // "Да"/POPUP1_YES_TEXT, ровно в момент открытия попапа 2 (см. apps/sdk/src/browser.ts).
+    const deferAutoRedirect = landing.templateId === 'age-gate-invite';
+
     // Карта параметров (§ выше) прокидывается браузерному SDK тем же способом, что и
     // data-landing-id — иначе track.js не будет знать, под каким кастомным именем искать
     // ad_id/campaign_id/... в window.location.search этого конкретного проекта.
@@ -517,8 +634,8 @@ export class LandingRendererService {
 <script src="${process.env.CDN_URL}/track.js"
         data-project-id="${project.publicToken}"
         data-api-url="${process.env.API_URL}/api/v1"
-        data-landing-id="${landing.id}"
-        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}
+        data-landing-id="${landing.id}"${abTestGroupId ? `\n        data-ab-test-group-id="${abTestGroupId}"` : ''}
+        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}${autoRedirectUrl && deferAutoRedirect ? `\n        data-auto-redirect-defer="true"` : ''}
         async></script>
 ${
   fbPixels.length > 0

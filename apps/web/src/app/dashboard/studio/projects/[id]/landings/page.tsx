@@ -50,9 +50,11 @@ import { STUDIO_CARD, StudioLinkButton } from '../../../ui';
 // проекта), slate для DRAFT (нейтральный, "ещё не запущено"), plum для ARCHIVED (третий реальный
 // статус LandingStatus). Литеральные строки, не собранные через template-интерполяцию — см.
 // Tailwind JIT gotcha в предыдущей правке этого файла.
+// DRAFT — красный, не серый (запрос пользователя 2026-08-20) — см. полный комментарий в
+// company-wide версии этой же страницы (dashboard/studio/landings/page.tsx).
 const STATUS_DOT_CLASS: Record<string, string> = {
   PUBLISHED: 'bg-[#1F7A6C] dark:bg-[#6FCBBA]',
-  DRAFT: 'bg-[#52606B] dark:bg-[#A6B4C0]',
+  DRAFT: 'bg-red-500 dark:bg-red-400',
   ARCHIVED: 'bg-[#6B3E63] dark:bg-[#D19BC4]',
 };
 
@@ -73,6 +75,9 @@ export default function StudioLandingsPage() {
 
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [error, setError] = useState('');
+  // Переключатель "обычные лендинги / группы" (запрос пользователя 2026-08-20) — см. полный
+  // комментарий в classic-версии.
+  const [viewMode, setViewMode] = useState<'landings' | 'groups'>('landings');
 
   const [uploadTarget, setUploadTarget] = useState<'new' | string | null>(null);
   const [customName, setCustomName] = useState('');
@@ -215,33 +220,68 @@ export default function StudioLandingsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Лендинги</h1>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Лендинги</h1>
+          {/* Переключатель режима (запрос пользователя 2026-08-20) — сгруппирован с заголовком
+              на фиксированной левой стороне, чтобы не "прыгать" при смене состава кнопок справа
+              (запрос пользователя 2026-08-20: "кнопка переключения... прыгает когда меняешь"). */}
+          <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('landings')}
+              className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                viewMode === 'landings'
+                  ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                  : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+              }`}
+            >
+              Лендинги
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('groups')}
+              className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                viewMode === 'groups'
+                  ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                  : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+              }`}
+            >
+              Группы (A/B/n)
+            </button>
+          </div>
+        </div>
         <div className="flex flex-wrap gap-2">
-          {compareMode ? (
-            <StudioLinkButton icon={X} onClick={exitCompareMode}>
-              Отмена
-            </StudioLinkButton>
-          ) : (
-            <>
-              <StudioLinkButton icon={SplitSquareHorizontal} onClick={() => setCompareMode(true)}>
-                Сравнить лендинги
-              </StudioLinkButton>
-              {hasPermission(user, projectId, 'LANDINGS_CREATE') && (
+            {viewMode === 'landings' &&
+              (compareMode ? (
+                <StudioLinkButton icon={X} onClick={exitCompareMode}>
+                  Отмена
+                </StudioLinkButton>
+              ) : (
                 <>
-                  <StudioLinkButton icon={UploadCloud} onClick={() => setUploadTarget('new')}>
-                    Загрузить ZIP
+                  <StudioLinkButton icon={SplitSquareHorizontal} onClick={() => setCompareMode(true)}>
+                    Сравнить лендинги
                   </StudioLinkButton>
-                  <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowTemplateModal(true)}>
-                    Создать из шаблона
-                  </StudioLinkButton>
+                  {hasPermission(user, projectId, 'LANDINGS_CREATE') && (
+                    <>
+                      <StudioLinkButton icon={UploadCloud} onClick={() => setUploadTarget('new')}>
+                        Загрузить ZIP
+                      </StudioLinkButton>
+                      <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowTemplateModal(true)}>
+                        Создать из шаблона
+                      </StudioLinkButton>
+                    </>
+                  )}
                 </>
-              )}
-            </>
-          )}
+              ))}
+            {viewMode === 'groups' && hasPermission(user, projectId, 'AB_TESTS_CREATE') && (
+              <StudioLinkButton variant="primary" icon={Plus} onClick={() => setAbTestTarget({ projectId, groupId: null, preselectedIds: [] })}>
+                Создать тест
+              </StudioLinkButton>
+            )}
         </div>
       </div>
 
-      {(!!activeAbTestGroups.length || hasEndedAbTestGroups) && (
+      {viewMode === 'groups' && (!!activeAbTestGroups.length || hasEndedAbTestGroups) && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">A/B/n-тесты</h2>
@@ -317,14 +357,29 @@ export default function StudioLandingsPage() {
         </div>
       )}
 
-      {isLoading && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Загрузка...</p>}
+      {viewMode === 'groups' && !activeAbTestGroups.length && !hasEndedAbTestGroups && (
+        <div className={`${STUDIO_CARD} p-8 text-center space-y-3`}>
+          <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Тестов пока нет.</p>
+          {hasPermission(user, projectId, 'AB_TESTS_CREATE') && (
+            <StudioLinkButton
+              variant="primary"
+              icon={Plus}
+              onClick={() => setAbTestTarget({ projectId, groupId: null, preselectedIds: [] })}
+            >
+              Создать тест
+            </StudioLinkButton>
+          )}
+        </div>
+      )}
 
-      {!isLoading && landings?.length === 0 && (
+      {viewMode === 'landings' && isLoading && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Загрузка...</p>}
+
+      {viewMode === 'landings' && !isLoading && landings?.length === 0 && (
         <div className={`${STUDIO_CARD} p-8 text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]`}>Лендингов пока нет.</div>
       )}
 
       {/* Сама сетка карточек — общий LandingCard без форка, см. комментарий в шапке файла. */}
-      {!!landings?.length && (
+      {viewMode === 'landings' && !!landings?.length && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {landings.map((l) => (
             <LandingCard

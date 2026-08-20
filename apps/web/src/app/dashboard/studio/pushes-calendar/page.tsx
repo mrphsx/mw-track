@@ -9,6 +9,7 @@ import { Plus, Send, Pencil, Copy } from 'lucide-react';
 import { api } from '@/lib/api';
 import { CalendarGrid } from '@/components/pushes/calendar-grid';
 import { DayScheduleList, DayScheduleItem } from '@/components/pushes/day-schedule-list';
+import { PushPreviewDialog } from '@/components/pushes/push-preview-dialog';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../ui';
@@ -46,6 +47,7 @@ export default function StudioPushesCalendarPage() {
   const user = useAuthStore((s) => s.user);
   const [visibleMonth, setVisibleMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
+  const [previewPush, setPreviewPush] = useState<{ projectId: string; pushId: string } | null>(null);
 
   const monthKey = format(visibleMonth, 'yyyy-MM');
   const { data: summary } = useQuery({
@@ -172,12 +174,16 @@ export default function StudioPushesCalendarPage() {
               </tr>
             )}
             {allPushes?.map((push) => (
-              <tr key={push.id}>
+              <tr
+                key={push.id}
+                className="cursor-pointer hover:bg-[#F3F5F8] dark:hover:bg-white/5"
+                onClick={() => setPreviewPush({ projectId: push.project.id, pushId: push.id })}
+              >
                 <td className="px-5 py-3">
                   <StudioPill hue={STATUS_HUE[push.status] ?? 'slate'}>{push.status}</StudioPill>
                 </td>
                 <td className="px-5 py-3 font-medium text-[#131A24] dark:text-[#E9EDF3]">{push.name}</td>
-                <td className="px-5 py-3">
+                <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
                   <Link href={`/projects/${push.project.id}/pushes`} className="text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline">
                     {push.project.name}
                   </Link>
@@ -239,6 +245,10 @@ export default function StudioPushesCalendarPage() {
           </tbody>
         </table>
       </div>
+
+      {previewPush && (
+        <PushPreviewDialog key={previewPush.pushId} projectId={previewPush.projectId} pushId={previewPush.pushId} onClose={() => setPreviewPush(null)} />
+      )}
     </div>
   );
 }

@@ -9,9 +9,7 @@ import { format } from 'date-fns';
 import { Plus, Pencil, Copy } from 'lucide-react';
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '@/lib/api';
-import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { PushPreviewDialog } from '@/components/pushes/push-preview-dialog';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 import { STUDIO_HUE_HEX } from '../../../colors';
@@ -46,7 +44,7 @@ export default function StudioPushesPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
-  const [openLogsFor, setOpenLogsFor] = useState<string | null>(null);
+  const [previewPushId, setPreviewPushId] = useState<string | null>(null);
 
   const { data: pushes } = useQuery({
     queryKey: ['pushes', projectId],
@@ -95,7 +93,7 @@ export default function StudioPushesPage() {
           </thead>
           <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
             {pushes?.map((push) => (
-              <tr key={push.id} className="cursor-pointer hover:bg-[#F3F5F8] dark:hover:bg-white/5" onClick={() => setOpenLogsFor(push.id)}>
+              <tr key={push.id} className="cursor-pointer hover:bg-[#F3F5F8] dark:hover:bg-white/5" onClick={() => setPreviewPushId(push.id)}>
                 <td className="px-5 py-3">
                   <StudioPill hue={STATUS_HUE[push.status] ?? 'slate'}>{push.status}</StudioPill>
                 </td>
@@ -156,7 +154,7 @@ export default function StudioPushesPage() {
         </table>
       </div>
 
-      {openLogsFor && <PushLogsDialog projectId={projectId} pushId={openLogsFor} onClose={() => setOpenLogsFor(null)} />}
+      {previewPushId && <PushPreviewDialog key={previewPushId} projectId={projectId} pushId={previewPushId} onClose={() => setPreviewPushId(null)} />}
     </div>
   );
 }
@@ -229,66 +227,6 @@ function BestTimeCard({ projectId }: { projectId: string }) {
         </BarChart>
       </ResponsiveContainer>
     </div>
-  );
-}
-
-interface PushLogItem {
-  id: string;
-  status: string;
-  error: string | null;
-  sentAt: string | null;
-  clickedAt: string | null;
-  client: { id: string; tgUsername: string | null; tgFirstName: string | null } | null;
-}
-
-// Диалог логов переиспользует обычный shadcn Dialog/Table без Studio-переоформления — тот же
-// принцип, что и у остальных диалогов в Studio (AbTestGroupDialog/GetLinkDialog и т.п.):
-// сложные разовые модалки не переоформляются, только внешняя оболочка страницы.
-function PushLogsDialog({ projectId, pushId, onClose }: { projectId: string; pushId: string; onClose: () => void }) {
-  const { data } = useQuery({
-    queryKey: ['pushes', projectId, pushId, 'logs'],
-    queryFn: async () => (await api.get<{ items: PushLogItem[]; total: number }>(`/projects/${projectId}/pushes/${pushId}/logs`)).data,
-  });
-
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Логи отправки</DialogTitle>
-        </DialogHeader>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Получатель</TableHead>
-              <TableHead>Статус</TableHead>
-              <TableHead>Ошибка</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data?.items.map((log) => (
-              <TableRow key={log.id}>
-                <TableCell className="whitespace-nowrap">
-                  {log.client?.tgUsername ? `@${log.client.tgUsername}` : log.client?.tgFirstName || log.client?.id || '—'}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={log.status === 'sent' ? 'default' : log.status === 'failed' ? 'destructive' : 'secondary'}>
-                    {log.status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-sm text-red-500 max-w-md break-words">{log.error || '—'}</TableCell>
-              </TableRow>
-            ))}
-            {data && data.items.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={3} className="text-center text-muted-foreground">
-                  Логов пока нет
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </DialogContent>
-    </Dialog>
   );
 }
 

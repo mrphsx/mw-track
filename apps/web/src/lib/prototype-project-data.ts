@@ -133,15 +133,21 @@ export interface PrototypeUnattributedBucket {
 }
 
 export interface PrototypeLeaderboards {
-  buyers: { buyerId: string; name: string; clients: number; revenue: number }[];
+  // isDeleted (запрос пользователя 2026-08-19: "показывает удалённых пользователей... лучше
+  // показать имя красным + подсказка при наведении") — см. полный комментарий у classic-версии.
+  buyers: { buyerId: string; name: string; isDeleted?: boolean; clients: number; revenue: number }[];
   pixels: { pixelId: string | null; label: string; clients: number; revenue: number }[];
   landings: { landingId: string; name: string; subscribers: number; revenue: number }[];
   campaigns: { campaignId: string; campaignName: string | null; clients: number; revenue: number }[];
-  // "Без баера/пикселя/кампании" (запрос пользователя 2026-08-09) — см. полный комментарий у
-  // classic-версии этого же интерфейса (apps/web/src/app/(dashboard)/projects/[id]/page.tsx).
+  // Топ источников — Facebook/TikTok (запрос пользователя 2026-08-18) — см. полный комментарий у
+  // classic-версии этого же интерфейса.
+  sources: { source: 'FACEBOOK' | 'TIKTOK'; clients: number; revenue: number }[];
+  // "Без баера/пикселя/кампании/источника" (запрос пользователя 2026-08-09) — см. полный
+  // комментарий у classic-версии этого же интерфейса (apps/web/src/app/(dashboard)/projects/[id]/page.tsx).
   buyersUnattributed: PrototypeUnattributedBucket;
   pixelsUnattributed: PrototypeUnattributedBucket;
   campaignsUnattributed: PrototypeUnattributedBucket;
+  sourcesUnattributed: PrototypeUnattributedBucket;
 }
 
 export type PrototypePeriod = 'today' | 'yesterday' | '7d' | '30d' | 'custom';
