@@ -12,6 +12,7 @@ import { EncryptionService } from '../../../common/encryption.service';
 import { ClientsService } from '../../clients/clients.service';
 import { VideoProcessingService } from '../video-processing.service';
 import { CustomFile } from 'telegram/client/uploads';
+import { containsPaymentDetails } from '../../../common/payment-detail-patterns.util';
 
 interface PendingConnection {
   client: TelegramClient;
@@ -170,6 +171,11 @@ export class TelegramPersonalService {
     client.addEventHandler(
       (event: NewMessageEvent) => this.handleIncomingMessage(channel, event),
       new NewMessage({ incoming: true }),
+    );
+    // Журнал реквизитов (запрос пользователя 2026-08-27) — см. handlePaymentDetailsLog ниже.
+    client.addEventHandler(
+      (event: NewMessageEvent) => this.handlePaymentDetailsLog(channel, event),
+      new NewMessage({ outgoing: true }),
     );
 
     this.liveClients.set(channel.id, client);
@@ -523,6 +529,10 @@ export class TelegramPersonalService {
       (event: NewMessageEvent) => this.handleIncomingMessage(channel, event),
       new NewMessage({ incoming: true }),
     );
+    attempt.client.addEventHandler(
+      (event: NewMessageEvent) => this.handlePaymentDetailsLog(channel, event),
+      new NewMessage({ outgoing: true }),
+    );
   }
 
   // Не блокирует и не бросает наружу — сбой обработки одного сообщения не должен убить
@@ -592,6 +602,74 @@ export class TelegramPersonalService {
       });
     } catch (error) {
       this.logger.warn(`handleIncomingMessage failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
+  }
+
+  // Журнал реквизитов (запрос пользователя 2026-08-27, "сервис который поможет отслеживать
+  // каждые отправленные реквизиты клиентам, чтобы избежать момента, что оператор... может
+  // обмануть компанию и отправить другие реквизиты и украсть деньги") — оператор физически
+  // управляет этим личным аккаунтом напрямую в приложении Telegram, минуя CRM целиком, так что
+  // единственная точка контроля — реальное событие "исходящее сообщение" на самом MTProto-
+  // соединении, а не что-либо, что проходит через код CRM. Намеренно НЕ ретроактивное — слушатель
+  // регистрируется только с момента запуска этого кода, старые сообщения не сканируются (см.
+  // разбор в CLAUDE.md/памяти о том, почему массовое чтение уже отправленной переписки здесь не
+  // делается). v1 по явному решению пользователя: только логирование факта отправки, без сверки
+  // с "официальным" списком реквизитов — обнаружение самой ПОДМЕНЫ осознанно отложено.
+  private async handlePaymentDetailsLog(channel: Channel, event: NewMessageEvent): Promise<void> {
+    try {
+      if (!event.isPrivate) return;
+
+      const text = event.message.text?.trim();
+      if (!text || !containsPaymentDetails(text, channel.projectId)) return;
+
+      // event.message.getChat() резолвит получателя через кэш сущностей клиента (или перебор до
+      // 100 последних диалогов) — реальный баг-репорт 2026-08-29: для контакта, не попавшего в
+      // этот кэш, getChat() тихо возвращает undefined без единой ошибки, сообщение с "sinpe:"
+      // молча терялось на этой самой строке. peerId лежит прямо в самом апдейте (Api.PeerUser),
+      // синхронно и без сетевых обращений — раз event.isPrivate уже true, peerId гарантированно
+      // PeerUser, резолвить его отдельно через getChat() не нужно вообще.
+      const peer = event.message.peerId;
+      if (!peer || peer.className !== 'PeerUser') return;
+
+      const tgUserId = String(peer.userId);
+      const existingClient = await this.clientsService.findByTgId(tgUserId, channel.projectId);
+
+      // Исключаем ботов (запрос пользователя 2026-08-29: "8506269324 это не пользователь, это
+      // бот... поступали только из личных сообщений") + снапшот имени (тот же getChat(), тот же
+      // приём, что чуть выше в handleIncomingMessage для входящих) — best-effort, не блокирует
+      // запись при неудаче резолва: getChat() иногда не резолвит получателя вообще (см.
+      // комментарий у tgFirstName в schema.prisma). Если резолв не удался — не можем ни
+      // подтвердить бота, ни получить имя, но и оснований пропускать запись тоже нет: логируем
+      // как раньше, просто без имени (тот же trade-off, что и до этой правки).
+      let tgFirstName: string | undefined;
+      let tgUsername: string | undefined;
+      if (!existingClient) {
+        try {
+          const chat = await event.message.getChat();
+          if (chat?.className === 'User') {
+            if ((chat as Api.User).bot) return;
+            tgFirstName = chat.firstName ?? undefined;
+            tgUsername = chat.username ?? undefined;
+          }
+        } catch {
+          // некуда деваться — оставляем оба поля null, UI покажет голый tgUserId
+        }
+      }
+
+      await this.prisma.paymentDetailsLog.create({
+        data: {
+          projectId: channel.projectId,
+          channelId: channel.id,
+          tgUserId,
+          clientId: existingClient?.id,
+          tgFirstName,
+          tgUsername,
+          messageText: text,
+          sentAt: new Date(event.message.date * 1000),
+        },
+      });
+    } catch (error) {
+      this.logger.warn(`handlePaymentDetailsLog failed for channel ${channel.id}: ${(error as Error).message}`);
     }
   }
 }

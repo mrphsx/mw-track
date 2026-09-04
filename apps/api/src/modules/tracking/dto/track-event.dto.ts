@@ -133,4 +133,13 @@ export class TrackEventDto {
   @IsOptional()
   @IsString()
   buyerRef?: string;
+
+  // Персистентный (localStorage) анонимный id визитора чистого веб-сайта (ChannelType.WEBSITE,
+  // без Telegram/WA/IG) — apps/sdk/src/browser.ts, единственный способ узнать "тот же человек
+  // вернулся" на сайте без мессенджера. См. Client.visitorId в schema.prisma. Отправляется с
+  // КАЖДЫМ событием, но реально создаёт Client только для eventName:'Purchase' на WEBSITE-
+  // проекте (см. TrackingService.recordEvent) — запрос пользователя 2026-09-03.
+  @IsOptional()
+  @IsString()
+  visitorId?: string;
 }

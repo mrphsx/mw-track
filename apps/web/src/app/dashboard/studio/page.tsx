@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { hasAnyPermission } from '@/lib/permissions';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { Input } from '@/components/ui/input';
 import {
   getSubscriptionWarning,
@@ -182,8 +183,8 @@ export default function StudioDashboardPage() {
               <div className="rounded-xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm hover:shadow-md transition-shadow p-4">
                 <div className="flex items-center justify-between mb-2.5">
                   <div className="flex items-center gap-2.5 min-w-0">
-                    {project.channel?.type === 'TELEGRAM' ? (
-                      <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
+                    {project.channel?.type === 'TELEGRAM' || project.channel?.type === 'WEBSITE' ? (
+                      <ChannelAvatar channelId={project.channel.id} hasAvatar={hasChannelAvatar(project.channel)} fallbackLetter={project.name} />
                     ) : (
                       <div className="w-8 h-8 rounded-full bg-[#52606B]/10 dark:bg-[#A6B4C0]/10 flex items-center justify-center text-xs font-medium text-[#52606B] dark:text-[#A6B4C0] shrink-0">
                         {project.name.charAt(0).toUpperCase()}

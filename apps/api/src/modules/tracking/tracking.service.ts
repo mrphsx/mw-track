@@ -1,11 +1,21 @@
 import { InjectQueue } from '@nestjs/bull';
 import { Injectable, Logger } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { Prisma } from '@prisma/client';
 import { Queue } from 'bull';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AutomationEngineService } from '../automations/automation-engine.service';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
+// НЕ import { ClientsService } — clients.service.ts уже импортирует TrackingService напрямую
+// (findOrCreate шлёт Subscribe-события), значит обычный value-импорт здесь замкнул бы настоящий
+// файловый цикл tracking.service.ts ↔ clients.service.ts (в отличие от безопасного случая
+// PurchasesService.getChannelsService() — там channels.service.ts НЕ импортирует purchases.
+// service.ts обратно). При таком цикле один из классов оказывается undefined в метаданных типов
+// параметров конструктора другого на этапе загрузки модуля (реальный инцидент: PurchasesService
+// падал на старте с "Nest can't resolve dependencies... argument at index [1]"). Тип берём через
+// import(), сам класс — через отложенный require() внутри метода (см. getClientsService ниже),
+// когда все модули уже полностью загружены и цикла на этапе require нет.
 import { TrackEventDto } from './dto/track-event.dto';
 
 export interface RecordEventDto extends TrackEventDto {
@@ -39,7 +49,27 @@ export class TrackingService {
     private prisma: PrismaService,
     @InjectQueue('tracking-events') private trackingQueue: Queue,
     private automationEngine: AutomationEngineService,
+    private moduleRef: ModuleRef,
   ) {}
+
+  // ClientsService/PurchasesService резолвятся лениво через ModuleRef, а не конструкторной
+  // инъекцией — ClientsService уже инжектит TrackingService напрямую (findOrCreate шлёт
+  // Subscribe-события), значит ClientsModule уже импортирует TrackingModule; прямая инъекция
+  // ClientsService сюда закольцевала бы граф на бутстрапе. Тот же приём уже использует
+  // PurchasesService.getChannelsService() для ровно той же проблемы (см. её комментарий) —
+  // ModuleRef.get(..., {strict:false}) достаёт уже поднятый инстанс из общего контейнера после
+  // старта приложения, не участвует в графе конструкторной инъекции вообще.
+  private getClientsService(): import('../clients/clients.service').ClientsService {
+    // Отложенный require (не top-level import) — см. комментарий у импортов вверху файла,
+    // почему обычный import здесь замкнул бы настоящий файловый цикл.
+    const { ClientsService } = require('../clients/clients.service') as typeof import('../clients/clients.service');
+    return this.moduleRef.get(ClientsService, { strict: false });
+  }
+
+  private getPurchasesService(): import('../clients/purchases.service').PurchasesService {
+    const { PurchasesService } = require('../clients/purchases.service') as typeof import('../clients/purchases.service');
+    return this.moduleRef.get(PurchasesService, { strict: false });
+  }
 
   async recordEvent(projectId: string, rawDto: RecordEventDto): Promise<{ eventId: string }> {
     // Короткие коды баера/пикселя (запрос пользователя 2026-08-20) — браузерный SDK шлёт z=/pixel=
@@ -57,8 +87,42 @@ export class TrackingService {
     const existing = await this.prisma.trackingEvent.findUnique({ where: { eventId } });
     if (existing) return { eventId };
 
+    // Обычный сайт без мессенджера (ChannelType.WEBSITE, запрос пользователя 2026-09-03) —
+    // Client создаётся ТОЛЬКО в момент Purchase, не на каждый PageView (иначе анонимный
+    // e-commerce-трафик раздул бы Company.maxClients — подтверждено пользователем через
+    // AskUserQuestion). PageView/Lead на такой проект по-прежнему пишут только TrackingEvent
+    // без клиента (см. visitorId-ветку в resolveClient ниже — подхватывает существующего
+    // клиента с прошлой покупки). ВАЖНО: условие не гейтится на "clientId ещё не резолвлен" —
+    // повторная покупка того же посетителя (visitorId уже привязан к существующему Client)
+    // обязана пройти этот путь снова, иначе для неё вообще не создалась бы Purchase-строка,
+    // только для самой первой. Настоящая защита от чужих каналов — project.channel.type ниже:
+    // для TELEGRAM/WHATSAPP/INSTAGRAM это условие никогда не выполняется, их покупки всегда
+    // идут через аутентифицированный PurchasesController с уже готовым clientId, а не через
+    // этот публичный SDK-путь.
+    if (dto.eventName === 'Purchase' && dto.visitorId) {
+      const project = await this.prisma.project.findUnique({
+        where: { id: projectId },
+        select: { channel: { select: { type: true } } },
+      });
+      if (project?.channel?.type === 'WEBSITE') {
+        const result = await this.resolveOrCreateWebsiteClient(projectId, dto);
+        if (result) {
+          // PurchasesService.create() внутри resolveOrCreateWebsiteClient уже сам создал
+          // (или, при повторе idempotencyKey, нашёл уже существующее) каноническое
+          // TrackingEvent 'Purchase' со своей атрибуцией/пересылкой в FB/TikTok/триггером
+          // автоворонки — та же логика, что и у любой другой покупки в системе. Выходим здесь,
+          // а не проваливаемся дальше по функции — иначе получилось бы ВТОРОЕ TrackingEvent на
+          // ту же покупку и повторная отправка конверсии в рекламные платформы.
+          return { eventId: result.eventId };
+        }
+        // dto.value отсутствовал/невалиден — resolveOrCreateWebsiteClient уже залогировал
+        // предупреждение и клиента не создал; событие пишется ниже как обычно, просто без
+        // привязки к клиенту (тот же путь, что PageView/Lead без атрибуции).
+      }
+    }
+
     let clientId = dto.clientId;
-    if (!clientId && (dto.tgUserId || dto.fbclid)) {
+    if (!clientId && (dto.tgUserId || dto.visitorId || dto.fbclid)) {
       const client = await this.resolveClient(projectId, dto);
       clientId = client?.id;
     }
@@ -193,10 +257,71 @@ export class TrackingService {
     if (dto.tgUserId) {
       return this.prisma.client.findFirst({ where: { projectId, tgUserId: dto.tgUserId } });
     }
+    // visitorId — только для ChannelType.WEBSITE (см. resolveOrCreateWebsiteClient); безвредно
+    // для всех остальных каналов — у них visitorId ни на одном Client не может быть заполнен,
+    // искать по нему там попросту нечего.
+    if (dto.visitorId) {
+      return this.prisma.client.findFirst({ where: { projectId, visitorId: dto.visitorId } });
+    }
     if (dto.fbclid) {
       return this.prisma.client.findFirst({ where: { projectId, fbclid: dto.fbclid } });
     }
     return null;
+  }
+
+  // Находит-или-создаёт Client чистого веб-сайта (ChannelType.WEBSITE) по visitorId, затем
+  // создаёт настоящую Purchase-строку через уже существующий PurchasesService.create — без
+  // этого покупка была бы видна только в сыром TrackingEvent, но невидима во всех дашбордах
+  // выручки CRM (getProjectStats/getConversionFunnel/getLeaderboards), которые завязаны на
+  // JOIN через Client (запрос пользователя 2026-09-03, "не хочу костыль с ботом").
+  private async resolveOrCreateWebsiteClient(
+    projectId: string,
+    dto: RecordEventDto,
+  ): Promise<{ clientId: string; eventId: string } | undefined> {
+    if (!dto.value || dto.value <= 0) {
+      this.logger.warn(`resolveOrCreateWebsiteClient: Purchase без value для проекта ${projectId}, пропускаю создание клиента`);
+      return undefined;
+    }
+
+    const client = await this.getClientsService().findOrCreate({
+      projectId,
+      channelType: 'WEBSITE',
+      visitorId: dto.visitorId,
+      email: dto.email,
+      phone: dto.phone,
+      ipAddress: dto.ipAddress,
+      userAgent: dto.userAgent,
+      fbclid: dto.fbclid,
+      ttclid: dto.ttclid,
+      fbp: dto.fbp,
+      utmSource: dto.utmSource,
+      utmCampaign: dto.utmCampaign,
+      pixelId: dto.pixelId,
+      adId: dto.adId,
+      adName: dto.adName,
+      adsetId: dto.adsetId,
+      adsetName: dto.adsetName,
+      campaignId: dto.campaignId,
+      campaignName: dto.campaignName,
+      placement: dto.placement,
+      siteSourceName: dto.siteSourceName,
+      buyerId: dto.buyerRef,
+    });
+
+    // registeredBy не передаём — это не ручное действие сотрудника, а автоматическая покупка
+    // с сайта (тот же смысл, что и undefined у любого другого API-источника покупки).
+    const purchase = await this.getPurchasesService().create(projectId, client.id, {
+      amount: dto.value,
+      currency: dto.currency,
+      orderId: dto.orderId,
+      idempotencyKey: dto.idempotencyKey,
+      source: 'api',
+    });
+
+    // Тот же формат eventId, что PurchasesService.create() сама использует для своего
+    // внутреннего recordEvent-вызова (см. её код) — вызывающий (recordEvent выше) возвращает
+    // именно это наружу, вместо того чтобы писать своё отдельное TrackingEvent.
+    return { clientId: client.id, eventId: `${projectId}_Purchase_${purchase.id}` };
   }
 
   // Приоритет — явным полям dto (SDK/трекинг-ссылка знает точнее в моменте события), недостающие

@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Get,
   Headers,
+  Logger,
   NotFoundException,
   Param,
   Post,
@@ -15,23 +16,33 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { ModuleRef } from '@nestjs/core';
 import { Public } from '../../common/decorators/public.decorator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { ProjectsService } from '../projects/projects.service';
 import { TrackingService } from './tracking.service';
 import { TrackEventDto } from './dto/track-event.dto';
-import { buildTelegramLink } from '../channels/telegram-link.util';
+import { buildTelegramHttpsLink, buildTelegramLink } from '../channels/telegram-link.util';
+import { TelegramProvider } from '../channels/providers/telegram.provider';
 
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
 @Controller('track')
 export class TrackingController {
+  private readonly logger = new Logger(TrackingController.name);
+
   constructor(
     private prisma: PrismaService,
     private projectsService: ProjectsService,
     private trackingService: TrackingService,
     private redis: RedisService,
+    // TelegramProvider резолвится лениво через ModuleRef, не конструкторной инъекцией —
+    // TrackingModule намеренно не импортирует ChannelsModule (ChannelsModule уже импортирует
+    // TrackingModule, прямой импорт назад замкнул бы цикл в графе DI до старта приложения) — тот
+    // же приём, что уже используется в BotScenarioEngineService для того же класса проблемы (см.
+    // память про circular-DI).
+    private moduleRef: ModuleRef,
   ) {}
 
   // Браузерный SDK (track.js на лендинге) — публичный токен в URL, без подписи
@@ -72,7 +83,12 @@ export class TrackingController {
     @Req() req: RawBodyRequest<Request>,
   ) {
     const project = await this.projectsService.findById(projectId);
-    if (!project) throw new NotFoundException();
+    // Явное сообщение (запрос пользователя 2026-09-03: "для сервера и для публичного скрипта
+    // стоят разные id проекта... не работает, показывает project not found") — самая частая
+    // причина этой ошибки здесь конкретно: сюда по ошибке подставили Public Token (для
+    // браузерного /track/:publicToken/event) вместо Project ID (см. вкладку "Интеграция" —
+    // отдельное поле рядом с Public Token/Secret Key).
+    if (!project) throw new NotFoundException('Проект не найден — проверьте Project ID (не Public Token) во вкладке "Интеграция"');
 
     if (!signature || !timestamp || !req.rawBody) {
       throw new UnauthorizedException('Missing signature');
@@ -117,6 +133,12 @@ export class TrackingController {
     // — донашиваем его в уже существующие блоки атрибуции задним числом, тем же путём, что и
     // fbclid/ip/userAgent.
     @Query('fbp') fbp: string | undefined,
+    // ?format=json (запрос пользователя 2026-08-31, "возьмём у конкурента полезные наработки")
+    // — их SDK предзагружает готовую ссылку заранее (по детекту TikTok-webview), а не ждёт
+    // сетевой round-trip в момент самого тапа "Открыть". Тот же эндпоинт, та же атрибуция/
+    // одноразовая invite-ссылка, что и у обычного 302-варианта ниже — просто отдаём готовый
+    // результат телом ответа вместо самого редиректа, чтобы SDK мог собрать intent на клиенте.
+    @Query('format') format: string | undefined,
     @Res() res: Response,
   ) {
     // code — одноразовый (см. комментарий выше), поэтому ответ никогда не должен оседать в
@@ -143,10 +165,47 @@ export class TrackingController {
     // общую ссылку канала.
     const landing = landingId ? await this.prisma.landing.findUnique({ where: { id: landingId }, select: { tgInviteLink: true } }) : null;
 
-    const tgUrl = buildTelegramLink(project?.channel ?? null, code, landing?.tgInviteLink);
+    // Персональная invite-ссылка НА ЭТОТ ВИЗИТ (запрос пользователя 2026-08-31: "у конкурентов
+    // под каждого подписчика своя invite-ссылка, это решает проблему с очередью") — заменяет
+    // общую ссылку лендинга, когда получилось её создать: TelegramProvider.handleJoinRequest
+    // тогда находит атрибуцию ТОЧНЫМ совпадением по ссылке, без всякой FIFO/lookahead-очереди.
+    // Только PRIVATE_CHANNEL_REQUEST (другие режимы уже несут атрибуцию через code/&start=
+    // напрямую, invite-ссылка у них не используется вообще) и только когда есть code — без него
+    // неоткуда взять уже готовую атрибуцию визита. Любая проблема (нет start:<code>, канал не
+    // инициализирован, ошибка Bot API) — просто не выставляем landingInviteLink, дальше работает
+    // прежний путь (общая ссылка + очередь), тот же fallback, что и до этой фичи.
+    let landingInviteLink = landing?.tgInviteLink ?? undefined;
+    if (code && project?.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
+      const cachedRaw = await this.redis.get(`start:${code}`);
+      if (cachedRaw) {
+        try {
+          const cachedAttribution = JSON.parse(cachedRaw);
+          const telegramProvider = this.moduleRef.get(TelegramProvider, { strict: false });
+          const oneTimeLink = await telegramProvider.createOneTimeInviteLink(project.channel, {
+            ...cachedAttribution,
+            landingId: landingId ?? null,
+          });
+          if (oneTimeLink) landingInviteLink = oneTimeLink;
+        } catch (error) {
+          this.logger.warn(`Одноразовая invite-ссылка не создана, откат на общую: ${(error as Error).message}`);
+        }
+      }
+    }
+
+    const tgUrl = buildTelegramLink(project?.channel ?? null, code, landingInviteLink);
 
     if (!tgUrl) {
+      if (format === 'json') {
+        res.status(404).json({ tg: null, https: null });
+        return;
+      }
       res.status(404).send('<h1>Канал не найден</h1>');
+      return;
+    }
+
+    if (format === 'json') {
+      const httpsUrl = buildTelegramHttpsLink(project?.channel ?? null, code, landingInviteLink);
+      res.json({ tg: tgUrl, https: httpsUrl || null });
       return;
     }
 

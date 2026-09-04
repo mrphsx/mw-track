@@ -404,8 +404,17 @@ export class ClientsRepository {
   // buyerId (запрос пользователя 2026-08-03, "только своя стата") — см. комментарий у
   // getProjectStats выше, тот же приём.
   async getConversionFunnel(projectId: string, periodQuery: StatsPeriodDto, buyerId?: string) {
-    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
+    const project = await this.prisma.project.findUniqueOrThrow({
+      where: { id: projectId },
+      select: { timezone: true, channel: { select: { type: true } } },
+    });
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — Client создаётся
+    // ровно в момент Purchase (см. TrackingService.resolveOrCreateWebsiteClient), значит
+    // subscribedAt всегда совпадает с моментом покупки. "Вступили в канал" в этом случае
+    // буквально неверно — никто никуда не вступал — подписи достаточно поправить, сам список
+    // стадий не трогаем (фронтенд использует stages[0]/stages[last] для итогового процента).
+    const isWebsite = project.channel?.type === 'WEBSITE';
     const buyerWhere = buyerId ? { buyerId } : {};
     const buyerFilterSql = buyerId ? Prisma.sql`AND "buyerId" = ${buyerId}` : Prisma.empty;
     // Тот же фикс, что в getProjectStats выше (запрос пользователя 2026-08-05) — ФД/РД в воронке
@@ -471,7 +480,7 @@ export class ClientsRepository {
       {
         stage: 'Subscribe',
         count: subscribes,
-        label: 'Вступили в канал',
+        label: isWebsite ? 'Стали клиентом' : 'Вступили в канал',
         rate: leads ? Math.round((subscribes / leads) * 100) : 0,
       },
       {

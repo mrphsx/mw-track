@@ -19,6 +19,7 @@ import {
   channelHandle,
   channelTitle,
   findGroupAttachment,
+  hasChannelAvatar,
   findLandingAttachment,
   primaryChannel,
 } from '@/lib/landings';
@@ -232,7 +233,7 @@ export function LandingCard({
 
         {channel ? (
           <div className="flex items-center gap-2 border rounded-md p-2">
-            <ChannelAvatar channelId={channel.id} hasAvatar={!!channel.tgAvatarFileId} fallbackLetter={title || handle || 'T'} />
+            <ChannelAvatar channelId={channel.id} hasAvatar={hasChannelAvatar(channel)} fallbackLetter={title || handle || 'T'} />
             <div className="min-w-0 text-sm">
               {/* hideChannelDetails, 3-е уточнение (запрос пользователя 2026-07-30: "нужно
                   оставить не название бота а название канала") — title здесь ВСЕГДА реальное

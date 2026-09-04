@@ -408,16 +408,65 @@ export class PushesService {
       return this.prisma.push.update({ where: { id }, data: { status: PushStatus.SENT } });
     }
 
-    for await (const chunk of this.clientsService.getClientsForPushInChunks(
-      projectId,
-      push.filter as unknown as PushFilterDto,
-    )) {
-      for (const client of chunk) {
-        await this.pushQueue.add('send-push-message', { pushId: id, clientId: client.id });
-      }
-    }
+    // ensureLedger + enqueuePendingLogs, не прямая постановка джоб на живой список клиентов
+    // (запрос пользователя 2026-09-01, "полноценный фикс" после 42 реально зависших в SENDING
+    // рассылок) — см. подробный разбор в комментарии у PushLog.status в schema.prisma. Обе
+    // функции идемпотентны и переиспользуются PushesCron.recoverStalledSending для восстановления
+    // после падения процесса ровно в этом месте.
+    await this.ensureLedger(updated);
+    await this.enqueuePendingLogs(id);
 
     return updated;
+  }
+
+  // Создаёт PushLog-строки СРАЗУ на всю аудиторию (status:'pending'), ДО постановки единой
+  // джобы в очередь — это и есть durable-список получателей, по которому потом можно узнать,
+  // кто ещё не отправлен, даже если процесс упадёт прямо посреди этого цикла (следующий вызов
+  // просто продолжит: skipDuplicates опирается на @@unique([pushId, clientId]), так что уже
+  // существующие строки просто не создаются повторно — безопасно вызывать многократно).
+  private async ensureLedger(push: Push): Promise<void> {
+    for await (const chunk of this.clientsService.getClientsForPushInChunks(
+      push.projectId,
+      push.filter as unknown as PushFilterDto,
+    )) {
+      await this.prisma.pushLog.createMany({
+        data: chunk.map((client) => ({ pushId: push.id, clientId: client.id, status: 'pending' })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  // Ставит в очередь ровно те строки, что ещё status:'pending' — постранично, чтобы не тянуть
+  // тысячи строк разом в память. Безопасно вызывать повторно (в т.ч. параллельно с уже идущей
+  // отправкой): PushesProcessor атомарно захватывает строку (`updateMany` с условием
+  // status:'pending' в WHERE) перед реальной отправкой, поэтому даже если одна и та же строка
+  // окажется в очереди дважды (например обычный вызов + recoverStalledSending почти одновременно),
+  // вторая джоба увидит claimed.count===0 и тихо выйдет — без повторной отправки получателю.
+  private async enqueuePendingLogs(pushId: string): Promise<void> {
+    let cursor: string | undefined;
+    while (true) {
+      const pending = await this.prisma.pushLog.findMany({
+        where: { pushId, status: 'pending' },
+        select: { id: true, clientId: true },
+        orderBy: { id: 'asc' },
+        take: 200,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+      if (pending.length === 0) return;
+      for (const log of pending) {
+        await this.pushQueue.add('send-push-message', { pushId, pushLogId: log.id, clientId: log.clientId });
+      }
+      cursor = pending[pending.length - 1].id;
+      if (pending.length < 200) return;
+    }
+  }
+
+  // Вызывается PushesCron.recoverStalledSending — тот же ensureLedger+enqueuePendingLogs, что и
+  // при первом send(), просто под публичным именем для крона (запрос пользователя 2026-09-01).
+  async resumeSending(pushId: string): Promise<void> {
+    const push = await this.prisma.push.findUniqueOrThrow({ where: { id: pushId } });
+    await this.ensureLedger(push);
+    await this.enqueuePendingLogs(pushId);
   }
 
   async cancel(id: string, projectId: string): Promise<Push> {

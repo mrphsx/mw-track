@@ -16,6 +16,14 @@ import { PushesService } from './pushes.service';
 // разрешиться в течение грейса, чем раньше с 30-дневным окном.
 const SCHEDULED_PUSH_GRACE_MS = 24 * 60 * 60 * 1000;
 
+// Порог "завис" для SENDING-пуша (запрос пользователя 2026-09-01, "полноценный фикс" — 42
+// реально зависшие в SENDING рассылки, обрыв процесса посреди PushesService.send() навсегда
+// хоронил ещё не поставленных в очередь получателей). Тот же приём и то же значение, что
+// PersonalBroadcastsCron.recoverStalled — updatedAt на Push бампается на каждый обработанный
+// получатель (PushesProcessor), поэтому "давно не обновлялся" — надёжный сигнал, что реальная
+// отправка либо закончилась (и просто не хватило джоб на оставшихся), либо процесс упал.
+const SENDING_STALL_THRESHOLD_MS = 5 * 60 * 1000;
+
 @Injectable()
 export class PushesCron {
   private readonly logger = new Logger(PushesCron.name);
@@ -69,6 +77,33 @@ export class PushesCron {
         // Захват не удался (count===0) — скорее всего кто-то уже отправил пуш вручную
         // в этом же промежутке, не настоящая ошибка.
         this.logger.warn(`fireScheduledPushes: send() skipped for push ${push.id}: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  // Восстановление зависших SENDING-пушей (запрос пользователя 2026-09-01) — тот же приём, что
+  // PersonalBroadcastsCron.recoverStalled: находит SENDING-пуши, которые давно не обновлялись,
+  // и там, где ещё остались (или так и не были созданы — ensureLedger внутри resumeSending
+  // достроит недостающее) PushLog-строки со status:'pending', заново ставит их в очередь.
+  // Безопасно — атомарный захват внутри PushesProcessor не даст отправить одному получателю
+  // дважды, даже если старая джоба этого получателя на самом деле ещё жива.
+  @Cron('*/1 * * * *')
+  async recoverStalledSending() {
+    const stallThreshold = new Date(Date.now() - SENDING_STALL_THRESHOLD_MS);
+    const stuck = await this.prisma.push.findMany({
+      where: { status: PushStatus.SENDING, updatedAt: { lte: stallThreshold } },
+      select: { id: true, sentCount: true, failedCount: true, audienceReachable: true },
+    });
+
+    for (const push of stuck) {
+      if (push.sentCount + push.failedCount >= push.audienceReachable) continue; // процессор вот-вот сам переключит в SENT
+
+      const pendingCount = await this.prisma.pushLog.count({ where: { pushId: push.id, status: 'pending' } });
+      this.logger.warn(`recoverStalledSending: push ${push.id} stalled (${push.sentCount + push.failedCount}/${push.audienceReachable}, ${pendingCount} pending) — resuming`);
+      try {
+        await this.pushesService.resumeSending(push.id);
+      } catch (error) {
+        this.logger.warn(`recoverStalledSending: resumeSending(${push.id}) failed: ${(error as Error).message}`);
       }
     }
   }

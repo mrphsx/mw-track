@@ -14,6 +14,7 @@ import { Check, Copy, Eye, EyeOff, Pencil, Plus, Trash2, Users } from 'lucide-re
 import { api } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { TimezoneInput } from '@/components/timezone-input';
 import { LINK_PARAM_FIELDS, LINK_PARAM_NAME_REGEX, resolveParamMap } from '@/lib/link-params';
 import { TRACKING_EVENT_TYPES } from '@/lib/tracking-events';
@@ -74,6 +75,9 @@ export interface ChannelSummary {
   tgChannelTitle: string | null;
   tgChannelMembersCount: number | null;
   tgAvatarFileId: string | null;
+  webhookStale: boolean;
+  websiteUrl: string | null;
+  websiteFaviconUrl: string | null;
 }
 
 // Полная карточка канала — подтягивается отдельным запросом (GET /channels/:id) только при
@@ -187,10 +191,14 @@ export function ChannelsTab({ projectId, channel }: { projectId: string; channel
         <CardContent className="p-5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              {channel.type === 'TELEGRAM' && (
+              {/* TELEGRAM всегда, WEBSITE — только если фавиконка реально нашлась (запрос
+                  пользователя 2026-09-03) — hasChannelAvatar сама вернёт false, если её нет,
+                  но фолбэк-буква тогда всё равно должна отрисоваться, поэтому условие шире,
+                  чем просто hasChannelAvatar. */}
+              {(channel.type === 'TELEGRAM' || channel.type === 'WEBSITE') && (
                 <ChannelAvatar
                   channelId={channel.id}
-                  hasAvatar={!!channel.tgAvatarFileId}
+                  hasAvatar={hasChannelAvatar(channel)}
                   fallbackLetter={title || handle || channel.type}
                 />
               )}
@@ -228,8 +236,24 @@ export function ChannelsTab({ projectId, channel }: { projectId: string; channel
                     )}
                   </div>
                 )}
+                {channel.type === 'WEBSITE' && (
+                  <div className="text-sm">
+                    {channel.websiteUrl ? (
+                      <a href={channel.websiteUrl} target="_blank" rel="noopener" className="hover:underline">
+                        {channel.websiteUrl}
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground">Адрес сайта не указан</span>
+                    )}
+                  </div>
+                )}
                 {!channel.isActive && channel.lastError && (
                   <p className="text-xs text-red-500 max-w-md">{channel.lastError}</p>
+                )}
+                {channel.isActive && channel.webhookStale && (
+                  <p className="text-xs text-amber-600 max-w-md">
+                    Нет вебхуков от Telegram — попробуйте переподключить канал
+                  </p>
                 )}
               </div>
             </div>
@@ -237,14 +261,14 @@ export function ChannelsTab({ projectId, channel }: { projectId: string; channel
               <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
                 <Pencil className="w-4 h-4" />
               </Button>
-              {!channel.isActive && (
+              {(!channel.isActive || channel.webhookStale) && (
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() => reactivateChannel.mutate(channel.id)}
                   disabled={reactivateChannel.isPending}
                 >
-                  Переподключить
+                  {channel.type === 'WEBSITE' ? 'Проверить' : 'Переподключить'}
                 </Button>
               )}
               {channel.isActive && (
@@ -309,6 +333,7 @@ function EditChannelDialog({
       wa360Token: full.wa360Token || '',
       igPageId: full.igPageId || '',
       igAccessToken: full.igAccessToken || '',
+      websiteUrl: full.websiteUrl || '',
     });
   }, [full]);
 
@@ -1215,9 +1240,11 @@ export function PixelLogsTab({ projectId, pixels }: { projectId: string; pixels:
 export function EventsTab({
   projectId,
   disabledTrackingEvents,
+  channelType,
 }: {
   projectId: string;
   disabledTrackingEvents: string[];
+  channelType?: string;
 }) {
   const queryClient = useQueryClient();
 
@@ -1225,6 +1252,12 @@ export function EventsTab({
     mutationFn: (next: string[]) => api.patch(`/projects/${projectId}`, { disabledTrackingEvents: next }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
   });
+
+  // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — Subscribe/Unsubscribe/
+  // Dialogue никогда не срабатывают без мессенджера/бота, показывать переключатели для них
+  // нечего. Purchase — единственное автоматическое событие, которое реально фигурирует для сайта
+  // (см. TrackingService.resolveOrCreateWebsiteClient).
+  const eventTypes = channelType === 'WEBSITE' ? TRACKING_EVENT_TYPES.filter((et) => et.name === 'Purchase') : TRACKING_EVENT_TYPES;
 
   return (
     <Card>
@@ -1235,7 +1268,7 @@ export function EventsTab({
         <p className="text-sm text-muted-foreground mb-3">
           Выключенные события по-прежнему видны в CRM и в логах, но не отправляются в Facebook/TikTok.
         </p>
-        {TRACKING_EVENT_TYPES.map((eventType) => {
+        {eventTypes.map((eventType) => {
           const isEnabled = !disabledTrackingEvents.includes(eventType.name);
           return (
             <div
@@ -1268,9 +1301,11 @@ export function EventsTab({
 export function IntegrationTab({
   projectId,
   allowedDomains,
+  channelType,
 }: {
   projectId: string;
   allowedDomains: string[];
+  channelType?: string;
 }) {
   const queryClient = useQueryClient();
   const [showSecret, setShowSecret] = useState(false);
@@ -1315,6 +1350,24 @@ export function IntegrationTab({
 
   return (
     <div className="space-y-4">
+      {channelType === 'WEBSITE' && (
+        <Card className="border-primary/30">
+          <CardHeader>
+            <CardTitle className="text-base">Как подключить сайт</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ol className="text-sm space-y-2 list-decimal pl-4">
+              <li>Скопируйте код ниже (карточка «JS-сниппет»).</li>
+              <li>Вставьте его в код сайта прямо перед закрывающим тегом <code>&lt;/head&gt;</code> — на всех страницах, где нужна статистика.</li>
+              <li>
+                Откройте вкладку «Каналы» и нажмите «Проверить» — канал станет «Активен» только
+                после того, как мы реально найдём этот код на странице.
+              </li>
+              <li>Для отправки покупок надёжнее использовать серверный способ ниже (карточка «Серверная интеграция») — он не блокируется рекламными блокировщиками браузера.</li>
+            </ol>
+          </CardContent>
+        </Card>
+      )}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Ключи доступа</CardTitle>
@@ -1322,6 +1375,7 @@ export function IntegrationTab({
         <CardContent className="space-y-3">
           <div className="space-y-1.5">
             <Label htmlFor="public-token">Public Token</Label>
+            <p className="text-xs text-muted-foreground">Для браузерного скрипта (JS-сниппет ниже) — публичный, его видно в исходном коде любой страницы, это нормально.</p>
             <div className="flex gap-2">
               <Input id="public-token" readOnly value={snippet?.publicToken || ''} />
               <Button
@@ -1329,6 +1383,24 @@ export function IntegrationTab({
                 variant="outline"
                 onClick={() => copyToClipboard(snippet?.publicToken || '')}
               >
+                <Copy className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+          {/* Отдельное явное поле (запрос пользователя 2026-09-03: "для сервера и для публичного
+              скрипта стоят разные id проекта... не работает, показывает project not found") —
+              этот id раньше был виден ТОЛЬКО внутри примеров кода серверной интеграции, из-за
+              чего его легко перепутать с Public Token выше (оба выглядят как случайная строка).
+              Это намеренно РАЗНЫЕ значения: Public Token резолвится в TrackingController.trackEvent
+              (публичный SDK-путь), Project ID — в trackServerEvent (подписанный HMAC-путь), два
+              разных эндпоинта — использование одного id в примере для другого эндпоинта даёт
+              настоящий 404 "Project not found"/"Not Found". */}
+          <div className="space-y-1.5">
+            <Label htmlFor="project-id">Project ID</Label>
+            <p className="text-xs text-muted-foreground">Для серверных вызовов (примеры кода ниже) — вместе с Secret Key. Это ДРУГОЙ id, не Public Token выше — не путайте их местами.</p>
+            <div className="flex gap-2">
+              <Input id="project-id" readOnly value={project?.id || ''} />
+              <Button size="icon" variant="outline" onClick={() => copyToClipboard(project?.id || '')}>
                 <Copy className="w-4 h-4" />
               </Button>
             </div>
@@ -1396,11 +1468,17 @@ export function IntegrationTab({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Серверная интеграция</CardTitle>
+          {channelType === 'WEBSITE' && (
+            <p className="text-sm text-muted-foreground">
+              Рекомендуем отправлять «Покупку» именно так, с вашего бэкенда после подтверждения
+              оплаты — надёжнее, чем из браузера, и не зависит от блокировщиков рекламы.
+            </p>
+          )}
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="node">
             <TabsList>
-              <TabsTrigger value="node">Node.js (SDK)</TabsTrigger>
+              <TabsTrigger value="node">Node.js</TabsTrigger>
               <TabsTrigger value="php">PHP</TabsTrigger>
               <TabsTrigger value="python">Python</TabsTrigger>
             </TabsList>

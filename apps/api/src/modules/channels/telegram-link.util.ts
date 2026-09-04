@@ -11,6 +11,11 @@ export interface TelegramLinkChannel {
   tgChannelUsername: string | null;
   tgPersonalUsername: string | null;
   tgInviteLink: string | null;
+  // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — не используется этим
+  // файлом (buildTelegramLink/buildTelegramHttpsLink оба гейтятся type!=='TELEGRAM'), нужен
+  // только для структурной совместимости с LandingRendererService.ProjectWithLandingData,
+  // которая переиспользует этот интерфейс для типа project.channel целиком.
+  websiteUrl?: string | null;
 }
 
 // Все 4 режима отдают схему tg:// (не https://t.me/...) — обычная https-ссылка на t.me
@@ -52,11 +57,48 @@ export function buildTelegramLink(channel: TelegramLinkChannel | null, startCode
   }
 }
 
+// https://t.me/... эквивалент buildTelegramLink выше (запрос пользователя 2026-08-31, "возьмём
+// у конкурента полезные наработки" — их Android-эскейп строит intent прямо в приложение
+// Telegram с S.browser_fallback_url=<https>, на случай если Telegram не установлен). Тот же
+// switch по режимам, что и у tg://-версии, только конечная схема другая — обе версии одной
+// ссылки нужны одновременно (см. TrackingController.tgRedirect, ?format=json).
+export function buildTelegramHttpsLink(channel: TelegramLinkChannel | null, startCode?: string, landingInviteLink?: string | null): string {
+  if (!channel || channel.type !== 'TELEGRAM') return '';
+
+  switch (channel.tgMode) {
+    case 'PUBLIC_CHANNEL_DIRECT':
+      return channel.tgChannelUsername ? `https://t.me/${channel.tgChannelUsername.replace(/^@/, '')}` : '';
+    case 'PERSONAL_DM': {
+      if (!channel.tgPersonalUsername) return '';
+      const domain = channel.tgPersonalUsername.replace(/^@/, '');
+      return startCode ? `https://t.me/${domain}?text=${encodeURIComponent(startCode)}` : `https://t.me/${domain}`;
+    }
+    case 'PRIVATE_CHANNEL_REQUEST': {
+      // Уже https://t.me/+HASH в исходном виде — та самая ссылка, которую toTgInviteScheme
+      // выше конвертирует в tg://, здесь конвертировать не нужно вообще.
+      return landingInviteLink || channel.tgInviteLink || '';
+    }
+    case 'BOT_DIRECT':
+    default:
+      if (!channel.tgBotUsername) return '';
+      return startCode ? `https://t.me/${channel.tgBotUsername}?start=${startCode}` : `https://t.me/${channel.tgBotUsername}`;
+  }
+}
+
 // Channel.tgInviteLink хранится как обычная https://t.me/+HASH (или устаревший
 // .../joinchat/HASH) — это ровно то, что возвращает bot.api.createChatInviteLink
 // (см. TelegramProvider.initialize) и что удобно отдавать как fallback-ссылку боту
 // (handleStart). Для самого лендинга/редиректа нужен tg://join?invite=HASH — тот же hash.
 function toTgInviteScheme(inviteLink: string): string {
+  const hash = extractInviteHash(inviteLink);
+  return hash ? `tg://join?invite=${hash}` : inviteLink;
+}
+
+// Общий hash-суффикс https://t.me/+HASH / .../joinchat/HASH invite-ссылки — вынесен отдельно
+// от toTgInviteScheme (запрос пользователя 2026-08-31, персональная invite-ссылка НА ВИЗИТ), т.к.
+// теперь нужен и для построения tg://-ссылки, и как ключ Redis-кэша атрибуции этой конкретной
+// ссылки (TelegramProvider.createOneTimeInviteLink/handleJoinRequest) — единый источник разбора.
+export function extractInviteHash(inviteLink: string): string | null {
   const match = inviteLink.match(/t\.me\/(?:\+|joinchat\/)([\w-]+)/);
-  return match ? `tg://join?invite=${match[1]}` : inviteLink;
+  return match ? match[1] : null;
 }

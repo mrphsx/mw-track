@@ -56,6 +56,9 @@ interface ClientDetail {
   buyerName: string | null;
   landingId: string | null;
   landingName: string | null;
+  // Реальная invite-ссылка заявки на вступление (запрос пользователя 2026-08-31, "как у
+  // конкурентов") — PRIVATE_CHANNEL_REQUEST only, см. Client.tgInviteLink в schema.prisma.
+  tgInviteLink: string | null;
   totalSpent: string;
   purchasesCount: number;
   // Operator не видит рекламную атрибуцию (запрос пользователя 2026-07-30) — сервер решает
@@ -202,6 +205,16 @@ export function ClientDetailContent({
               <div className="text-sm text-muted-foreground">Баер: {client.buyerName || (client.buyerId ? client.buyerId : 'Без баера')}</div>
               <div className="text-sm text-muted-foreground">Пиксель: {client.pixelLabel || '—'}</div>
               <div className="text-sm text-muted-foreground">Лендинг: {client.landingName || '—'}</div>
+              <div className="text-sm text-muted-foreground">
+                Invite-ссылка:{' '}
+                {client.tgInviteLink ? (
+                  <a href={client.tgInviteLink} target="_blank" rel="noopener noreferrer" className="text-primary underline break-all">
+                    {client.tgInviteLink}
+                  </a>
+                ) : (
+                  '—'
+                )}
+              </div>
               <div className="text-sm text-muted-foreground">Кампания: {client.campaignName || client.campaignId || '—'}</div>
               <div className="text-sm text-muted-foreground">Объявление: {client.adName || client.adId || '—'}</div>
               <div className="text-sm text-muted-foreground">Группа объявлений: {client.adsetName || client.adsetId || '—'}</div>

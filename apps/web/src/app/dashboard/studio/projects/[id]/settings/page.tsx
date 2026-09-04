@@ -106,8 +106,8 @@ export default function StudioProjectSettingsPage() {
         {tab === 'personal' && isTelegram && project.channel && <PersonalAccountConnect channelId={project.channel.id} />}
         {tab === 'pixels' && <PixelsTab projectId={id} pixels={project.pixels} linkParamMap={project.linkParamMap} />}
         {tab === 'pixel-logs' && <PixelLogsTab projectId={id} pixels={project.pixels} />}
-        {tab === 'events' && <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} />}
-        {tab === 'integration' && <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} />}
+        {tab === 'events' && <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} channelType={project.channel?.type} />}
+        {tab === 'integration' && <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} channelType={project.channel?.type} />}
         {tab === 'operators' && canManageOperators && <OperatorsTab projectId={id} />}
         {tab === 'danger' && <DangerTab projectId={id} onArchived={() => router.push('/')} />}
       </div>

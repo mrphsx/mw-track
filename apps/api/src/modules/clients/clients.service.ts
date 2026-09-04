@@ -23,6 +23,9 @@ export interface FindOrCreateClientInput {
   // Client.abTestGroupId в schema.prisma, тот же принцип "первое известное значение
   // побеждает", что и у landingId.
   abTestGroupId?: string;
+  // Реальная invite-ссылка заявки на вступление (запрос пользователя 2026-08-31) — см.
+  // Client.tgInviteLink в schema.prisma.
+  tgInviteLink?: string;
   channelType: ChannelType;
   tgUserId?: string;
   tgUsername?: string;
@@ -35,6 +38,9 @@ export interface FindOrCreateClientInput {
   waName?: string;
   igUserId?: string;
   igUsername?: string;
+  // Анонимный визитор чистого веб-сайта (ChannelType.WEBSITE, запрос пользователя 2026-09-03) —
+  // см. Client.visitorId в schema.prisma. 4-я и последняя ветка приоритета в buildIdentityWhere.
+  visitorId?: string;
   email?: string;
   phone?: string;
   ipAddress?: string;
@@ -133,6 +139,7 @@ export class ClientsService {
           countryCode: existing.countryCode ?? data.countryCode,
           landingId: existing.landingId ?? data.landingId,
           abTestGroupId: existing.abTestGroupId ?? data.abTestGroupId,
+          tgInviteLink: existing.tgInviteLink ?? data.tgInviteLink,
           pixelId: existing.pixelId ?? data.pixelId,
           adId: existing.adId ?? data.adId,
           adName: existing.adName ?? data.adName,
@@ -144,6 +151,7 @@ export class ClientsService {
           siteSourceName: existing.siteSourceName ?? data.siteSourceName,
           buyerId: existing.buyerId ?? data.buyerId,
           externalSubscribedAt: existing.externalSubscribedAt ?? data.externalSubscribedAt,
+          visitorId: existing.visitorId ?? data.visitorId,
         },
       });
     }
@@ -166,6 +174,7 @@ export class ClientsService {
         projectId: data.projectId,
         landingId: data.landingId,
         abTestGroupId: data.abTestGroupId,
+        tgInviteLink: data.tgInviteLink,
         channelType: data.channelType,
         tgUserId: data.tgUserId,
         tgUsername: data.tgUsername,
@@ -178,6 +187,7 @@ export class ClientsService {
         waName: data.waName,
         igUserId: data.igUserId,
         igUsername: data.igUsername,
+        visitorId: data.visitorId,
         email: data.email,
         phone: data.phone,
         ipAddress: data.ipAddress,
@@ -962,11 +972,15 @@ export class ClientsService {
   // фильтровал deletedAt: null — расхождение между двумя путями поиска и было причиной.
   private buildIdentityWhere(
     projectId: string,
-    data: Pick<FindOrCreateClientInput, 'tgUserId' | 'waPhone' | 'igUserId'>,
+    data: Pick<FindOrCreateClientInput, 'tgUserId' | 'waPhone' | 'igUserId' | 'visitorId'>,
   ) {
     if (data.tgUserId) return { projectId, tgUserId: data.tgUserId, deletedAt: null };
     if (data.waPhone) return { projectId, waPhone: data.waPhone, deletedAt: null };
     if (data.igUserId) return { projectId, igUserId: data.igUserId, deletedAt: null };
-    throw new Error('findOrCreate requires at least one channel identity (tgUserId/waPhone/igUserId)');
+    // visitorId — последняя по приоритету (ChannelType.WEBSITE, запрос пользователя 2026-09-03):
+    // все существующие вызывающие (Telegram/WhatsApp/Instagram провайдеры) всегда передают одно
+    // из полей выше, поэтому эта ветка для них никогда не проверяется.
+    if (data.visitorId) return { projectId, visitorId: data.visitorId, deletedAt: null };
+    throw new Error('findOrCreate requires at least one channel identity (tgUserId/waPhone/igUserId/visitorId)');
   }
 }

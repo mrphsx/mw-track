@@ -26,7 +26,7 @@ const PLAN_LABELS: Record<string, string> = {
 interface ProjectSummary {
   id: string;
   name: string;
-  channel: { isActive: boolean; tgPersonalLastError: string | null } | null;
+  channel: { type: string; isActive: boolean; tgPersonalLastError: string | null } | null;
 }
 
 // Шелл дизайна "Studio" — единственный оставшийся вариант нового дизайна и, с 2026-07-30,
@@ -37,8 +37,9 @@ interface ProjectSummary {
 // палитре (см. studio-sidebar.tsx).
 //
 // Переключатель дизайнов в шапке (DesignModeToggle) убран тем же днём ("из хэдера убери уже
-// переключатель дизайнов") — теперь смена дизайна означает переход на другой домен, ссылка на
-// него осталась только в сайдбаре (StudioSidebar, "Старый дизайн").
+// переключатель дизайнов"), а сама ссылка на классику (была в сайдбаре, StudioSidebar,
+// "Старый дизайн") убрана позже, 2026-08-31, по прямому запросу пользователя — old.mw-track.com
+// остаётся живым доменом (код/данные не тронуты), просто без единой ссылки на него из UI.
 //
 // Правки раунда 2026-07-29 ("перенеси смену темы наверх и сделай как свитч", "добавь красиво
 // баланс так же сверху, иконку оповещений и подписку тоже"):
@@ -86,9 +87,11 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
     : null;
   const expiringSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= 7;
 
+  // "Бот" неверно для WEBSITE (у сайта нет бота вообще, запрос пользователя 2026-09-03: "Но это
+  // же не бот, сделай правильую надпись") — родовое "Канал" подходит любому типу.
   const notifications: string[] = [
     ...(expiringSoon ? [`Подписка истекает через ${daysLeft} дн.`] : []),
-    ...inactiveProjects.map((p) => `Бот проекта «${p.name}» отключён`),
+    ...inactiveProjects.map((p) => `${p.channel?.type === 'WEBSITE' ? 'Канал' : 'Бот'} проекта «${p.name}» отключён`),
     ...disconnectedPersonalAccounts.map((p) => `Личный аккаунт проекта «${p.name}» отключён — сессия отозвана Telegram, переподключите`),
   ];
 

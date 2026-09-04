@@ -39,6 +39,10 @@ interface NavItem {
   icon: LucideIcon;
   requiredPermission?: Permission;
   ownerAdminOnly?: boolean;
+  // Строже, чем ownerAdminOnly (запрос пользователя 2026-08-29: "должен видеть только owner,
+  // даже для админа выключи") — журнал реквизитов не должен быть виден даже Admin/Super Admin/
+  // Operator-admin, не только Buyer/Operator.
+  ownerOnly?: boolean;
 }
 import {
   DropdownMenu,
@@ -92,6 +96,10 @@ const navItems: NavItem[] = [
   { href: '/audience', label: 'Пересечение аудиторий', icon: Layers },
   { href: '/domains', label: 'Домены', icon: Globe, requiredPermission: 'DOMAINS_VIEW' as const },
   { href: '/team', label: 'Команда', icon: Users, ownerAdminOnly: true },
+  // Журнал реквизитов (запрос пользователя 2026-08-29: "как попасть на саму страницу... где
+  // список проектов" — раньше единственный вход был через кнопку конкретного проекта с уже
+  // выбранным projectId, без прямого пути на сам список).
+  { href: '/payment-details-log', label: 'Журнал реквизитов', icon: Contact, ownerOnly: true },
   { href: '/billing', label: 'Подписка', icon: CreditCard },
   { href: '/docs', label: 'Документация', icon: BookOpen },
   { href: '/settings', label: 'Настройки', icon: Settings },
@@ -168,6 +176,7 @@ export function Sidebar() {
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto overflow-x-hidden">
         {items
           .filter((item) => !item.ownerAdminOnly || isOwnerOrAdmin)
+          .filter((item) => !item.ownerOnly || user?.role === 'OWNER')
           .filter(
             // Нет конкретного projectId в контексте сайдбара — "есть ли право хотя бы на
             // одном доступном проекте" (запрос пользователя 2026-07-28, per-project редизайн).

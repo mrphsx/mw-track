@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  AlertTriangle,
   Users,
   TrendingUp,
   DollarSign,
@@ -25,6 +26,8 @@ import {
   RefreshCw,
   Timer,
   Contact,
+  Globe,
+  Link2,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
@@ -32,6 +35,7 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { CHANNEL_TYPE_LABEL, ChannelType } from '@/components/channel-fields-editor';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { StatsCard, DualStatsCard } from '@/components/shared/stats-card';
 import { PeriodSelector, PeriodValue } from '@/components/shared/period-selector';
@@ -41,6 +45,7 @@ import { ClientsTable, ClientRow, formatSecondsDuration } from '@/components/cli
 import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
+import { GetWebsiteLinkDialog } from '@/components/get-website-link-dialog';
 
 interface Project {
   id: string;
@@ -54,6 +59,11 @@ interface Project {
     tgPersonalConnected: boolean;
     // Запрос пользователя 2026-08-05 — см. полный комментарий в apps/web/src/app/(dashboard)/projects/page.tsx.
     webhookStale?: boolean;
+    // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — причина неактивности
+    // (WebsiteProvider.initialize: "Укажите ссылку на сайт" / "Скрипт не найден..."), нужна как
+    // есть для баннера ниже, без повторной классификации на фронте.
+    lastError?: string | null;
+    websiteUrl?: string | null;
   } | null;
   disabledTrackingEvents: string[];
 }
@@ -436,6 +446,7 @@ export default function ProjectOverviewPage() {
   // параметрами, только без фильтров" — переиспользуем ClientsTable/ClientDetailDrawer 1:1,
   // тот же компонент, что и на /projects/[id]/clients, а не свой урезанный рендер.
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [showWebsiteLink, setShowWebsiteLink] = useState(false);
 
   const periodLabel = PERIOD_LABELS[periodValue.period];
   // Графики по дням не показываем для однодневного периода (запрос пользователя 2026-07-29) —
@@ -552,7 +563,7 @@ export default function ProjectOverviewPage() {
           {project.channel && (
             <div className="flex gap-1.5">
               <Badge variant={project.channel.isActive ? 'outline' : 'destructive'} className="text-xs">
-                {project.channel.type}
+                {CHANNEL_TYPE_LABEL[project.channel.type as ChannelType] ?? project.channel.type}
               </Badge>
               {/* "Молчащий" вебхук (запрос пользователя 2026-08-05, после реального ~20-часового
                   инцидента — Telegram молча перестал слать вебхуки боту, узнали постфактум по
@@ -572,14 +583,21 @@ export default function ProjectOverviewPage() {
               рассылок (pushes) целиком, в отличие от соседних кнопок "Лендинги"/"Сценарии" (обе
               ведут на список, создание — отдельной кнопкой уже на самой странице списка). Список
               рассылок уже существовал и работал, просто до него не было пути из интерфейса. */}
-          <Button
-            nativeButton={false}
-            render={
-              <Link href={`/projects/${id}/pushes`}>
-                <Send className="w-4 h-4 mr-1.5" /> Рассылка
-              </Link>
-            }
-          />
+          {/* Рассылка идёт через бота (ChannelsService.sendMessage -> getChannelUserId), у
+              WEBSITE-клиентов нет ни tgUserId, ни какого-либо другого "адреса доставки" — каждый
+              получатель гарантированно провалится (запрос пользователя 2026-09-03: "не понимаю
+              как работает рассылка на таких проектах... если это все таки не нужные функционалы
+              убери"). */}
+          {project.channel?.type !== 'WEBSITE' && (
+            <Button
+              nativeButton={false}
+              render={
+                <Link href={`/projects/${id}/pushes`}>
+                  <Send className="w-4 h-4 mr-1.5" /> Рассылка
+                </Link>
+              }
+            />
+          )}
           {/* Рассылка с личного MTProto-аккаунта (запрос пользователя 2026-08-06) — отдельная от
               обычной "Рассылка" (та идёт через бота), нет company-wide/мульти-проектного смысла
               как у Push (у каждого проекта свой личный аккаунт-персона), поэтому это кнопка на
@@ -596,6 +614,30 @@ export default function ProjectOverviewPage() {
               }
             />
           )}
+          {/* Журнал реквизитов (запрос пользователя 2026-08-27, сужено 2026-08-29: "должен
+              видеть только owner, даже для админа выключи") — жёсткая проверка роли, не
+              Permission: сам объект контроля (оператор) не должен получить сюда доступ ни при
+              каких обстоятельствах. Только OWNER, явно исключая даже Admin/Super Admin. */}
+          {project.channel?.tgPersonalConnected && user?.role === 'OWNER' && (
+            <Button
+              variant="outline"
+              nativeButton={false}
+              render={
+                <Link href={`/payment-details-log?projectId=${id}`}>
+                  <Contact className="w-4 h-4 mr-1.5" /> Журнал реквизитов
+                </Link>
+              }
+            />
+          )}
+          {/* Ссылка для рекламного кабинета без промежуточного лендинга (запрос пользователя
+              2026-09-03: "сайт уже на домене стоит и его можно пускать без промежуточных
+              лэндингов") — видна только когда сайт реально подключён и проверен (isActive),
+              иначе ссылка вела бы на непроверенный/несуществующий адрес. */}
+          {project.channel?.type === 'WEBSITE' && project.channel.isActive && (
+            <Button variant="outline" onClick={() => setShowWebsiteLink(true)}>
+              <Link2 className="w-4 h-4 mr-1.5" /> Получить ссылку
+            </Button>
+          )}
           <Button
             variant="outline"
             nativeButton={false}
@@ -605,15 +647,21 @@ export default function ProjectOverviewPage() {
               </Link>
             }
           />
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={
-              <Link href={`/projects/${id}/scenarios`}>
-                <Workflow className="w-4 h-4 mr-1.5" /> Сценарии
-              </Link>
-            }
-          />
+          {/* Сценарии сейчас в принципе не могут сработать без бота — TriggerScenario/
+              SEND_MESSAGE жёстко завязаны на TelegramProvider (запрос пользователя 2026-09-03:
+              "как работают на проектах типа website сценарии? я вижу они там есть но не понимаю
+              как использовать"). */}
+          {project.channel?.type !== 'WEBSITE' && (
+            <Button
+              variant="outline"
+              nativeButton={false}
+              render={
+                <Link href={`/projects/${id}/scenarios`}>
+                  <Workflow className="w-4 h-4 mr-1.5" /> Сценарии
+                </Link>
+              }
+            />
+          )}
           <Button
             variant="outline"
             nativeButton={false}
@@ -625,6 +673,30 @@ export default function ProjectOverviewPage() {
           />
         </div>
       </div>
+
+      {/* Баннер "сайт не подключён/не проверен" (запрос пользователя 2026-09-03: "многие даже
+          не понимают что это подключено") — тот же принцип, что и Studio-версия страницы:
+          показывается только пока реально есть проблема, lastError уже несёт точную причину. */}
+      {project.channel?.type === 'WEBSITE' && !project.channel.isActive && (
+        <div className="rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-950/30 p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">Сайт не подключён</p>
+            <p className="text-sm text-amber-800/90 dark:text-amber-300/80 mt-0.5">
+              {project.channel.lastError || 'Пока сайт не подключён и не проверен, покупки и переходы с рекламы не будут учитываться в статистике проекта.'}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            nativeButton={false}
+            render={
+              <Link href={`/projects/${id}/settings?tab=integration`}>
+                <Globe className="w-4 h-4 mr-1.5" /> Подключить сайт
+              </Link>
+            }
+          />
+        </div>
+      )}
 
       {/* Индикатор вкл/выкл пересылки событий в Facebook/TikTok по типу (запрос пользователя
           2026-07-27) — сами свитчи находятся в /settings, вкладка "События", здесь только
@@ -1027,6 +1099,10 @@ export default function ProjectOverviewPage() {
       </Card>
 
       <ClientDetailDrawer projectId={id} clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
+      <GetWebsiteLinkDialog
+        project={showWebsiteLink ? { id, name: project.name } : null}
+        onClose={() => setShowWebsiteLink(false)}
+      />
     </div>
   );
 }

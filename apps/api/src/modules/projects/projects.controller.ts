@@ -12,6 +12,7 @@ import { resolveScopedBuyerId } from '../../common/buyer-scope.util';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
 import { LeaderboardFunnelQueryDto } from './dto/leaderboard-funnel-query.dto';
+import { PaymentDetailsLogFiltersDto } from './dto/payment-details-log-filters.dto';
 import { ProjectsService } from './projects.service';
 
 @Controller('projects')
@@ -33,6 +34,14 @@ export class ProjectsController {
   @Get('company-stats')
   getCompanyStats(@Company() companyId: string, @CurrentUser() user: AuthUser, @Query() periodQuery: StatsPeriodDto) {
     return this.projectsService.getCompanyStats(companyId, user.userId, user.role, periodQuery);
+  }
+
+  // Сводка для страницы-пикера журнала реквизитов (запрос пользователя 2026-08-29: "надпись
+  // количества записей за сегодня конкретно и сколько времени назад был последний") — литеральный
+  // путь до 'GET :id', та же причина, что у company-stats выше.
+  @Get('payment-details-log-summary')
+  getPaymentDetailsLogSummary(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.projectsService.getPaymentDetailsLogSummary(companyId, user.role);
   }
 
   @Post()
@@ -280,5 +289,21 @@ export class ProjectsController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.projectsService.removeOperatorFromProject(id, companyId, user.userId, user.role, userId);
+  }
+
+  // Журнал реквизитов (запрос пользователя 2026-08-27, сужено 2026-08-29: "должен видеть только
+  // owner, даже для админа выключи") — НЕ через @Roles(): OWNER и ADMIN в этом файле — один и
+  // тот же ранг (см. roleHierarchy в RolesGuard, оба уровня 4), так что декоратор в принципе не
+  // может различить "только Owner, не Admin" — это тот самый случай из CLAUDE.md ("новая роль
+  // на одном ранге с существующей — не редактировать список декоратора, а сделать явную проверку
+  // в сервисе"). Явная проверка role === OWNER внутри getPaymentDetailsLog ниже.
+  @Get(':id/payment-details-log')
+  async getPaymentDetailsLog(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() filters: PaymentDetailsLogFiltersDto,
+  ) {
+    return this.projectsService.getPaymentDetailsLog(id, companyId, user.role, filters);
   }
 }

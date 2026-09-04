@@ -111,7 +111,7 @@ export class DomainsService {
 
   async findAll(companyId: string): Promise<(DomainWithInstructions & { paths: DomainPathWithLanding[] })[]> {
     const domains = await this.prisma.domain.findMany({
-      where: { companyId },
+      where: { companyId, deletedAt: null },
       include: { paths: { orderBy: { path: 'asc' }, include: PATH_WITH_LANDING_INCLUDE } },
       orderBy: { createdAt: 'desc' },
     });
@@ -119,13 +119,13 @@ export class DomainsService {
   }
 
   async findOne(id: string, companyId: string): Promise<DomainWithInstructions> {
-    const domain = await this.prisma.domain.findFirst({ where: { id, companyId } });
+    const domain = await this.prisma.domain.findFirst({ where: { id, companyId, deletedAt: null } });
     if (!domain) throw new NotFoundException('Домен не найден');
     return this.withInstructions(domain);
   }
 
   private async findOneRaw(id: string, companyId: string): Promise<Domain> {
-    const domain = await this.prisma.domain.findFirst({ where: { id, companyId } });
+    const domain = await this.prisma.domain.findFirst({ where: { id, companyId, deletedAt: null } });
     if (!domain) throw new NotFoundException('Домен не найден');
     return domain;
   }
@@ -146,8 +146,11 @@ export class DomainsService {
     await this.getProjectsService().assertAccess(group.projectId, companyId, userId, role);
   }
 
-  // Без deletedAt-колонки на Domain (как и у Channel, см. CLAUDE.md) — домен глобально
-  // уникален по hostname, soft-delete заблокировал бы повторное добавление того же домена.
+  // Soft delete (запрос пользователя 2026-09-02, заменяет прежний hard delete — см. CLAUDE.md,
+  // формулировка там теперь устарела): строка остаётся в БД для истории/аудита, nginx server
+  // block/webhook всё равно снимается, так что домен реально перестаёт что-либо отдавать.
+  // Уникальность hostname теперь частичный индекс WHERE deletedAt IS NULL (миграция
+  // 20260902222554_domain_soft_delete), поэтому тот же хост можно добавить заново.
   async remove(id: string, companyId: string): Promise<void> {
     const domain = await this.findOneRaw(id, companyId);
     try {
@@ -155,7 +158,7 @@ export class DomainsService {
     } catch (error) {
       this.logger.warn(`removeServerBlock failed for ${domain.domain}: ${(error as Error).message}`);
     }
-    await this.prisma.domain.delete({ where: { id } });
+    await this.prisma.domain.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
   async listPaths(domainId: string, companyId: string): Promise<DomainPathWithLanding[]> {

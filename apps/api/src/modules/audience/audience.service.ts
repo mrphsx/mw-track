@@ -3,6 +3,8 @@ import { ModuleRef } from '@nestjs/core';
 import { Client, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
+import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
+import { resolveStatsPeriod } from '../../common/timezone.util';
 
 interface OverlapPair {
   projectAId: string;
@@ -33,6 +35,21 @@ export interface OverlapDetailPage {
   page: number;
   limit: number;
   totalPages: number;
+}
+
+// Сводка по конкретной паре проектов (запрос пользователя 2026-08-31, отдельная страница
+// пересечения — "сколько уникальных и дубликатов"): "дубликаты" — пересечение (реально один и
+// тот же человек, посчитанный в обоих проектах), "уникальные" — оставшаяся часть каждой стороны,
+// которая нигде больше не встречается. Проценты считаются от каждой стороны отдельно (та же
+// асимметрия, что и в матрице — см. getOverlapMatrix).
+export interface OverlapPairSummary {
+  projectA: { id: string; name: string; total: number };
+  projectB: { id: string; name: string; total: number };
+  intersection: number;
+  uniqueA: number;
+  uniqueB: number;
+  percentA: number;
+  percentB: number;
 }
 
 const ELEVATED_ROLES: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN];
@@ -67,11 +84,39 @@ export class AudienceService {
     return projects.map((p) => p.id);
   }
 
+  // Период фильтрует по Client.subscribedAt (запрос пользователя 2026-08-31: "добавь период как
+  // на странице проекта") — резолвится в UTC, не в зоне какого-то одного проекта: пересечение по
+  // определению охватывает НЕСКОЛЬКО проектов сразу, каждый со своим часовым поясом, тот же
+  // приём и та же осознанная приблизительность, что уже применяется в ProjectsService.
+  // getCompanyStats (тоже company-wide, тоже без единой "своей" зоны). period.period не задан
+  // вообще (не просто пустая строка) — значит фильтра нет совсем, вся история разом (обратная
+  // совместимость + так же ведёт себя API до этой фичи).
+  private async resolvePeriodWindow(period?: StatsPeriodDto): Promise<{ since: Date; until: Date } | null> {
+    if (!period?.period) return null;
+    return resolveStatsPeriod(this.prisma, 'UTC', period);
+  }
+
   // Пересечение только по tgUserId (Telegram) — осознанно, запрос пользователя 2026-07-04
   // ограничен формулировкой "если это телеграм". WhatsApp/Instagram own-identity поля
   // (waPhone/igUserId) не участвуют, можно расширить позже по фидбэку.
-  async getOverlapMatrix(companyId: string, userId: string, role: UserRole): Promise<OverlapMatrix> {
-    const accessible = await this.getAccessibleProjectIds(companyId, userId, role);
+  async getOverlapMatrix(companyId: string, userId: string, role: UserRole, period?: StatsPeriodDto): Promise<OverlapMatrix> {
+    const accessibleAll = await this.getAccessibleProjectIds(companyId, userId, role);
+    if (accessibleAll.length === 0) return { projects: [], totals: {}, pairs: [] };
+
+    // WEBSITE-проекты исключены (запрос пользователя 2026-09-03: "в пересечениях аудитории я
+    // тоже не знаю как ты отследишь клиентов, там особо данных клиента нет с таких проектов") —
+    // пересечение считается строго по tgUserId (см. комментарий выше), а у WEBSITE-клиентов его
+    // никогда не бывает (только visitorId) — такой проект физически не может пересечься ни с
+    // одним другим, показывать его строкой/столбцом с гарантированным нулём было бы просто шумом.
+    const websiteProjectIds = new Set(
+      (
+        await this.prisma.project.findMany({
+          where: { id: { in: accessibleAll }, channel: { type: 'WEBSITE' } },
+          select: { id: true },
+        })
+      ).map((p) => p.id),
+    );
+    const accessible = accessibleAll.filter((id) => !websiteProjectIds.has(id));
     if (accessible.length === 0) return { projects: [], totals: {}, pairs: [] };
 
     const projects = await this.prisma.project.findMany({
@@ -80,9 +125,23 @@ export class AudienceService {
       orderBy: { name: 'asc' },
     });
 
+    const window = await this.resolvePeriodWindow(period);
+
+    // subscribedAt: {not: null} — "наш" клиент, реально прошедший через воронку (OURS_ONLY,
+    // тот же признак, что и в clients.repository.ts), а не просто написавший боту/личному
+    // аккаунту мимо CRM-воронки (запрос пользователя 2026-08-31: "всегда показывай только
+    // наших" — раньше этого фильтра здесь не было вообще, пересечение считало вообще всех
+    // Client с непустым tgUserId, включая внешних). window заменяет not:null на конкретный
+    // диапазон дат — диапазон сам по себе уже исключает null.
     const totalsRaw = await this.prisma.client.groupBy({
       by: ['projectId'],
-      where: { companyId, deletedAt: null, tgUserId: { not: null }, projectId: { in: accessible } },
+      where: {
+        companyId,
+        deletedAt: null,
+        tgUserId: { not: null },
+        subscribedAt: window ? { gte: window.since, lt: window.until } : { not: null },
+        projectId: { in: accessible },
+      },
       _count: { _all: true },
     });
     const totals = Object.fromEntries(totalsRaw.map((t) => [t.projectId, t._count._all]));
@@ -93,6 +152,9 @@ export class AudienceService {
     // Prisma.join — правильный способ подставить динамический список id в IN(...): просто
     // ${accessible.join(',')} параметризовался бы как ОДНА строка, а не список значений.
     const idList = Prisma.join(accessible);
+    const periodSql = window
+      ? Prisma.sql`AND c1."subscribedAt" >= ${window.since} AND c1."subscribedAt" < ${window.until} AND c2."subscribedAt" >= ${window.since} AND c2."subscribedAt" < ${window.until}`
+      : Prisma.sql`AND c1."subscribedAt" IS NOT NULL AND c2."subscribedAt" IS NOT NULL`;
     const pairsRaw = await this.prisma.$queryRaw<{ projectAId: string; projectBId: string; count: bigint }[]>`
       SELECT c1."projectId" AS "projectAId", c2."projectId" AS "projectBId",
              COUNT(DISTINCT c1."tgUserId") AS count
@@ -101,6 +163,7 @@ export class AudienceService {
       WHERE c1."companyId" = ${companyId} AND c2."companyId" = ${companyId}
         AND c1."deletedAt" IS NULL AND c2."deletedAt" IS NULL
         AND c1."tgUserId" IS NOT NULL
+        ${periodSql}
         AND c1."projectId" IN (${idList})
         AND c2."projectId" IN (${idList})
       GROUP BY c1."projectId", c2."projectId"
@@ -134,16 +197,23 @@ export class AudienceService {
     page: number,
     limit: number,
     search?: string,
+    period?: StatsPeriodDto,
   ): Promise<OverlapDetailPage> {
     const projectsService = this.getProjectsService();
     await projectsService.assertAccess(projectAId, companyId, userId, role);
     await projectsService.assertAccess(projectBId, companyId, userId, role);
+
+    const window = await this.resolvePeriodWindow(period);
+    const periodSql = window
+      ? Prisma.sql`AND c1."subscribedAt" >= ${window.since} AND c1."subscribedAt" < ${window.until} AND c2."subscribedAt" >= ${window.since} AND c2."subscribedAt" < ${window.until}`
+      : Prisma.sql`AND c1."subscribedAt" IS NOT NULL AND c2."subscribedAt" IS NOT NULL`;
 
     const sharedWhere = Prisma.sql`
       c1."projectId" = ${projectAId} AND c2."projectId" = ${projectBId}
       AND c1."companyId" = ${companyId} AND c2."companyId" = ${companyId}
       AND c1."deletedAt" IS NULL AND c2."deletedAt" IS NULL
       AND c1."tgUserId" IS NOT NULL
+      ${periodSql}
       ${
         search
           ? Prisma.sql`AND (
@@ -188,5 +258,63 @@ export class AudienceService {
       .map((id) => ({ tgUserId: id, clientA: byIdA.get(id)!, clientB: byIdB.get(id)! }));
 
     return { items, total, page, limit, totalPages };
+  }
+
+  // Сводка для отдельной страницы пары проектов (запрос пользователя 2026-08-31: "сколько
+  // уникальных и дубликатов") — 3 счётчика (totalA/totalB/intersection), уникальные считаются
+  // вычитанием (uniqueA = totalA - intersection), не отдельным запросом — пересечение уже
+  // однозначно определяет, сколько из totalA пересекается, остаток и есть уникальные для A.
+  async getOverlapPairSummary(
+    companyId: string,
+    userId: string,
+    role: UserRole,
+    projectAId: string,
+    projectBId: string,
+    period?: StatsPeriodDto,
+  ): Promise<OverlapPairSummary> {
+    const projectsService = this.getProjectsService();
+    await projectsService.assertAccess(projectAId, companyId, userId, role);
+    await projectsService.assertAccess(projectBId, companyId, userId, role);
+
+    const [projectA, projectB] = await Promise.all([
+      this.prisma.project.findUniqueOrThrow({ where: { id: projectAId }, select: { id: true, name: true } }),
+      this.prisma.project.findUniqueOrThrow({ where: { id: projectBId }, select: { id: true, name: true } }),
+    ]);
+
+    const window = await this.resolvePeriodWindow(period);
+    const subscribedFilter = window ? { gte: window.since, lt: window.until } : { not: null };
+    const periodSql = window
+      ? Prisma.sql`AND c1."subscribedAt" >= ${window.since} AND c1."subscribedAt" < ${window.until} AND c2."subscribedAt" >= ${window.since} AND c2."subscribedAt" < ${window.until}`
+      : Prisma.sql`AND c1."subscribedAt" IS NOT NULL AND c2."subscribedAt" IS NOT NULL`;
+
+    const [totalA, totalB, intersectionRows] = await Promise.all([
+      this.prisma.client.count({
+        where: { projectId: projectAId, companyId, deletedAt: null, tgUserId: { not: null }, subscribedAt: subscribedFilter },
+      }),
+      this.prisma.client.count({
+        where: { projectId: projectBId, companyId, deletedAt: null, tgUserId: { not: null }, subscribedAt: subscribedFilter },
+      }),
+      this.prisma.$queryRaw<{ count: bigint }[]>`
+        SELECT COUNT(DISTINCT c1."tgUserId")::bigint as count
+        FROM "Client" c1
+        JOIN "Client" c2 ON c1."tgUserId" = c2."tgUserId"
+        WHERE c1."projectId" = ${projectAId} AND c2."projectId" = ${projectBId}
+          AND c1."companyId" = ${companyId} AND c2."companyId" = ${companyId}
+          AND c1."deletedAt" IS NULL AND c2."deletedAt" IS NULL
+          AND c1."tgUserId" IS NOT NULL
+          ${periodSql}
+      `,
+    ]);
+    const intersection = Number(intersectionRows[0].count);
+
+    return {
+      projectA: { ...projectA, total: totalA },
+      projectB: { ...projectB, total: totalB },
+      intersection,
+      uniqueA: totalA - intersection,
+      uniqueB: totalB - intersection,
+      percentA: totalA > 0 ? Math.round((intersection / totalA) * 100) : 0,
+      percentB: totalB > 0 ? Math.round((intersection / totalB) * 100) : 0,
+    };
   }
 }

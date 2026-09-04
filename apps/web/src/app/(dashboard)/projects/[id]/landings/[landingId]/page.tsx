@@ -42,12 +42,24 @@ interface ClientsResponse {
   total: number;
 }
 
+interface TiktokHintTexts {
+  title?: string;
+  subtitle?: string;
+  iosSteps?: string;
+  androidSteps?: string;
+  openButtonText?: string;
+  copyButtonText?: string;
+  copiedText?: string;
+}
+
 interface LandingFull {
   id: string;
   autoRedirect: boolean;
   cloakingEnabled: boolean;
   cloakingCountries: string[];
   cloakingRedirectUrl: string | null;
+  tiktokBrowserHint: boolean;
+  tiktokHintTexts: TiktokHintTexts | null;
 }
 
 // Опции лендинга (запрос пользователя 2026-07-03): авторедирект в Telegram без клика по
@@ -67,11 +79,20 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
 
   useEffect(() => {
     if (!landing) return;
+    const hintTexts = landing.tiktokHintTexts || {};
     setState({
       autoRedirect: landing.autoRedirect,
       cloakingEnabled: landing.cloakingEnabled,
       countriesText: landing.cloakingCountries.join(', '),
       redirectUrl: landing.cloakingRedirectUrl || '',
+      tiktokBrowserHint: landing.tiktokBrowserHint,
+      tiktokHintTitle: hintTexts.title || '',
+      tiktokHintSubtitle: hintTexts.subtitle || '',
+      tiktokHintIosSteps: hintTexts.iosSteps || '',
+      tiktokHintAndroidSteps: hintTexts.androidSteps || '',
+      tiktokHintOpenButtonText: hintTexts.openButtonText || '',
+      tiktokHintCopyButtonText: hintTexts.copyButtonText || '',
+      tiktokHintCopiedText: hintTexts.copiedText || '',
     });
   }, [landing]);
 

@@ -92,6 +92,7 @@ export default function StudioDomainsPage() {
   const [newDomain, setNewDomain] = useState('');
   const [error, setError] = useState('');
   const [pathsDomainId, setPathsDomainId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const { data: domains, isLoading } = useQuery({
     queryKey: ['domains'],
@@ -116,10 +117,14 @@ export default function StudioDomainsPage() {
 
   const removeDomain = useMutation({
     mutationFn: (id: string) => api.delete(`/domains/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['domains'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
+      setDeleteConfirmId(null);
+    },
   });
 
   const pathsDomain = domains?.find((d) => d.id === pathsDomainId) || null;
+  const deleteConfirmDomain = domains?.find((d) => d.id === deleteConfirmId) || null;
 
   return (
     <div className="space-y-6">
@@ -215,7 +220,7 @@ export default function StudioDomainsPage() {
                           Пути
                         </StudioLinkButton>
                         {hasAnyPermission(user, 'DOMAINS_DELETE') && (
-                          <button type="button" onClick={() => removeDomain.mutate(d.id)} className="text-[#5F6B7A] dark:text-[#92A0AF] hover:text-red-600 dark:hover:text-red-400">
+                          <button type="button" onClick={() => setDeleteConfirmId(d.id)} className="text-[#5F6B7A] dark:text-[#92A0AF] hover:text-red-600 dark:hover:text-red-400">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         )}
@@ -234,6 +239,12 @@ export default function StudioDomainsPage() {
                           <p className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">
                             Запись на www обязательна — сертификат всегда выпускается сразу на домен и на www.
                             домен вместе.
+                          </p>
+                          <p className="text-sm bg-yellow-100 text-yellow-900 border border-yellow-300 rounded-md px-2.5 py-2 dark:bg-yellow-200/10 dark:text-yellow-300 dark:border-yellow-300/30">
+                            Если домен проксируется через Cloudflare (оранжевое облако), обязательно
+                            поставьте в Cloudflare SSL/TLS режим <strong>Full (strict)</strong>, а не
+                            Flexible — иначе при срабатывании клоакинга или обычном HTTP→HTTPS редиректе
+                            браузер получит <code className="text-xs">ERR_TOO_MANY_REDIRECTS</code>.
                           </p>
                         </div>
                       </td>
@@ -256,10 +267,42 @@ export default function StudioDomainsPage() {
               <Label htmlFor="new-domain">Домен</Label>
               <Input id="new-domain" value={newDomain} onChange={(e) => setNewDomain(e.target.value)} placeholder="example.com" />
             </div>
+            <p className="text-sm bg-yellow-100 text-yellow-900 border border-yellow-300 rounded-md px-2.5 py-2 dark:bg-yellow-200/10 dark:text-yellow-300 dark:border-yellow-300/30">
+              Если домен проксируется через Cloudflare (оранжевое облако), обязательно поставьте в
+              Cloudflare SSL/TLS режим <strong>Full (strict)</strong>, а не Flexible — иначе при
+              срабатывании клоакинга или обычном HTTP→HTTPS редиректе браузер получит{' '}
+              <code className="text-xs">ERR_TOO_MANY_REDIRECTS</code>.
+            </p>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <Button onClick={() => addDomain.mutate()} disabled={!newDomain || addDomain.isPending}>
               {addDomain.isPending ? 'Добавляем...' : 'Добавить'}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteConfirmDomain} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Удалить домен?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
+              Домен{' '}
+              <span className="font-medium text-[#131A24] dark:text-[#E9EDF3]">{deleteConfirmDomain?.domain}</span>{' '}
+              перестанет работать (nginx/сертификат снимаются), но запись останется в базе — при необходимости
+              можно будет разобраться в истории. Добавить этот же домен заново после удаления можно.
+            </p>
+            <div className="flex justify-end gap-2">
+              <StudioLinkButton onClick={() => setDeleteConfirmId(null)}>Отмена</StudioLinkButton>
+              <Button
+                variant="destructive"
+                disabled={removeDomain.isPending}
+                onClick={() => deleteConfirmId && removeDomain.mutate(deleteConfirmId)}
+              >
+                {removeDomain.isPending ? 'Удаляем...' : 'Удалить'}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

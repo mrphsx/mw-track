@@ -19,6 +19,7 @@ import { AlertTriangle, Check, CheckCircle2, Copy, Eye, EyeOff, Pencil, Plus, Tr
 import { api } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { TimezoneInput } from '@/components/timezone-input';
 import { LINK_PARAM_FIELDS, LINK_PARAM_NAME_REGEX, resolveParamMap } from '@/lib/link-params';
 import { TRACKING_EVENT_TYPES } from '@/lib/tracking-events';
@@ -116,8 +117,10 @@ export function ChannelsTab({ projectId, channel }: { projectId: string; channel
       <div className={`${STUDIO_CARD} p-5`}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
-            {channel.type === 'TELEGRAM' && (
-              <ChannelAvatar channelId={channel.id} hasAvatar={!!channel.tgAvatarFileId} fallbackLetter={title || handle || channel.type} />
+            {/* TELEGRAM всегда, WEBSITE — только если фавиконка реально нашлась (запрос
+                пользователя 2026-09-03) — зеркалит классическую вкладку. */}
+            {(channel.type === 'TELEGRAM' || channel.type === 'WEBSITE') && (
+              <ChannelAvatar channelId={channel.id} hasAvatar={hasChannelAvatar(channel)} fallbackLetter={title || handle || channel.type} />
             )}
             <div className="space-y-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
@@ -145,16 +148,36 @@ export function ChannelsTab({ projectId, channel }: { projectId: string; channel
                   )}
                 </div>
               )}
+              {channel.type === 'WEBSITE' && (
+                <div className="text-sm">
+                  {channel.websiteUrl ? (
+                    <a href={channel.websiteUrl} target="_blank" rel="noopener" className={`${FG} hover:underline`}>
+                      {channel.websiteUrl}
+                    </a>
+                  ) : (
+                    <span className={MUTED}>Адрес сайта не указан</span>
+                  )}
+                </div>
+              )}
               {!channel.isActive && channel.lastError && <p className="text-xs text-red-600 dark:text-red-400 max-w-md">{channel.lastError}</p>}
+              {/* Активный канал, у которого Telegram давно ничего не присылает на вебхук (запрос
+                  пользователя 2026-09-03) — раньше кнопка "Переподключить" была видна только для
+                  channel.isActive===false, так что для этого случая (сам бот жив, но Telegram
+                  молчит) не было никакого действия в UI вообще, ни подсказки, ни кнопки. */}
+              {channel.isActive && channel.webhookStale && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 max-w-md">
+                  Нет вебхуков от Telegram — попробуйте переподключить канал
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button type="button" onClick={() => setEditing(true)} className={`${MUTED} hover:${FG}`}>
               <Pencil className="w-4 h-4" />
             </button>
-            {!channel.isActive && (
+            {(!channel.isActive || channel.webhookStale) && (
               <StudioLinkButton size="sm" onClick={() => reactivateChannel.mutate(channel.id)} disabled={reactivateChannel.isPending}>
-                Переподключить
+                {channel.type === 'WEBSITE' ? 'Проверить' : 'Переподключить'}
               </StudioLinkButton>
             )}
             {channel.isActive && (
@@ -183,6 +206,7 @@ interface ChannelFull {
   wa360Token: string | null;
   igPageId: string | null;
   igAccessToken: string | null;
+  websiteUrl: string | null;
 }
 
 function EditChannelDialog({ channelId, projectId, onClose }: { channelId: string | null; projectId: string; onClose: () => void }) {
@@ -212,6 +236,7 @@ function EditChannelDialog({ channelId, projectId, onClose }: { channelId: strin
       wa360Token: full.wa360Token || '',
       igPageId: full.igPageId || '',
       igAccessToken: full.igAccessToken || '',
+      websiteUrl: full.websiteUrl || '',
     });
   }, [full]);
 
@@ -931,7 +956,15 @@ export function PixelLogsTab({ projectId, pixels }: { projectId: string; pixels:
   );
 }
 
-export function EventsTab({ projectId, disabledTrackingEvents }: { projectId: string; disabledTrackingEvents: string[] }) {
+export function EventsTab({
+  projectId,
+  disabledTrackingEvents,
+  channelType,
+}: {
+  projectId: string;
+  disabledTrackingEvents: string[];
+  channelType?: string;
+}) {
   const queryClient = useQueryClient();
 
   const toggle = useMutation({
@@ -939,11 +972,16 @@ export function EventsTab({ projectId, disabledTrackingEvents }: { projectId: st
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
   });
 
+  // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — Subscribe/Unsubscribe/
+  // Dialogue никогда не срабатывают без мессенджера/бота, показывать переключатели для них
+  // нечего. Purchase — единственное автоматическое событие, которое реально фигурирует для сайта.
+  const eventTypes = channelType === 'WEBSITE' ? TRACKING_EVENT_TYPES.filter((et) => et.name === 'Purchase') : TRACKING_EVENT_TYPES;
+
   return (
     <div className={`${STUDIO_CARD} p-5`}>
       <h3 className={`text-base font-semibold ${FG} mb-1`}>Отправка событий в рекламные платформы</h3>
       <p className={`text-sm ${MUTED} mb-3`}>Выключенные события по-прежнему видны в CRM и в логах, но не отправляются в Facebook/TikTok.</p>
-      {TRACKING_EVENT_TYPES.map((eventType) => {
+      {eventTypes.map((eventType) => {
         const isEnabled = !disabledTrackingEvents.includes(eventType.name);
         return (
           <div key={eventType.name} className="flex items-start justify-between gap-4 py-2.5 border-b border-[#DCE1E8] dark:border-white/10 last:border-b-0">
@@ -967,7 +1005,15 @@ export function EventsTab({ projectId, disabledTrackingEvents }: { projectId: st
   );
 }
 
-export function IntegrationTab({ projectId, allowedDomains }: { projectId: string; allowedDomains: string[] }) {
+export function IntegrationTab({
+  projectId,
+  allowedDomains,
+  channelType,
+}: {
+  projectId: string;
+  allowedDomains: string[];
+  channelType?: string;
+}) {
   const queryClient = useQueryClient();
   const [showSecret, setShowSecret] = useState(false);
   const [domainsText, setDomainsText] = useState(allowedDomains.join('\n'));
@@ -1007,15 +1053,50 @@ export function IntegrationTab({ projectId, allowedDomains }: { projectId: strin
 
   return (
     <div className="space-y-4">
+      {channelType === 'WEBSITE' && (
+        <div className={`${STUDIO_CARD} p-5 space-y-2 border border-[#7BA9EE]/30`}>
+          <h3 className={`text-base font-semibold ${FG}`}>Как подключить сайт</h3>
+          <ol className={`text-sm space-y-2 list-decimal pl-4 ${MUTED}`}>
+            <li>Скопируйте код ниже (карточка «JS-сниппет»).</li>
+            <li>
+              Вставьте его в код сайта прямо перед закрывающим тегом <code>&lt;/head&gt;</code> —
+              на всех страницах, где нужна статистика.
+            </li>
+            <li>
+              Откройте вкладку «Каналы» и нажмите «Проверить» — канал станет «Активен» только
+              после того, как мы реально найдём этот код на странице.
+            </li>
+            <li>Для отправки покупок надёжнее использовать серверный способ ниже (карточка «Серверная интеграция») — он не блокируется рекламными блокировщиками браузера.</li>
+          </ol>
+        </div>
+      )}
       <div className={`${STUDIO_CARD} p-5 space-y-3`}>
         <h3 className={`text-base font-semibold ${FG}`}>Ключи доступа</h3>
         <div className="space-y-1.5">
           <Label htmlFor="public-token">Public Token</Label>
+          <p className={`text-xs ${MUTED}`}>Для браузерного скрипта (JS-сниппет ниже) — публичный, его видно в исходном коде любой страницы, это нормально.</p>
           <div className="flex gap-2">
             <Input id="public-token" readOnly value={snippet?.publicToken || ''} />
             <button
               type="button"
               onClick={() => copyToClipboard(snippet?.publicToken || '')}
+              className="shrink-0 px-3 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]"
+            >
+              <Copy className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        {/* Отдельное явное поле (запрос пользователя 2026-09-03: "для сервера и для публичного
+            скрипта стоят разные id проекта... project not found") — см. полный комментарий в
+            классическом дереве (apps/web/src/app/(dashboard)/projects/[id]/settings/tabs.tsx). */}
+        <div className="space-y-1.5">
+          <Label htmlFor="project-id">Project ID</Label>
+          <p className={`text-xs ${MUTED}`}>Для серверных вызовов (примеры кода ниже) — вместе с Secret Key. Это ДРУГОЙ id, не Public Token выше — не путайте их местами.</p>
+          <div className="flex gap-2">
+            <Input id="project-id" readOnly value={project?.id || ''} />
+            <button
+              type="button"
+              onClick={() => copyToClipboard(project?.id || '')}
               className="shrink-0 px-3 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]"
             >
               <Copy className="w-4 h-4" />
@@ -1068,9 +1149,15 @@ export function IntegrationTab({ projectId, allowedDomains }: { projectId: strin
 
       <div className={`${STUDIO_CARD} p-5 space-y-3`}>
         <h3 className={`text-base font-semibold ${FG}`}>Серверная интеграция</h3>
+        {channelType === 'WEBSITE' && (
+          <p className={`text-sm ${MUTED}`}>
+            Рекомендуем отправлять «Покупку» именно так, с вашего бэкенда после подтверждения
+            оплаты — надёжнее, чем из браузера, и не зависит от блокировщиков рекламы.
+          </p>
+        )}
         <Tabs defaultValue="node">
           <TabsList>
-            <TabsTrigger value="node">Node.js (SDK)</TabsTrigger>
+            <TabsTrigger value="node">Node.js</TabsTrigger>
             <TabsTrigger value="php">PHP</TabsTrigger>
             <TabsTrigger value="python">Python</TabsTrigger>
           </TabsList>

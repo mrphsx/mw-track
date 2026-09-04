@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 import { zonedTimeToUtcIso, utcIsoToZonedParts, getBrowserTimezone } from '@/lib/timezone';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { TimezoneInput } from '@/components/timezone-input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -20,7 +21,7 @@ import { ScheduleCalendar } from './schedule-calendar';
 interface ProjectSummary {
   id: string;
   name: string;
-  channel: { id: string; tgAvatarFileId: string | null } | null;
+  channel: { id: string; type: string; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null } | null;
 }
 
 type SendMode = 'now' | 'scheduled';
@@ -110,8 +111,13 @@ export function PushComposer({
     queryFn: async () => (await api.get<ProjectSummary[]>('/projects')).data,
   });
 
+  // WEBSITE-проекты исключены (запрос пользователя 2026-09-03: "не понимаю как работает
+  // рассылка на таких проектах, там вроде нет бота... убери такие типы проекта из рассылок") —
+  // ChannelsService.sendMessage резолвит получателя через getChannelUserId, который для
+  // WEBSITE-клиентов всегда null (у них только visitorId) — рассылка гарантированно провалит
+  // КАЖДОГО получателя, показывать такой проект в выборе было бы просто ловушкой.
   const allowedProjects = useMemo(
-    () => (allProjects ?? []).filter((p) => hasPermission(user, p.id, 'PUSHES_CREATE')),
+    () => (allProjects ?? []).filter((p) => p.channel?.type !== 'WEBSITE' && hasPermission(user, p.id, 'PUSHES_CREATE')),
     [allProjects, user],
   );
   // В режиме редактирования список сужается до ЕДИНСТВЕННОГО проекта пуша — весь остальной код
@@ -310,7 +316,7 @@ export function PushComposer({
                       проекту в схеме) — показываем как статичную строку, а не чекбокс-список. */}
                   {isEditMode ? (
                     <div className="flex items-center gap-3 px-1 py-1">
-                      <ChannelAvatar channelId={projects[0]?.channel?.id ?? ''} hasAvatar={!!projects[0]?.channel?.tgAvatarFileId} fallbackLetter={projects[0]?.name ?? ''} />
+                      <ChannelAvatar channelId={projects[0]?.channel?.id ?? ''} hasAvatar={hasChannelAvatar(projects[0]?.channel)} fallbackLetter={projects[0]?.name ?? ''} />
                       <span className="font-medium">{projects[0]?.name}</span>
                     </div>
                   ) : (
@@ -323,7 +329,7 @@ export function PushComposer({
                             className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
                           >
                             <Checkbox checked={selectedIds.includes(p.id)} onCheckedChange={() => toggleProject(p.id)} />
-                            <ChannelAvatar channelId={p.channel?.id ?? ''} hasAvatar={!!p.channel?.tgAvatarFileId} fallbackLetter={p.name} />
+                            <ChannelAvatar channelId={p.channel?.id ?? ''} hasAvatar={hasChannelAvatar(p.channel)} fallbackLetter={p.name} />
                             <span className="flex-1 font-medium truncate">{p.name}</span>
                             <span className="text-sm text-muted-foreground shrink-0">
                               Доступно: {stat ? stat.audienceReachable : isCalculating ? '…' : '—'}

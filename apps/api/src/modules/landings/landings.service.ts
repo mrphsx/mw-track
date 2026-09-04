@@ -62,6 +62,7 @@ const PROJECT_CHANNEL_SELECT = {
     tgPersonalUsername: true,
     tgChannelMembersCount: true,
     tgAvatarFileId: true,
+    websiteFaviconUrl: true,
   },
 };
 
@@ -226,6 +227,8 @@ export class LandingsService {
         cloakingEnabled: dto.cloakingEnabled,
         cloakingCountries: dto.cloakingCountries,
         cloakingRedirectUrl: dto.cloakingRedirectUrl || null,
+        tiktokBrowserHint: dto.tiktokBrowserHint,
+        tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
       },
     });
     // Автопубликация (запрос пользователя 2026-08-20: "при создании лэндинга он автоматом
@@ -543,6 +546,8 @@ export class LandingsService {
         // '' от клиента — явная очистка (см. UpdateLandingDto), иначе Prisma записала бы
         // пустую строку как значение вместо NULL.
         cloakingRedirectUrl: dto.cloakingRedirectUrl === '' ? null : dto.cloakingRedirectUrl,
+        tiktokBrowserHint: dto.tiktokBrowserHint,
+        tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
       },
     });
   }
@@ -859,13 +864,12 @@ export class LandingsService {
     }
 
     // Фолбэк — фото канала ("изначально как в канале"), то же самое, что видят подписчики
-    // канала в Telegram. Content-Type принудительно 'image/jpeg', не result.contentType —
-    // сырой файловый сервер Telegram реально отдаёт 'application/octet-stream' для фото
-    // (проверено живьём), хотя это всегда JPEG (big_file_id канала/бота).
+    // канала в Telegram, либо фавиконка сайта для WEBSITE-проектов (запрос пользователя
+    // 2026-09-03) — fetchChannelAvatarBuffer уже нормализует Content-Type для обоих случаев.
     if (landing.project.channel) {
-      const result = await this.channelsService.fetchTelegramAvatarBuffer(landing.project.channel);
+      const result = await this.channelsService.fetchChannelAvatarBuffer(landing.project.channel);
       if (result) {
-        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Content-Type', result.contentType);
         res.setHeader('Cache-Control', 'public, max-age=3600');
         res.send(result.buffer);
         return;

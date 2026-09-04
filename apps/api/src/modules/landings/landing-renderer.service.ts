@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import * as geoip from 'geoip-lite';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
@@ -12,6 +13,21 @@ import { matchDomainPath } from '../domains/domain-path.util';
 import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-link.util';
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
+import { isBotUserAgent } from '../../common/bot-user-agent.util';
+
+// Хэш содержимого track.js (см. apps/sdk/scripts/publish-cdn.js — перезаписывается на каждом
+// SDK-паблише, попадает в dist через nest-cli.json assets). Добавляется в URL скрипта как
+// ?v=<hash>, чтобы Cloudflare/браузерный Cache-Control:max-age=14400 не отдавал старую версию
+// после SDK-фикса — без версии в ссылке 2026-08-25 4-часовой кэш маскировал уже выкаченный фикс
+// TikTok-подсказки под видом "не работает". Если файл почему-то отсутствует (например, до
+// первого запуска publish-cdn.js в свежем окружении), просто не версионируем ссылку — не должно
+// ронять рендер лендинга.
+let sdkVersionHash = '';
+try {
+  sdkVersionHash = (JSON.parse(fsSync.readFileSync(path.join(__dirname, 'sdk-version.json'), 'utf-8')) as { hash: string }).hash;
+} catch {
+  // см. комментарий выше
+}
 
 const START_CODE_TTL_SECONDS = 24 * 60 * 60;
 // TTL кэша "последний визит на лендинг" (landing-visit-country/landing-visit-attribution) —
@@ -34,15 +50,9 @@ const LANDING_VISIT_TTL_SECONDS = 30 * 60;
 // в приватный канал: живые Subscribe/Dialogue массово уходили в Facebook с IP/User-Agent самого
 // Facebook (2a03:2880::/32, "facebookexternalhit/1.1...") вместо настоящего посетителя, без
 // fbclid/fbp вообще (краулер не кликает по рекламе и не выполняет JS) — набор данных, который
-// сам Facebook не может сопоставить ни с одним реальным пользователем. Список — известные
-// краулеры/боты предпросмотра ссылок (не только Facebook — тот же класс проблемы возможен и от
-// WhatsApp/Telegram/Slack/Discord и т.п. ботов).
-const BOT_USER_AGENT_PATTERN =
-  /bot|crawl|spider|facebookexternalhit|whatsapp|telegrambot|slackbot|discordbot|linkedinbot|googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|skypeuripreview|vkshare|redditbot|pinterest|ia_archiver|semrushbot|ahrefsbot/i;
-
-function isBotUserAgent(userAgent: string | undefined): boolean {
-  return !!userAgent && BOT_USER_AGENT_PATTERN.test(userAgent);
-}
+// сам Facebook не может сопоставить ни с одним реальным пользователем. isBotUserAgent — вынесена
+// в common/bot-user-agent.util.ts (запрос пользователя 2026-08-31), нужна теперь и в
+// TrackingService.
 
 // Facebook/TikTok иногда подставляют значение динамического макроса ({{campaign.name}} и т.п.)
 // уже percent-encoded (баг-репорт пользователя 2026-07-25: "кампанию... показывает так
@@ -79,7 +89,10 @@ function decodeAdMacro(value: string | null): string | null {
     try {
       decoded = decodeURIComponent(decoded);
     } catch {
-      // оставляем как есть — лучше сырое значение, чем брошенное исключение
+      // decodeURIComponent бросает на оборванной %-последовательности — это сама по себе
+      // улика обрезки URL (баг-репорт 2026-08-31: "adName" оборван на "...%" без хвоста),
+      // то же "не настоящее значение", что и {{...}}/__..., поэтому null, а не сырой мусор.
+      return null;
     }
   }
   return UNSUBSTITUTED_MACRO_PATTERN.test(decoded) ? null : decoded;
@@ -116,7 +129,7 @@ export class LandingRendererService {
   // 404 — раньше Domain.landingId неявно отдавал контент на корне для любого домена.
   async renderByDomain(host: string, fullPath: string, req: Request, res: Response): Promise<void> {
     const bareHost = host.replace(/^www\./, '').toLowerCase();
-    const domain = await this.prisma.domain.findFirst({ where: { domain: bareHost, status: 'ACTIVE' } });
+    const domain = await this.prisma.domain.findFirst({ where: { domain: bareHost, status: 'ACTIVE', deletedAt: null } });
     if (!domain) {
       res.status(404).send('<h1>Page not found</h1>');
       return;
@@ -190,7 +203,7 @@ export class LandingRendererService {
             // 1:1 с 2026-07-02 — канал проекта может быть любого типа (не только Telegram),
             // buildTelegramLink ниже сам проверяет channel.type перед сборкой deep-link.
             channel: {
-              select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true, tgAvatarFileId: true },
+              select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true, tgAvatarFileId: true, websiteUrl: true },
             },
             pixels: { where: { isActive: true } },
           },
@@ -284,7 +297,7 @@ export class LandingRendererService {
             // 1:1 с 2026-07-02 — канал проекта может быть любого типа (не только Telegram),
             // buildTelegramLink ниже сам проверяет channel.type перед сборкой deep-link.
             channel: {
-              select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true, tgAvatarFileId: true },
+              select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true, tgAvatarFileId: true, websiteUrl: true },
             },
             pixels: { where: { isActive: true } },
           },
@@ -371,6 +384,12 @@ export class LandingRendererService {
     // 2026-07-02). ?code={{START_CODE}} — тот же одноразовый Redis-код с fbclid/ttclid/utm,
     // что и раньше, просто донесённый до бота через редирект, а не через SDK-перехват клика.
     const hasTelegramLink = !!buildTelegramLink(landing.project.channel);
+    // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — кнопка лендинга
+    // ведёт прямо на сайт, а не в Telegram. websiteUrl тут не резолвится сразу в финальный
+    // адрес — нужен req.query (fbclid/utm визита) для проброса на сайт, а renderTemplate() его
+    // не получает (вызывается и без запроса — см. renderPreviewHtml). Резолв — в
+    // injectTrackingScripts ниже, тем же приёмом, что уже применён к START_CODE.
+    const hasWebsiteLink = landing.project.channel?.type === 'WEBSITE' && !!landing.project.channel?.websiteUrl;
 
     // Аватарка лендинга (запрос пользователя 2026-07-04): своя загруженная (Landing.avatarKey)
     // либо, если её нет, фото канала ("изначально как в канале") — оба случая отдаёт один и
@@ -407,7 +426,9 @@ export class LandingRendererService {
       // data-api-url) — трогать его нельзя, он завязан на вебхуки Telegram/WhatsApp/Heleket.
       TG_REDIRECT_URL: hasTelegramLink
         ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${landing.project.publicToken}/tg-redirect?code={{START_CODE}}&landingId=${landing.id}`
-        : '',
+        : hasWebsiteLink
+          ? '{{TG_REDIRECT_URL}}' // заменяется позже, в injectTrackingScripts (нужен req.query)
+          : '',
       START_CODE: '{{START_CODE}}', // заменяется позже, в injectTrackingScripts
       CHANNEL_INITIAL: (data.CHANNEL_TITLE || 'C').charAt(0).toUpperCase(),
       // Для шаблонов с собственными статическими ассетами (например tg-invite-dark/bg.svg) —
@@ -442,6 +463,25 @@ export class LandingRendererService {
   // и так не отображаются), но чистит то, что реально уходит наружу в ответе сервера.
   private stripStyleComments(html: string): string {
     return html.replace(/<style>[\s\S]*?<\/style>/g, (styleBlock) => styleBlock.replace(/\/\*[\s\S]*?\*\//g, ''));
+  }
+
+  // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — прокидывает
+  // fbclid/utm/рекламные макросы визита на лендинг прямо в query адреса сайта, чтобы track.js
+  // на самой странице сайта подхватил их через window.location.search (тот же принцип, что
+  // уже использует сам SDK). В отличие от Telegram-веток, без промежуточного редирект-
+  // эндпоинта — сайт открывается напрямую, поэтому query нужно смержить здесь, а не доверять
+  // отдельному прокси-хендлеру.
+  private buildWebsiteDestination(channel: TelegramLinkChannel | null, urlParams: URLSearchParams): string {
+    if (!channel || channel.type !== 'WEBSITE' || !channel.websiteUrl) return '';
+    try {
+      const dest = new URL(channel.websiteUrl);
+      for (const [key, value] of urlParams.entries()) {
+        dest.searchParams.set(key, value);
+      }
+      return dest.toString();
+    } catch {
+      return '';
+    }
   }
 
   // См. комментарий у вызова (injectTrackingScripts) — переживает переходный период сразу после
@@ -601,6 +641,15 @@ export class LandingRendererService {
 
     html = html.replaceAll('{{START_CODE}}', startCode);
 
+    // Обычный сайт (ChannelType.WEBSITE) — резолвим отложенный плейсхолдер из renderTemplate()
+    // здесь, где уже есть req.query: прокидываем fbclid/utm/рекламные макросы визита прямо в
+    // адрес сайта, чтобы track.js на самой странице сайта подхватил их через
+    // window.location.search — без отдельного редирект-эндпоинта, сайт открывается напрямую.
+    const websiteDestination = this.buildWebsiteDestination(project.channel, urlParams);
+    if (websiteDestination) {
+      html = html.replaceAll('{{TG_REDIRECT_URL}}', websiteDestination);
+    }
+
     // Проект не привязан к одной платформе — пикселей одной и той же платформы
     // может быть несколько (несколько FB-аккаунтов и т.п.), поэтому ниже цикл,
     // а не одно фиксированное fbPixelId/ttPixelId.
@@ -610,12 +659,14 @@ export class LandingRendererService {
     // Авторедирект (запрос пользователя 2026-07-03) — та же /tg-redirect-ссылка, что и у
     // кнопки (см. TG_REDIRECT_URL в renderTemplate), просто с собственным startCode, т.к.
     // CUSTOM-лендинги вообще не проходят через renderTemplate/{{TG_REDIRECT_URL}}. Пустая
-    // строка, если у проекта нет Telegram-канала — SDK тогда просто не найдёт атрибут и
-    // ведёт себя как обычно (только PageView, без редиректа).
+    // строка, если у проекта нет Telegram-канала и нет сайта — SDK тогда просто не найдёт
+    // атрибут и ведёт себя как обычно (только PageView, без редиректа).
     const autoRedirectUrl =
       landing.autoRedirect && buildTelegramLink(project.channel)
         ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${project.publicToken}/tg-redirect?code=${startCode}&landingId=${landing.id}`
-        : '';
+        : landing.autoRedirect && websiteDestination
+          ? websiteDestination
+          : '';
 
     // age-gate-invite (запрос пользователя 2026-08-18) — единственный шаблон, где авторедирект
     // (если включён) не должен срабатывать сразу на загрузке страницы, а только когда
@@ -630,12 +681,32 @@ export class LandingRendererService {
     // ad_id/campaign_id/... в window.location.search этого конкретного проекта.
     const paramMapAttr = JSON.stringify(paramMap).replace(/"/g, '&quot;');
 
+    const trackScriptUrl = `${process.env.CDN_URL}/track.js${sdkVersionHash ? `?v=${sdkVersionHash}` : ''}`;
+
+    // Тексты попапа-подсказки (§ TiktokHintTextsDto) — тем же приёмом, что data-param-map: один
+    // JSON-атрибут, а не 7 отдельных data-*, и только пропущенные/пустые ключи объекта попадают
+    // в SDK, который сам подставляет свой встроенный английский дефолт на каждый отсутствующий
+    // ключ (см. apps/sdk/src/browser.ts) — так что здесь достаточно передать as-is, без
+    // подстановки дефолтов на бэкенде.
+    const tiktokHintTextsAttr =
+      landing.tiktokBrowserHint && landing.tiktokHintTexts
+        ? `\n        data-tiktok-hint-texts="${JSON.stringify(landing.tiktokHintTexts).replace(/"/g, '&quot;')}"`
+        : '';
+
+    // Отложенный показ подсказки TikTok на age-gate-invite (запрос пользователя 2026-08-27, "на
+    // 2-попаповом лендинге подсказка должна показываться только на втором/финальном попапе") —
+    // тот же deferAutoRedirect выше (единственный шаблон с двумя попапами), тот же приём: SDK не
+    // показывает подсказку сразу на попапе 1, а кладёт запуск в window.tcrm.triggerAutoRedirect,
+    // который template.html уже и так вызывает ровно в момент открытия попапа 2 — самому шаблону
+    // ничего менять не нужно (см. apps/sdk/src/browser.ts).
+    const tiktokHintDeferAttr = landing.tiktokBrowserHint && deferAutoRedirect ? `\n        data-tiktok-hint-defer="true"` : '';
+
     const trackingScripts = `
-<script src="${process.env.CDN_URL}/track.js"
+<script src="${trackScriptUrl}"
         data-project-id="${project.publicToken}"
         data-api-url="${process.env.API_URL}/api/v1"
         data-landing-id="${landing.id}"${abTestGroupId ? `\n        data-ab-test-group-id="${abTestGroupId}"` : ''}
-        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}${autoRedirectUrl && deferAutoRedirect ? `\n        data-auto-redirect-defer="true"` : ''}
+        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}${autoRedirectUrl && deferAutoRedirect ? `\n        data-auto-redirect-defer="true"` : ''}${landing.tiktokBrowserHint ? `\n        data-tiktok-browser-hint="true"` : ''}${tiktokHintTextsAttr}${tiktokHintDeferAttr}
         async></script>
 ${
   fbPixels.length > 0

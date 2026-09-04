@@ -5,13 +5,16 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { usePeriodQueryState } from '@/lib/use-period-query-state';
 import {
+  AlertTriangle,
   Bot,
   ChevronDown,
   ChevronRight,
   Contact,
   DollarSign,
   Eye,
+  Globe,
   LayoutTemplate,
+  Link2,
   LucideIcon,
   Megaphone,
   MessageCircle,
@@ -32,6 +35,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
 import { formatSecondsDuration } from '@/components/clients/clients-table';
 import { DailyCharts } from '@/components/prototype/daily-charts';
@@ -47,9 +51,11 @@ import {
   usePrototypeProjectData,
 } from '@/lib/prototype-project-data';
 import { STUDIO_HUE_HEX, STUDIO_HUES, StudioHueName } from '../../colors';
-import { StudioPill } from '../../ui';
+import { StudioLinkButton, StudioPill } from '../../ui';
+import { CHANNEL_TYPE_LABEL, ChannelType } from '@/components/channel-fields-editor';
 import { StudioClientsTable } from '../../clients-table';
 import { useAuthStore } from '@/store/auth.store';
+import { GetWebsiteLinkDialog } from '@/components/get-website-link-dialog';
 
 const FUNNEL_ICON: Record<string, LucideIcon> = {
   PageView: Eye,
@@ -112,6 +118,7 @@ export default function StudioProjectPage() {
   // проекта; PrototypePeriodValue/PeriodValue структурно идентичны ({period, from?, to?}).
   const [period, setPeriod] = usePeriodQueryState('today');
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [showWebsiteLink, setShowWebsiteLink] = useState(false);
   const { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards, canViewPersonalBroadcasts } =
     usePrototypeProjectData(id, period);
   // Ссылка на страницу "сравнить все" (запрос пользователя 2026-08-19) — несёт текущий период,
@@ -225,16 +232,21 @@ export default function StudioProjectPage() {
               менее округлый дизайн) — ChannelAvatar сам всегда круглый (shared-компонент,
               rounded-full зашит внутри), квадратное кольцо вокруг круглого фото выглядело бы
               как рассинхрон форм. */}
-          {project.channel?.type === 'TELEGRAM' && (
+          {/* WEBSITE добавлен в гейт (запрос пользователя 2026-09-03, найдено живой проверкой:
+              без этого фавиконка не показывалась даже с реально сохранённым websiteFaviconUrl,
+              хотя на вкладке "Каналы" уже показывалась — тот же гейт там уже был расширен). */}
+          {(project.channel?.type === 'TELEGRAM' || project.channel?.type === 'WEBSITE') && (
             <div className="p-1 rounded-full bg-[#1F4E9C]/10 dark:bg-[#7BA9EE]/10 shrink-0">
-              <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
+              <ChannelAvatar channelId={project.channel.id} hasAvatar={hasChannelAvatar(project.channel)} fallbackLetter={project.name} />
             </div>
           )}
           <div>
             <div className="flex items-center gap-2.5 flex-wrap">
               <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">{project.name}</h1>
               <StatusPill active={project.status === 'ACTIVE'} label={project.status} />
-              {project.channel && <StatusPill active={project.channel.isActive} label={project.channel.type} />}
+              {project.channel && (
+                <StatusPill active={project.channel.isActive} label={CHANNEL_TYPE_LABEL[project.channel.type as ChannelType] ?? project.channel.type} />
+              )}
               {/* "Молчащий" вебхук (запрос пользователя 2026-08-05) — см. классическую версию
                   для полного комментария. */}
               {project.channel?.webhookStale && (
@@ -247,17 +259,29 @@ export default function StudioProjectPage() {
             <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] mt-1">Прототип страницы проекта · бета</p>
           </div>
         </div>
-        {/* Раньше вело на классическую версию этой же страницы внутри одного приложения — с
-            переездом классики на old.mw-track.com (запрос пользователя 2026-07-30) это стало бы
-            бессмысленной ссылкой саму на себя, поэтому теперь обычная внешняя ссылка на другой
-            домен, а не Link. */}
-        <a
-          href={`https://old.mw-track.com/projects/${id}`}
-          className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors underline-offset-4 hover:underline"
-        >
-          ← Обычный вид
-        </a>
       </div>
+
+      {/* Баннер "сайт не подключён/не проверен" (запрос пользователя 2026-09-03: "многие даже
+          не понимают что это подключено") — маленькая пилюля рядом с названием (StatusPill
+          выше) слишком незаметна и не объясняет, что делать. Показываем только пока реально
+          есть проблема — как только канал станет isActive, баннер сам пропадёт. lastError уже
+          несёт точную причину (WebsiteProvider.initialize — "Укажите ссылку на сайт" либо
+          "Скрипт не найден на странице..."), поэтому его достаточно показать как есть, без
+          повторной классификации на фронте. */}
+      {project.channel?.type === 'WEBSITE' && !project.channel.isActive && (
+        <div className="rounded-xl border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-950/30 p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">Сайт не подключён</p>
+            <p className="text-sm text-amber-800/90 dark:text-amber-300/80 mt-0.5">
+              {project.channel.lastError || 'Пока сайт не подключён и не проверен, покупки и переходы с рекламы не будут учитываться в статистике проекта.'}
+            </p>
+          </div>
+          <StudioLinkButton href={`/projects/${id}/settings?tab=integration`} variant="primary" size="sm" icon={Globe}>
+            Подключить сайт
+          </StudioLinkButton>
+        </div>
+      )}
 
       {/* Кнопки действий + период — один ряд с justify-between (запрос пользователя 2026-07-30:
           "стоят друг под другом слева и оно выглядит как пирамида") — раньше кнопки/статус
@@ -270,12 +294,16 @@ export default function StudioProjectPage() {
           {/* Ведут на Studio-версии этих страниц, где они уже готовы (запрос пользователя
               2026-07-30: "готовить все остальные страницы") — Настройки пока без Studio-
               варианта (1575-строчный файл с десятком вкладок, отложен), ведёт на классику. */}
-          <Link
-            href={`/projects/${id}/pushes`}
-            className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
-          >
-            <Send className="w-4 h-4" /> Рассылка
-          </Link>
+          {/* Рассылка идёт через бота, у WEBSITE-клиентов нет tgUserId — каждая отправка
+              гарантированно провалится (запрос пользователя 2026-09-03). */}
+          {project?.channel?.type !== 'WEBSITE' && (
+            <Link
+              href={`/projects/${id}/pushes`}
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
+            >
+              <Send className="w-4 h-4" /> Рассылка
+            </Link>
+          )}
           {/* Рассылка с личного MTProto-аккаунта (запрос пользователя 2026-08-06) — та же
               гейтовка, что в классике: подключён личный аккаунт + право на просмотр раздела. */}
           {project?.channel?.tgPersonalConnected && canViewPersonalBroadcasts && (
@@ -286,18 +314,44 @@ export default function StudioProjectPage() {
               <Contact className="w-4 h-4" /> Личный аккаунт
             </Link>
           )}
+          {/* Журнал реквизитов (запрос пользователя 2026-08-27, сужено 2026-08-29: "должен
+              видеть только owner, даже для админа выключи") — та же жёсткая гейтовка, что в
+              классике: только OWNER, явно исключая даже Admin/Super Admin. */}
+          {project?.channel?.tgPersonalConnected && user?.role === 'OWNER' && (
+            <Link
+              href={`/payment-details-log?projectId=${id}`}
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            >
+              <Contact className="w-4 h-4" /> Журнал реквизитов
+            </Link>
+          )}
+          {/* Ссылка для рекламного кабинета без промежуточного лендинга (запрос пользователя
+              2026-09-03: "сайт уже на домене стоит и его можно пускать без промежуточных
+              лэндингов") — видна только когда сайт реально подключён и проверен (isActive). */}
+          {project?.channel?.type === 'WEBSITE' && project.channel.isActive && (
+            <button
+              type="button"
+              onClick={() => setShowWebsiteLink(true)}
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            >
+              <Link2 className="w-4 h-4" /> Получить ссылку
+            </button>
+          )}
           <Link
             href={`/projects/${id}/landings`}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <LayoutTemplate className="w-4 h-4" /> Лендинги
           </Link>
-          <Link
-            href={`/projects/${id}/scenarios`}
-            className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
-          >
-            <Workflow className="w-4 h-4" /> Сценарии
-          </Link>
+          {/* Сценарии структурно не могут сработать без бота (запрос пользователя 2026-09-03). */}
+          {project?.channel?.type !== 'WEBSITE' && (
+            <Link
+              href={`/projects/${id}/scenarios`}
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            >
+              <Workflow className="w-4 h-4" /> Сценарии
+            </Link>
+          )}
           <Link
             href={`/projects/${id}/settings`}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
@@ -689,6 +743,10 @@ export default function StudioProjectPage() {
       </div>
 
       <ClientDetailDrawer projectId={id} clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
+      <GetWebsiteLinkDialog
+        project={showWebsiteLink && project ? { id, name: project.name } : null}
+        onClose={() => setShowWebsiteLink(false)}
+      />
     </div>
   );
 }

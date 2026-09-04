@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   FolderOpen,
@@ -19,7 +19,6 @@ import {
   ChevronRight,
   Sparkle,
   LogOut,
-  Undo2,
   BarChart3,
   BookOpen,
   Contact,
@@ -35,6 +34,10 @@ interface NavItem {
   icon: LucideIcon;
   requiredPermission?: Permission;
   ownerAdminOnly?: boolean;
+  // Строже, чем ownerAdminOnly (запрос пользователя 2026-08-29: "должен видеть только owner,
+  // даже для админа выключи") — журнал реквизитов не должен быть виден даже Admin/Super Admin/
+  // Operator-admin, не только Buyer/Operator.
+  ownerOnly?: boolean;
 }
 import {
   DropdownMenu,
@@ -60,6 +63,8 @@ const navItems: NavItem[] = [
   { href: '/audience', label: 'Пересечение аудиторий', icon: Layers },
   { href: '/domains', label: 'Домены', icon: Globe, requiredPermission: 'DOMAINS_VIEW' as const },
   { href: '/team', label: 'Команда', icon: Users, ownerAdminOnly: true },
+  // Журнал реквизитов (запрос пользователя 2026-08-29) — та же гейтовка, что в классике.
+  { href: '/payment-details-log', label: 'Журнал реквизитов', icon: Contact, ownerOnly: true },
   { href: '/billing', label: 'Подписка', icon: CreditCard },
   { href: '/docs', label: 'Документация', icon: BookOpen },
   { href: '/settings', label: 'Настройки', icon: Settings },
@@ -79,7 +84,6 @@ const OPERATOR_NAV_ITEMS: NavItem[] = [
 // Control Room, просто применённый шире (весь фон/карточки, не только акцент).
 export function StudioSidebar() {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const { user, logout } = useAuthStore();
   const { sidebarCollapsed, toggleSidebar } = useUiStore();
   // До маунта — всегда развёрнут (совпадает с SSR-рендером, где localStorage ещё не прочитан) —
@@ -92,9 +96,6 @@ export function StudioSidebar() {
   const isOwnerOrAdmin =
     user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'OPERATOR_ADMIN';
   const items = user?.role === 'OPERATOR' ? OPERATOR_NAV_ITEMS : navItems;
-  // Классика теперь отдельный домен (old.mw-track.com), не путь внутри этого же приложения —
-  // обычная внешняя ссылка, никакого internal-роутинга/рерайта здесь не нужно.
-  const classicHref = `https://old.mw-track.com${pathname}${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
 
   return (
     <aside
@@ -131,6 +132,7 @@ export function StudioSidebar() {
       <nav className="flex-1 px-3.5 space-y-1 overflow-y-auto overflow-x-hidden">
         {items
           .filter((item) => !item.ownerAdminOnly || isOwnerOrAdmin)
+          .filter((item) => !item.ownerOnly || user?.role === 'OWNER')
           .filter((item) => !item.requiredPermission || hasAnyPermission(user, item.requiredPermission))
           .map((item) => {
             const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
@@ -157,30 +159,6 @@ export function StudioSidebar() {
             );
           })}
       </nav>
-
-      {/* Возврат в классический дизайн (запрос пользователя 2026-07-30, доработано в тот же день:
-          "старый дизайн перенеси на поддомен old.mw-track.com") — обычная внешняя ссылка на
-          другой домен, ведёт на классический эквивалент ИМЕННО текущей страницы. */}
-      <div className="px-3.5 pb-2">
-        {(() => {
-          const link = (
-            <a
-              href={classicHref}
-              className={`flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-sm text-[#5F6B7A] hover:bg-[#DCE1E8]/60 dark:text-[#92A0AF] dark:hover:bg-white/5 transition-colors ${collapsed ? 'justify-center px-0' : ''}`}
-            >
-              <Undo2 className="w-4 h-4 shrink-0" />
-              {!collapsed && 'Старый дизайн'}
-            </a>
-          );
-          if (!collapsed) return link;
-          return (
-            <Tooltip>
-              <TooltipTrigger render={link} />
-              <TooltipContent side="right">Старый дизайн</TooltipContent>
-            </Tooltip>
-          );
-        })()}
-      </div>
 
       <div className="p-3.5">
         <DropdownMenu>

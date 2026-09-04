@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Plus, Send, Users, UserX } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { CityTime } from '@/components/city-time';
 import { CHANNEL_TYPE_LABEL, TG_MODE_LABEL, ChannelType, TgMode } from '@/components/channel-fields-editor';
 import { PersonalAccountIndicator } from '@/components/personal-account-indicator';
@@ -21,6 +22,7 @@ interface ProjectSummary {
     isActive: boolean;
     tgMode: TgMode | null;
     tgAvatarFileId: string | null;
+    websiteFaviconUrl?: string | null;
     tgPersonalConnected?: boolean;
     webhookStale?: boolean;
   } | null;
@@ -65,8 +67,8 @@ export default function StudioProjectsPage() {
               <CityTime timezone={project.timezone} className="shrink-0" />
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  {project.channel?.type === 'TELEGRAM' && (
-                    <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
+                  {(project.channel?.type === 'TELEGRAM' || project.channel?.type === 'WEBSITE') && (
+                    <ChannelAvatar channelId={project.channel.id} hasAvatar={hasChannelAvatar(project.channel)} fallbackLetter={project.name} />
                   )}
                   <span className="font-medium truncate text-[#131A24] dark:text-[#E9EDF3]">{project.name}</span>
                   {project.channel?.type === 'TELEGRAM' && (

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Users, FolderOpen, Send, Bot, Plus, DollarSign, Wallet, Repeat } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -31,7 +32,7 @@ interface ProjectSummary {
   id: string;
   name: string;
   status: string;
-  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null } | null;
+  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null } | null;
   _count: { clients: number; pushes: number };
 }
 
@@ -146,8 +147,8 @@ export default function OverviewPage() {
                 <CardContent className="p-5">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      {project.channel?.type === 'TELEGRAM' && (
-                        <ChannelAvatar channelId={project.channel.id} hasAvatar={!!project.channel.tgAvatarFileId} fallbackLetter={project.name} />
+                      {(project.channel?.type === 'TELEGRAM' || project.channel?.type === 'WEBSITE') && (
+                        <ChannelAvatar channelId={project.channel.id} hasAvatar={hasChannelAvatar(project.channel)} fallbackLetter={project.name} />
                       )}
                       <span className="font-medium truncate">{project.name}</span>
                     </div>

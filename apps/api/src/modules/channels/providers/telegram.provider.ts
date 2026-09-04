@@ -13,6 +13,7 @@ import { ChannelProvider, SendMessageOptions, SendMessageResult, UserStatus } fr
 import { ApproveJoinRequestJob } from '../join-request-approval.processor';
 import { BotScenarioEngineService } from '../bot-scenario-engine.service';
 import { VideoProcessingService } from '../video-processing.service';
+import { extractInviteHash } from '../telegram-link.util';
 
 // Форма JSON, кэшируемого LandingRendererService.injectTrackingScripts под
 // landing-visit-attribution:<landingId> (см. getCachedLandingAttribution ниже) — buyerRef, не
@@ -47,6 +48,31 @@ interface CachedLandingAttribution {
   // Запрос пользователя 2026-08-20 — тот же мост, что и остальные поля выше, для PRIVATE_
   // CHANNEL_REQUEST (см. LandingRendererService.injectTrackingScripts).
   abTestGroupId?: string | null;
+  // landingId — только у одноразовых per-visit invite-ссылок (см. createOneTimeInviteLink/
+  // ONE_TIME_INVITE_PREFIX ниже, запрос пользователя 2026-08-31): у shared-очереди
+  // landing-visit-attribution:<landingId> landingId уже есть в самом ключе, здесь же ключ один
+  // на всю ссылку без привязки к лендингу заранее, поэтому landingId кладётся прямо в payload.
+  landingId?: string | null;
+}
+
+// Персональная invite-ссылка НА КОНКРЕТНЫЙ ВИЗИТ, не на лендинг целиком (запрос пользователя
+// 2026-08-31: "у конкурентов под каждого подписчика своя invite-ссылка, это решает проблему с
+// очередью") — устраняет саму причину неточности FIFO/lookahead-очереди landing-visit-
+// attribution:<landingId> (см. ATTRIBUTION_LOOKAHEAD выше): вместо того чтобы угадывать, какой
+// из НЕСКОЛЬКИХ визитов на общую ссылку лендинга соответствует этой заявке на вступление, каждый
+// визит (при реальном клике/авто-редиректе на /tg-redirect, не на каждый показ страницы —
+// внешний Telegram API-вызов не место в горячем пути рендера, тот же принцип, что и у
+// createLandingInviteLink ниже) получает СОБСТВЕННУЮ одноразовую invite-ссылку с уже готовой,
+// точно своей атрибуцией — Telegram присылает эту же ссылку обратно в chat_join_request, точное
+// совпадение по ключу, без всякого приближения. member_limit НЕЛЬЗЯ указывать вместе с
+// creates_join_request:true (ограничение Bot API, проверено) — вместо этого только expire_date
+// на случай, если посетитель так и не завершит вступление, плюс явный revokeChatInviteLink после
+// использования в handleJoinRequest (не критично для корректности — Redis-ключ одноразовый сам
+// по себе, — но не даёт списку invite-ссылок канала расти бесконечно).
+const ONE_TIME_INVITE_TTL_SECONDS = 24 * 60 * 60; // как START_CODE_TTL_SECONDS — контаминации между разными людьми здесь в принципе не может быть, длинный TTL безопасен
+
+function oneTimeInviteRedisKey(hash: string): string {
+  return `landing-visit-link:${hash}`;
 }
 
 @Injectable()
@@ -280,6 +306,43 @@ export class TelegramProvider implements ChannelProvider {
     }
   }
 
+  // Персональная invite-ссылка НА ВИЗИТ (запрос пользователя 2026-08-31, см. комментарий у
+  // ONE_TIME_INVITE_TTL_SECONDS выше) — вызывается из TrackingService.buildTelegramRedirectUrl,
+  // при реальном клике/авто-редиректе на /tg-redirect (не на каждый показ страницы, тот же
+  // принцип "внешний вызов не в горячем пути рендера", что и у createLandingInviteLink выше).
+  // attribution — уже полностью готовый блок (читается из существующего start:<code>, тот же
+  // самый, что уже пишет LandingRendererService.injectTrackingScripts для BOT_DIRECT/PERSONAL_DM
+  // — просто переиспользуется, а не строится заново). Возвращает null при любой проблеме
+  // (канал не PRIVATE_CHANNEL_REQUEST, бот не поднят, ошибка Bot API) — вызывающий код тогда
+  // просто откатывается на прежнее поведение (общая ссылка лендинга/канала + очередь).
+  async createOneTimeInviteLink(
+    channel: Pick<Channel, 'id' | 'type' | 'tgMode' | 'tgChannelId'>,
+    attribution: CachedLandingAttribution,
+  ): Promise<string | null> {
+    if (channel.type !== 'TELEGRAM' || channel.tgMode !== 'PRIVATE_CHANNEL_REQUEST' || !channel.tgChannelId) return null;
+
+    const bot = this.getBot(channel.id);
+    if (!bot) return null;
+
+    try {
+      // member_limit НЕЛЬЗЯ указывать вместе с creates_join_request:true (реальное ограничение
+      // Bot API, проверено перед реализацией) — только expire_date, ссылка отзывается явно в
+      // handleJoinRequest после использования, либо истекает сама, если так и не пригодилась.
+      const invite = await bot.api.createChatInviteLink(channel.tgChannelId, {
+        name: 'TrafficCRM per-visit',
+        creates_join_request: true,
+        expire_date: Math.floor(Date.now() / 1000) + ONE_TIME_INVITE_TTL_SECONDS,
+      });
+      const hash = extractInviteHash(invite.invite_link);
+      if (!hash) return invite.invite_link; // не должно случиться (та же схема, что и у createInviteLink), но не блокирует редирект
+      await this.redis.set(oneTimeInviteRedisKey(hash), JSON.stringify(attribution), 'EX', ONE_TIME_INVITE_TTL_SECONDS);
+      return invite.invite_link;
+    } catch (error) {
+      this.logger.warn(`createOneTimeInviteLink failed for channel ${channel.id}: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
   // Подтягивает название/число участников/фото из Telegram, чтобы карточка канала в UI сразу
   // показывала реальные данные, а не только то, что пользователь вручную ввёл при подключении.
   // Фото канала приоритетнее фото бота (более узнаваемо для пользователя), фото бота — fallback,
@@ -345,9 +408,22 @@ export class TelegramProvider implements ChannelProvider {
   // человеку атрибуцию визита, где Facebook сам не подставил рекламные макросы (campaign_id и
   // т.п. остались {{...}} и корректно обнулились ещё в injectTrackingScripts, см. UNSUBSTITUTED_
   // MACRO_PATTERN) — хотя буквально следом в той же очереди стоял визит с полностью рабочей
-  // атрибуцией. Небольшое окно, не вся очередь — иначе можно было бы выдать атрибуцию визита,
-  // который по времени сильно разошёлся с реальным моментом вступления.
-  private static readonly ATTRIBUTION_LOOKAHEAD = 10;
+  // атрибуцией.
+  //
+  // Поднято с 10 до 100 (баг-репорт пользователя 2026-08-31, "часть лидов вообще без кампании/
+  // объявления, у конкурентов работает лучше") — живая проверка по nginx-логам конкретного
+  // проекта нашла ВТОРОЙ, ранее не задокументированный вид того же сбоя на стороне Facebook:
+  // помимо буквальных нерасшифрованных "{{campaign.id}}", часть реальных кликов (подтверждено
+  // по логам — реальные Instagram/Facebook in-app браузеры, не боты) приходят с campaign_id/
+  // campaign_name/adset_id и т.п. ПОЛНОСТЬЮ ОТСУТСТВУЮЩИМИ из URL (не строка-заглушка, а сам
+  // параметр не подставлен вообще), при этом ad_id/ad_name/fbclid — приходят исправно (эти поля
+  // не требуют от Facebook подниматься по иерархии объявление→группа→кампания). На лендингах с
+  // плотным трафиком (сотни визитов/час) комбинация обоих видов сбоя даёт долю "плохих" визитов
+  // заметно выше, чем закладывалось при исходном окне в 10 — реальная заявка на вступление могла
+  // проскочить мимо хорошего кандидата, который стоял в очереди чуть дальше 10-й позиции.
+  // LRANGE на 100 элементов при кэпе очереди в 500 (см. LTRIM ниже) — по-прежнему копеечная
+  // операция, не полный обход, а ощутимо более устойчивое окно поиска.
+  private static readonly ATTRIBUTION_LOOKAHEAD = 100;
 
   // Полный блок атрибуции (fbclid/ttclid/utm/пиксель/рекламные макросы + метка баера, Фаза 3.6)
   // — тот же приём и та же приблизительность, что и у getCachedLandingCountry выше, тот же
@@ -409,6 +485,29 @@ export class TelegramProvider implements ChannelProvider {
     }
   }
 
+  // Точное сопоставление по одноразовой ссылке (см. createOneTimeInviteLink выше) — без всякого
+  // приближения, в отличие от getCachedLandingAttribution выше (которая остаётся fallback'ом
+  // для ссылок, созданных до этой фичи, или когда createOneTimeInviteLink не смог создать
+  // ссылку на конкретном клике). Ключ одноразовый — DEL сразу после чтения; ссылка также
+  // отзывается явно (fire-and-forget, не блокирует обработку самой заявки).
+  private async consumeOneTimeInviteAttribution(usedInviteLink: string, channel: Channel): Promise<CachedLandingAttribution | undefined> {
+    const hash = extractInviteHash(usedInviteLink);
+    if (!hash) return undefined;
+    const key = oneTimeInviteRedisKey(hash);
+    const raw = await this.redis.get(key);
+    if (!raw) return undefined;
+    await this.redis.del(key);
+    const bot = this.getBot(channel.id);
+    if (bot && channel.tgChannelId) {
+      bot.api.revokeChatInviteLink(channel.tgChannelId, usedInviteLink).catch(() => {});
+    }
+    try {
+      return JSON.parse(raw) as CachedLandingAttribution;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async handleJoinRequest(ctx: Context, channel: Channel) {
     const tgUser = ctx.chatJoinRequest?.from;
     if (!tgUser) return;
@@ -427,7 +526,23 @@ export class TelegramProvider implements ChannelProvider {
     let landingId: string | undefined;
     let isFromOurLanding = false;
 
+    // Точное совпадение по одноразовой ссылке ЭТОГО визита (запрос пользователя 2026-08-31, см.
+    // createOneTimeInviteLink/ONE_TIME_INVITE_TTL_SECONDS выше) — проверяется ПЕРВЫМ, до общей
+    // ссылки лендинга: если ссылка одноразовая, никакого угадывания через очередь ниже вообще не
+    // требуется, landingId и вся атрибуция уже лежат в payload по точному ключу.
+    let oneTimeAttribution: CachedLandingAttribution | undefined;
     if (usedInviteLink) {
+      oneTimeAttribution = await this.consumeOneTimeInviteAttribution(usedInviteLink, channel);
+      if (oneTimeAttribution) {
+        landingId = oneTimeAttribution.landingId ?? undefined;
+        isFromOurLanding = true;
+      }
+    }
+
+    // Не одноразовая ссылка (createOneTimeInviteLink не смог создать её на этом клике, либо
+    // ссылка создана ДО этой фичи/используется старым, ещё не обновлённым лендингом) — прежнее
+    // поведение без изменений: общая ссылка лендинга/канала + FIFO/lookahead-очередь ниже.
+    if (!isFromOurLanding && usedInviteLink) {
       const landing = await this.prisma.landing.findFirst({
         where: { projectId: channel.projectId, tgInviteLink: usedInviteLink, deletedAt: null },
         select: { id: true },
@@ -451,16 +566,24 @@ export class TelegramProvider implements ChannelProvider {
 
     try {
       const bot = this.bots.get(channel.id);
+      // oneTimeAttribution уже точно наша, без всякой очереди — getCachedLandingCountry/
+      // getCachedLandingAttribution (приближение по shared-ключу лендинга) не нужны вообще,
+      // когда у нас уже есть точный per-visit результат.
       const [tgPhotoUrl, country, attribution] = await Promise.all([
         bot ? this.fetchProfilePhotoFileId(bot, tgUser.id) : undefined,
-        this.getCachedLandingCountry(landingId),
-        this.getCachedLandingAttribution(landingId),
+        oneTimeAttribution ? Promise.resolve(oneTimeAttribution.countryCode ?? undefined) : this.getCachedLandingCountry(landingId),
+        oneTimeAttribution ? Promise.resolve(oneTimeAttribution) : this.getCachedLandingAttribution(landingId),
       ]);
 
       const client = await this.clientsService.findOrCreate({
         projectId: channel.projectId,
         landingId,
         abTestGroupId: attribution?.abTestGroupId ?? undefined,
+        // Запрос пользователя 2026-08-31 ("как показано у конкурентов") — честная запись
+        // реальной ссылки, по которой пришла ЭТА заявка (одноразовая per-visit или общая
+        // лендинга/канала, см. Client.tgInviteLink в schema.prisma), а не восстановленная
+        // задним числом.
+        tgInviteLink: usedInviteLink ?? undefined,
         buyerId: attribution?.buyerRef ?? undefined,
         fbclid: attribution?.fbclid ?? undefined,
         ttclid: attribution?.ttclid ?? undefined,

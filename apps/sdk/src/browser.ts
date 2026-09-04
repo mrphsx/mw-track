@@ -5,6 +5,14 @@
 // utmMedium/utmContent/utmTerm/referrer — они отсутствуют в DTO и вызовут 400).
 
 (function (window: Window & typeof globalThis, document: Document) {
+  // Захватывается один раз до любых попыток редиректа (intent://, x-safari-https://, ...) —
+  // на некоторых WebView-реализациях присвоение window.location.href = 'intent://...' не
+  // отменяет саму навигацию страницы, но JS-видимое значение location.href после этого может
+  // остаться равным уже присвоенной intent://-строке, а не реальным URL страницы. Повторное
+  // чтение window.location.href для повторной попытки (например, по клику "Open in browser"
+  // после того, как автозапуск уже подставил intent://) в таком случае задваивало бы
+  // intent://intent://... — баг, пойманный тестом 2026-08-27 перед публикацией.
+  const originalHref = window.location.href;
   const script = document.currentScript as HTMLScriptElement;
   const projectToken = script?.getAttribute('data-project-id');
   const apiBaseUrl = (script?.getAttribute('data-api-url') || '').replace(/\/$/, '');
@@ -28,6 +36,67 @@
   // нужный момент (переход на попап 2). Без этого атрибута поведение не меняется — редирект
   // срабатывает немедленно, как и раньше, у всех остальных шаблонов.
   const autoRedirectDeferred = script?.getAttribute('data-auto-redirect-defer') === 'true';
+  // Доп. инструкции для TikTok (запрос пользователя 2026-08-25, реальный кейс — TikTok Ads
+  // показывал "Мы не можем открыть эту страницу непосредственно в TikTok" вместо лендинга,
+  // и/или встроенный браузер TikTok молча блокирует переход по tg://-диплинку) — известное,
+  // задокументированное ограничение платформы (WKWebView на iOS не даёт JS программно
+  // передать управление в реальный Safari — решение Apple, не наше; Android можно эскейпнуть
+  // через intent://-навигацию, см. ниже). Строка UA — реальная, подтверждённая на боевом
+  // трафике этого проекта ("...musical_ly_2024202030 JsSdk/1.0...AppName/musical_ly...
+  // BytedanceWebview/..."), musical_ly — унаследованное от Musical.ly, оригинального
+  // приложения до ребрендинга в TikTok. Оба маркера проверяются для надёжности.
+  const tiktokBrowserHintEnabled = script?.getAttribute('data-tiktok-browser-hint') === 'true';
+  // Отложенный показ подсказки TikTok (запрос пользователя 2026-08-27, "на 2-попаповом лендинге
+  // подсказка должна показываться только на втором/финальном попапе") — тот же приём и тот же
+  // триггер window.tcrm.triggerAutoRedirect, что и у autoRedirectDeferred выше: template.html
+  // ничего менять не нужно, он уже вызывает triggerAutoRedirect ровно в момент открытия попапа
+  // 2, а SDK ниже просто заставляет ЭТОТ ЖЕ вызов сначала проверить условие эскейпа в TikTok,
+  // и только если оно не сработало — сделать обычный авторедирект (как и раньше).
+  const tiktokHintDeferred = script?.getAttribute('data-tiktok-hint-defer') === 'true';
+  const hasTikTokUaMarker = /BytedanceWebview|musical_ly/i.test(navigator.userAgent);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  // 2026-08-27: реальный TikTok-визит с iOS пришёл БЕЗ musical_ly/BytedanceWebview вообще —
+  // подтверждено на боевых данных этого же проекта (настоящие musical_ly-визиты тоже есть, так
+  // что маркер не исчез полностью, просто ненадёжен для части сессий). Единственный доступный
+  // запасной сигнал именно на iOS: настоящий Mobile Safari всегда заканчивает UA токенами
+  // "Version/X Safari/604.1" — это стабильная, давняя конвенция WebKit, а НЕ у встроенных
+  // браузеров, которые задают собственный (или урезанный) UA. Поэтому iOS UA без явной метки
+  // TikTok, но и без Version/Safari-хвоста, тоже считаем "неопознанным встроенным браузером" —
+  // характер проблемы (tg:// не открывается) одинаковый независимо от того, какое именно
+  // приложение его показывает.
+  //
+  // На Android НЕ делаем аналогичного расширения: обычный WebView-маркер "; wv)" присутствует
+  // почти в ЛЮБОМ встроенном браузере на Android (проверено на боевых данных — ~88% всего
+  // Android-трафика внутри приложений несёт этот маркер безотносительно приложения), так что он
+  // не отличает TikTok от Instagram/WhatsApp/др. — расширение по этому признаку срабатывало бы
+  // почти на каждом Android-визите из любого приложения, а не именно там, где реально нужно.
+  const isUnidentifiedIosInAppBrowser = isIOS && !hasTikTokUaMarker && !/Version\/[\d.]+.*Safari\//.test(navigator.userAgent);
+  const isTikTokInAppBrowser = hasTikTokUaMarker || isUnidentifiedIosInAppBrowser;
+
+  // Тексты попапа (запрос пользователя 2026-08-27, "форма для замены текстов как у конкурента")
+  // — один JSON-атрибут (LandingRendererService.injectTrackingScripts), каждый ключ независимо
+  // опционален: отсутствующий/пустой ключ подставляет свой английский дефолт ниже, а не валит
+  // весь попап. Дефолт на английском — явный запрос пользователя, а не наше решение (у всех
+  // остальных подсказок SDK, включая старую версию этого же попапа, дефолт был русский).
+  let hintTextsOverride: Record<string, string> = {};
+  try {
+    hintTextsOverride = JSON.parse(script?.getAttribute('data-tiktok-hint-texts') || '{}');
+  } catch {
+    // невалидный JSON — просто работаем с пустым объектом, ниже всё равно все дефолты на месте
+  }
+  const HINT_DEFAULTS = {
+    title: 'Open in your browser',
+    subtitle: 'To join the channel, please open this page in your browser.',
+    iosSteps: 'Tap the ⋯ menu at the top-right corner.\nChoose "Open in Browser".',
+    androidSteps: 'Tap the ⋯ menu at the top-right corner.\nChoose "Open in browser".',
+    openButtonText: 'Open in browser',
+    copyButtonText: 'Copy link',
+    copiedText: 'Link copied. Paste it into your browser.',
+  };
+  function hintText(key: keyof typeof HINT_DEFAULTS): string {
+    const v = hintTextsOverride[key];
+    return typeof v === 'string' && v.trim() ? v : HINT_DEFAULTS[key];
+  }
 
   // Карта имён query-параметров трекинг-ссылки (пиксель + ad_id/campaign_id/... — запрос
   // пользователя 2026-07-04, "получить ссылку" с кастомными именами параметров, чтобы
@@ -83,7 +152,10 @@
       try {
         decoded = decodeURIComponent(decoded);
       } catch {
-        // оставляем как есть — лучше сырое значение, чем брошенное исключение
+        // decodeURIComponent бросает на оборванной %-последовательности — это сама по себе
+        // улика обрезки URL (баг-репорт 2026-08-31: значение оборвано на "...%" без хвоста),
+        // то же "не настоящее значение", что и {{...}}/__..., поэтому null, а не сырой мусор.
+        return null;
       }
     }
     return UNSUBSTITUTED_MACRO_PATTERN.test(decoded) ? null : decoded;
@@ -97,6 +169,29 @@
   function readCookie(name: string): string | null {
     const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
     return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  // Персистентный анонимный id визитора чистого веб-сайта (ChannelType.WEBSITE, запрос
+  // пользователя 2026-09-03) — localStorage, НЕ sessionStorage (тот выше используется только
+  // для внутристраничного merge fbclid/utm и намеренно не переживает новую сессию; идентичность
+  // посетителя должна переживать, иначе покупка через день после первого клика не свяжется с
+  // той же атрибуцией). Обёрнуто в try/catch — приватный режим Safari/квота могут кинуть,
+  // трекинг должен продолжать работать без повторной атрибуции, а не падать.
+  function getVisitorId(): string | null {
+    try {
+      const KEY = '_tcrm_visitor_id';
+      let id = localStorage.getItem(KEY);
+      if (!id) {
+        id =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `v_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem(KEY, id);
+      }
+      return id;
+    } catch {
+      return null;
+    }
   }
 
   // Только поля, которые реально принимает TrackEventDto — utmMedium/utmContent/
@@ -140,6 +235,7 @@
       // (как fbclid/utm выше), т.к. _fbp может проставиться fbevents.js уже ПОСЛЕ того, как этот
       // скрипт начал выполняться.
       fbp: readCookie('_fbp'),
+      visitorId: getVisitorId(),
       ...stored,
       ...extraData,
     };
@@ -166,8 +262,23 @@
     track,
     pageView: (data?: Record<string, unknown>) => track('PageView', data || {}),
     lead: (data?: Record<string, unknown>) => track('Lead', data || {}),
-    purchase: (amount: number, currency = 'USD', data?: Record<string, unknown>) =>
-      track('Purchase', { value: amount, currency, ...(data || {}) }),
+    // idempotencyKey — авто из orderId, если явно не передан (запрос пользователя 2026-09-03,
+    // "клиент делает покупку" на обычном сайте): без стабильного ключа повторный fetch
+    // (keepalive при уходе со страницы, обновление "спасибо за заказ") может задвоить покупку.
+    // Дедуп по-настоящему работает только если сайт передаёт стабильный orderId — это
+    // ограничение задокументировано в интеграции, не решается только на стороне SDK.
+    purchase: (amount: number, currency = 'USD', data?: Record<string, unknown>) => {
+      const d = data || {};
+      const idempotencyKey = d.idempotencyKey || (d.orderId ? `${projectToken}_order_${d.orderId}` : undefined);
+      return track('Purchase', { value: amount, currency, ...d, idempotencyKey });
+    },
+    // Публичный геттер persisted visitorId (запрос пользователя 2026-09-03) — нужен сайтам,
+    // которые шлют "Покупку" со своего бэкенда (серверная интеграция, надёжнее браузерного
+    // вызова) — их фронтенд должен передать этот id своему бэкенду (скрытым полем формы,
+    // fetch-заголовком и т.п.), чтобы бэкенд включил его в подписанный POST
+    // /track/server/:projectId/event и покупка привязалась к тому же посетителю, что и его
+    // предыдущие PageView/Lead.
+    getVisitorId: () => getVisitorId(),
   };
   (window as unknown as { tcrm: unknown }).tcrm = tcrm;
 
@@ -188,6 +299,55 @@
     return `${url}${sep}fbp=${encodeURIComponent(fbp)}`;
   }
 
+  // Предзагрузка готовой tg:// + https:// ссылки (запрос пользователя 2026-08-31, "возьмём у
+  // конкурента полезные наработки" — их скрипт заранее дёргает свой редирект-эндпоинт с
+  // ?format=json по клику на "Join", чтобы сама навигация по тапу была мгновенной, без сетевого
+  // round-trip). У нас нет отдельной кнопки "Join" перед авто-эскейпом TikTok — запускается сразу
+  // на детекте TikTok+Android (см. runTiktokEscapeOrAutoRedirect ниже), параллельно с уже
+  // синхронной попыткой обычного эскейпа, не блокируя и не задерживая её. Результат нужен только
+  // кнопке "Открыть" в фоллбэк-оверлее, который (если вообще покажется) появляется не раньше чем
+  // через 1.5с — к этому моменту запрос почти наверняка уже завершился. Кэшируется в rejected-
+  // safe промисе (.catch(()=>null)), чтобы повторный вызов не плодил новых запросов и никогда не
+  // падал необработанным исключением.
+  let tgLinkPromise: Promise<{ tg: string | null; https: string | null } | null> | null = null;
+  function prefetchTelegramLink(): Promise<{ tg: string | null; https: string | null } | null> {
+    if (tgLinkPromise) return tgLinkPromise;
+    if (!autoRedirectUrl) return Promise.resolve(null);
+    const base = withFbp(autoRedirectUrl);
+    const sep = base.includes('?') ? '&' : '?';
+    tgLinkPromise = fetch(`${base}${sep}format=json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    return tgLinkPromise;
+  }
+
+  // Прямой Android-intent в приложение Telegram (подсмотрено у конкурента, запрос пользователя
+  // 2026-08-31) — явный package=org.telegram.messenger резолвится Android'ом без диалога выбора
+  // приложения (в отличие от нашего generic-эскейпа ниже, который открывает НЕ Telegram, а любой
+  // внешний браузер, откуда tg:// уже пришлось бы переоткрывать вторым шагом). S.browser_fallback_
+  // url — если Telegram не установлен, Android сам откроет https-ссылку в обычном браузере, без
+  // нашего собственного повторного редиректа.
+  function buildTelegramPackageIntent(tg: string, https: string | null): string | null {
+    try {
+      const rest = tg.replace(/^tg:\/\//, '');
+      let intent = `intent://${rest}#Intent;scheme=tg;package=org.telegram.messenger`;
+      if (https) intent += `;S.browser_fallback_url=${encodeURIComponent(https)}`;
+      intent += ';end';
+      return intent;
+    } catch {
+      return null;
+    }
+  }
+
+  // Прежний generic-эскейп (открыть ЛЮБОЙ внешний браузер, без прямого прицела на Telegram) —
+  // остаётся как есть и как fallback, если предзагруженная tg-ссылка недоступна (сеть, эндпоинт
+  // не ответил): категория BROWSABLE — задокументированный Google способ "открыть в браузере",
+  // который WebView-реализации обычно пропускают (в отличие от кастомных схем вроде tg://).
+  function genericAndroidEscape(): string {
+    const target = originalHref.replace(/^https?:\/\//, '');
+    return `intent://${target}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end`;
+  }
+
   // fetch(..., {keepalive:true}) переживает уход со страницы, поэтому не ждём ответа перед
   // редиректом. Раньше здесь был переменный по длительности вейт: редирект сразу, если _fbp уже
   // есть, иначе опрос-ожидание до 3с (баг-репорт 2026-07-30 — fbp часто не успевал проставиться
@@ -205,12 +365,259 @@
     }, AUTO_REDIRECT_DELAY_MS);
   }
 
-  if (autoRedirectUrl) {
-    if (autoRedirectDeferred) {
-      tcrm.triggerAutoRedirect = fireAutoRedirect;
-    } else {
-      fireAutoRedirect();
+  // Копирует текущий URL в буфер — основной рабочий путь эскейпа на iOS (кнопка "Open in
+  // browser" ниже — best-effort попытка через window.open, которую часть встроенных браузеров
+  // всё равно блокирует, а Copy Link работает предсказуемо в любом WebView с Clipboard API или
+  // старым document.execCommand('copy') — фоллбэк на случай урезанного/старого WebView TikTok,
+  // тот же класс проблемы, что и с UA-детектом выше).
+  function copyCurrentUrl(onDone: () => void): void {
+    // originalHref, не window.location.href — на Android этот оверлей часто рендерится ПОСЛЕ
+    // уже попытанного intent://-редиректа (см. комментарий у originalHref выше), к тому моменту
+    // location.href на некоторых WebView может уже отражать саму intent://-строку, а не
+    // реальный адрес лендинга — копировать в буфер нужно именно исходную ссылку.
+    const url = originalHref;
+    function fallback(): void {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.setAttribute('style', 'position:fixed;top:0;left:0;opacity:0;');
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        // некуда деваться — просто не показываем подтверждение, если и это не сработало
+      }
+      document.body.removeChild(ta);
+      onDone();
     }
+    const clipboard = (navigator as Navigator & { clipboard?: { writeText(text: string): Promise<void> } }).clipboard;
+    if (clipboard?.writeText) {
+      clipboard.writeText(url).then(onDone, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  // Показывает на весь экран подсказку "открой в браузере" (запрос пользователя 2026-08-27,
+  // "полностью как у конкурента" — редактируемые тексты + кнопка копирования ссылки с
+  // подтверждением и стрелкой-указателем, а не просто статичный текст). Единственный НАДЁЖНЫЙ
+  // путь на iOS — вручную открыть Safari и вставить ссылку (Apple не даёт JS форсировать переход,
+  // см. комментарий у isTikTokInAppBrowser выше); "Open in browser" — best-effort попытка на
+  // случай, если конкретный WebView всё же пропустит window.open. Простой self-contained оверлей
+  // без внешних шрифтов/иконок — скрипт исполняется на произвольных сторонних доменах. Строится
+  // через DOM API (не innerHTML с конкатенацией строк) — title/subtitle/шаги приходят из
+  // пользовательских настроек лендинга (TiktokHintTextsDto), а не только из хардкода, так что
+  // безопаснее не собирать HTML руками.
+  // stepsText — 'iosSteps' или 'androidSteps' в зависимости от платформы (см. вызов ниже).
+  function showTikTokBrowserHintOverlay(stepsKey: 'iosSteps' | 'androidSteps'): void {
+    function render(): void {
+      // Баннер снизу экрана, а не полноэкранная модалка с тёмной подложкой (запрос пользователя
+      // 2026-08-27: "подсказка перекрывает сам лэндинг" — раньше inset:0 + rgba(0,0,0,.85) целиком
+      // прятал контент лендинга под собой). Лендинг остаётся полностью видимым и скроллируемым
+      // над баннером — никакого затемняющего слоя на весь экран.
+      const overlay = document.createElement('div');
+      overlay.setAttribute(
+        'style',
+        'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;' +
+          'max-height:75vh;overflow-y:auto;' +
+          'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;',
+      );
+
+      const card = document.createElement('div');
+      card.setAttribute(
+        'style',
+        'background:#fff;border-radius:20px 20px 0 0;padding:24px 24px calc(24px + env(safe-area-inset-bottom, 0px));' +
+          'text-align:center;box-shadow:0 -8px 32px rgba(0,0,0,.35);',
+      );
+
+      const icon = document.createElement('div');
+      icon.setAttribute('style', 'font-size:40px;line-height:1;margin-bottom:12px;');
+      icon.textContent = '⋯';
+      card.appendChild(icon);
+
+      const title = document.createElement('div');
+      title.setAttribute('style', 'font-size:17px;font-weight:600;color:#111;margin-bottom:8px;');
+      title.textContent = hintText('title');
+      card.appendChild(title);
+
+      const subtitle = document.createElement('div');
+      subtitle.setAttribute('style', 'font-size:14px;line-height:1.5;color:#555;margin-bottom:16px;');
+      subtitle.textContent = hintText('subtitle');
+      card.appendChild(subtitle);
+
+      const stepsList = document.createElement('ol');
+      stepsList.setAttribute('style', 'text-align:left;font-size:13px;line-height:1.6;color:#333;margin:0 0 20px;padding-left:20px;');
+      hintText(stepsKey)
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .forEach((step) => {
+          const li = document.createElement('li');
+          li.textContent = step;
+          stepsList.appendChild(li);
+        });
+      card.appendChild(stepsList);
+
+      const buttonRow = document.createElement('div');
+      buttonRow.setAttribute('style', 'display:flex;flex-direction:column;gap:8px;');
+
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.textContent = hintText('openButtonText');
+      openBtn.setAttribute(
+        'style',
+        'appearance:none;border:none;border-radius:10px;padding:12px;font-size:14px;font-weight:600;' +
+          'background:#1F4E9C;color:#fff;cursor:pointer;',
+      );
+      openBtn.addEventListener('click', () => {
+        try {
+          if (isIOS) {
+            // window.open(...) молча ничего не делает в большинстве встроенных браузеров —
+            // подтверждено реальным репортом пользователя 2026-08-27 ("кнопка вообще не
+            // работает"). x-safari-https:// — полудокументированная, но реальная и рабочая
+            // (проверено на LinkedIn-подобных встроенных браузерах, см. исследование перед
+            // внедрением) схема, которую сама iOS резолвит в Safari — лучший из доступных
+            // best-effort вариантов на iOS, гарантий нет (конкретно TikTok может блокировать
+            // и её, как и tg://), поэтому Copy Link ниже остаётся единственным НАДЁЖНЫМ путём.
+            const u = new URL(originalHref);
+            window.location.href = `x-safari-https://${u.host}${u.pathname}${u.search}${u.hash}`;
+          } else {
+            // Android: если предзагрузка (запущена ещё на входе в TikTok-ветку, см.
+            // prefetchTelegramLink выше) успела вернуть готовую tg-ссылку — открываем ПРЯМОЙ
+            // intent в приложение Telegram (один шаг, вместо "эскейп в браузер → тот сам
+            // откроет tg://" как раньше). Оверлей появляется не раньше чем через 1.5с после
+            // старта запроса, так что данные почти наверняка уже готовы. Без них — прежний
+            // generic-эскейп, тот же, что уже пытался открыться на автозапуске.
+            (tgLinkPromise || prefetchTelegramLink()).then((data) => {
+              const packageIntent = data?.tg ? buildTelegramPackageIntent(data.tg, data.https) : null;
+              window.location.href = packageIntent || genericAndroidEscape();
+            });
+          }
+        } catch {
+          // у пользователя всё ещё есть кнопка "Copy link" ниже как гарантированный путь
+        }
+      });
+      buttonRow.appendChild(openBtn);
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.textContent = hintText('copyButtonText');
+      copyBtn.setAttribute(
+        'style',
+        'appearance:none;border:1px solid #ddd;border-radius:10px;padding:12px;font-size:14px;font-weight:600;' +
+          'background:#fff;color:#111;cursor:pointer;',
+      );
+      buttonRow.appendChild(copyBtn);
+      card.appendChild(buttonRow);
+      overlay.appendChild(card);
+
+      // Стрелка-указатель на "···" в правом верхнем углу экрана (там, где реально находится
+      // меню встроенного браузера) — появляется вместе с подтверждением копирования, не раньше.
+      const arrow = document.createElement('div');
+      arrow.setAttribute(
+        'style',
+        'position:fixed;top:8px;right:16px;z-index:2147483647;display:none;flex-direction:column;align-items:flex-end;' +
+          'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;',
+      );
+      const arrowGlyph = document.createElement('div');
+      arrowGlyph.setAttribute('style', 'font-size:28px;color:#fff;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,.6);');
+      arrowGlyph.textContent = '↑';
+      const arrowLabel = document.createElement('div');
+      arrowLabel.setAttribute(
+        'style',
+        'margin-top:4px;max-width:200px;background:#fff;color:#111;border-radius:10px;padding:8px 12px;' +
+          'font-size:12px;line-height:1.4;text-align:right;box-shadow:0 2px 12px rgba(0,0,0,.3);',
+      );
+      arrowLabel.textContent = hintText('copiedText');
+      arrow.appendChild(arrowGlyph);
+      arrow.appendChild(arrowLabel);
+      document.body.appendChild(arrow);
+
+      copyBtn.addEventListener('click', () => {
+        copyBtn.disabled = true;
+        copyCurrentUrl(() => {
+          arrow.style.display = 'flex';
+          copyBtn.textContent = hintText('copiedText');
+        });
+      });
+
+      document.body.appendChild(overlay);
+
+      // Резервируем снизу body место под баннер (запрос пользователя 2026-08-27, "подсказка
+      // всё ещё перекрывает лэндинг снизу" — баннер плавает поверх фикс-контента вместо того,
+      // чтобы потеснить его). Многие шаблоны (в т.ч. age-gate-invite) центрируют карточку
+      // flex'ом на всю высоту body — добавленный снизу padding пересчитывает центр в
+      // оставшемся пространстве НАД баннером, а не прячет контент под ним; для обычных
+      // прокручиваемых страниц просто добавляет запас внизу документа. Измеряется ПОСЛЕ
+      // appendChild — до этого overlay не в документе, getBoundingClientRect() вернул бы 0.
+      // body.style.paddingBottom не откатываем: оверлей — терминальное состояние этой загрузки.
+      const existingPaddingBottom = window.getComputedStyle(document.body).paddingBottom;
+      document.body.style.paddingBottom = `calc(${existingPaddingBottom} + ${overlay.getBoundingClientRect().height}px)`;
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', render);
+    } else {
+      render();
+    }
+  }
+
+  // Эскейп из встроенного браузера TikTok (запрос пользователя 2026-08-25) + обычный
+  // авторедирект объединены в одну функцию: эскейп проверяется ДО авторедиректа и, если
+  // сработал, заменяет его целиком на этой загрузке — обычный tg://-переход внутри TikTok либо
+  // тоже заблокирован, либо и есть первопричина блокировки (см. полный разбор в CLAUDE.md/
+  // памяти). Как только человек окажется в реальном браузере, страница откроется заново уже без
+  // isTikTokInAppBrowser, и авторедирект сработает как обычно.
+  function runTiktokEscapeOrAutoRedirect(): void {
+    if (tiktokBrowserHintEnabled && isTikTokInAppBrowser) {
+      if (isIOS) {
+        // iOS: WKWebView внутри TikTok не даёт JS форсировать переход в Safari — это ограничение
+        // самой платформы (подтверждено несколькими независимыми источниками), единственный
+        // рабочий путь — подсказать пользователю сделать это руками.
+        showTikTokBrowserHintOverlay('iosSteps');
+      } else {
+        // Android: intent://-навигация с category=BROWSABLE — задокументированный Google способ
+        // "открыть в браузере", который WebView-реализации обычно пропускают (в отличие от
+        // кастомных схем вроде tg://, которые именно поэтому блокируются как потенциальный угон
+        // в чужое приложение без ведома пользователя). Запрос пользователя 2026-08-27 — если этот
+        // авто-эскейп по какой-то причине не сработал (страница всё ещё видима спустя 1.5с — тот
+        // же класс WebView-квирков, что и обнаруженный на iOS UA-детект), показываем тот же
+        // оверлей с инструкцией как на iOS, вместо молчаливого зависания. Слушатели снимаются,
+        // если уход со страницы всё же случился (visibilitychange/pagehide) — тогда фоллбэк не
+        // должен всплыть.
+        // Предзагружаем прямую tg-ссылку в фоне (запрос пользователя 2026-08-31) — нужна только
+        // кнопке "Открыть" в фоллбэк-оверлее ниже, если он вообще покажется; не блокирует и не
+        // задерживает сам синхронный эскейп сразу под ней.
+        prefetchTelegramLink();
+        let escaped = false;
+        const onLeave = () => {
+          escaped = true;
+        };
+        document.addEventListener('visibilitychange', onLeave);
+        window.addEventListener('pagehide', onLeave);
+        window.location.href = genericAndroidEscape();
+        window.setTimeout(() => {
+          document.removeEventListener('visibilitychange', onLeave);
+          window.removeEventListener('pagehide', onLeave);
+          if (!escaped) showTikTokBrowserHintOverlay('androidSteps');
+        }, 1500);
+      }
+      return;
+    }
+    if (autoRedirectUrl) fireAutoRedirect();
+  }
+
+  // Отложенный запуск (запрос пользователя 2026-08-27, "на 2-попаповом лендинге подсказка
+  // должна показываться только на втором попапе") — тот же приём, что и у отдельного
+  // autoRedirectDeferred (шаблон age-gate-invite): template.html уже вызывает
+  // window.tcrm.triggerAutoRedirect() ровно в момент открытия попапа 2, ничего в самом шаблоне
+  // менять не нужно — здесь просто решаем, вызвать runTiktokEscapeOrAutoRedirect() сразу на
+  // загрузке (обычные шаблоны, как и раньше) или положить её в window.tcrm.triggerAutoRedirect и
+  // ждать явного вызова (если ЛИБО эскейп TikTok, ЛИБО обычный авторедирект помечены deferred).
+  if (tiktokHintDeferred || autoRedirectDeferred) {
+    tcrm.triggerAutoRedirect = runTiktokEscapeOrAutoRedirect;
+  } else {
+    runTiktokEscapeOrAutoRedirect();
   }
 
   // <button data-track="Lead">Вступить</button>

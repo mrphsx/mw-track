@@ -90,7 +90,7 @@ interface ClientsFilterProps {
 // Без children-рендер-пропа у SelectValue триггер показывает сырое value ("all"/"true"), а не
 // подпись пункта — тот же класс проблемы, что уже чинили у выбора платформы пикселя/проекта
 // при создании лендинга (Base UI не резолвит подпись сама по себе без items или children).
-const CHANNEL_LABEL: Record<string, string> = { all: 'Все', TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', INSTAGRAM: 'Instagram' };
+const CHANNEL_LABEL: Record<string, string> = { all: 'Все', TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', INSTAGRAM: 'Instagram', WEBSITE: 'Website' };
 const PURCHASE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с покупками', false: 'Только без покупок' };
 const DIALOGUE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с диалогом', false: 'Только без диалога' };
 const AD_SOURCE_LABEL: Record<string, string> = { all: 'Все', FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
@@ -146,6 +146,7 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
                 <SelectItem value="TELEGRAM">Telegram</SelectItem>
                 <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
                 <SelectItem value="INSTAGRAM">Instagram</SelectItem>
+                <SelectItem value="WEBSITE">Website</SelectItem>
               </SelectContent>
             </Select>
           </div>

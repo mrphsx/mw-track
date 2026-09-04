@@ -4,6 +4,7 @@
 // авторизации любому браузеру — лендинги наоборот никогда не должны быть публичными.
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { Client } = require('minio');
 
 require('dotenv').config({ path: path.join(__dirname, '../../../.env') });
@@ -47,6 +48,18 @@ async function main() {
 
   await minio.fPutObject(bucket, 'track.js', file, { 'Content-Type': 'application/javascript' });
   console.log(`[publish-cdn] uploaded track.js to bucket "${bucket}" (public-read)`);
+
+  // track.js отдаётся с Cache-Control:max-age=14400 (4ч, дефолт Cloudflare для статики) —
+  // без версии в URL это раз за разом обкрадывало ручную проверку фиксов SDK ещё до истечения
+  // TTL (2026-08-25: TikTok-подсказка на iOS не появлялась именно из-за кэша, а не бага —
+  // выяснилось только через прямую эмуляцию реального TikTok-браузера). Хэш содержимого,
+  // записанный сюда, читает LandingRendererService и подставляет как ?v=<hash> в src
+  // track.js — при следующей пересборке/деплое apps/api ссылка на лендингах меняется
+  // сама, и браузер/CDN гарантированно тянут свежий файл, минуя любой TTL-кэш.
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex').slice(0, 10);
+  const versionFile = path.join(__dirname, '../../api/src/modules/landings/sdk-version.json');
+  fs.writeFileSync(versionFile, JSON.stringify({ hash }) + '\n');
+  console.log(`[publish-cdn] wrote sdk version hash "${hash}" to ${path.relative(process.cwd(), versionFile)}`);
 }
 
 main().catch((err) => {

@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { CityTime } from '@/components/city-time';
 import { PersonalAccountIndicator } from '@/components/personal-account-indicator';
 
@@ -15,6 +16,7 @@ interface ProjectHeaderData {
     id: string;
     type: string;
     tgAvatarFileId: string | null;
+    websiteFaviconUrl?: string | null;
     // Личный MTProto-аккаунт, отдельно от самого бота (запрос пользователя 2026-07-21:
     // "значок если добавлен личный аккаунт телеграм").
     tgPersonalConnected?: boolean;
@@ -36,10 +38,13 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2.5">
-        {project?.channel?.type === 'TELEGRAM' ? (
+        {/* WEBSITE добавлен в гейт (запрос пользователя 2026-09-03, найдено живой проверкой:
+            без этого фавиконка не показывалась даже с реально сохранённым websiteFaviconUrl,
+            хотя на вкладке "Каналы" уже показывалась — тот же гейт там уже был расширен). */}
+        {project?.channel?.type === 'TELEGRAM' || project?.channel?.type === 'WEBSITE' ? (
           <ChannelAvatar
             channelId={project.channel.id}
-            hasAvatar={!!project.channel.tgAvatarFileId}
+            hasAvatar={hasChannelAvatar(project.channel)}
             fallbackLetter={project.name}
           />
         ) : (

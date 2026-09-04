@@ -1,19 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Star, X } from 'lucide-react';
-import { format } from 'date-fns';
 import { api } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ClientAvatar } from '@/components/clients/client-avatar';
-import { ClientRow } from '@/components/clients/clients-table';
-import { ClientDetailContent } from '@/components/clients/client-detail-drawer';
+import { AudiencePeriodSelector } from '@/components/shared/audience-period-selector';
+import { AudiencePeriodValue, computeAudiencePeriodDates, toApiPeriodParams, useAudiencePeriodQueryState } from '@/lib/use-audience-period';
 
 interface OverlapMatrix {
   projects: { id: string; name: string }[];
@@ -21,28 +13,42 @@ interface OverlapMatrix {
   pairs: { projectAId: string; projectBId: string; count: number }[];
 }
 
-interface OverlapDetailRow {
-  tgUserId: string;
-  clientA: ClientRow;
-  clientB: ClientRow;
+// Цветовая шкала по проценту пересечения (запрос пользователя 2026-08-31: "до 10% зелёный,
+// 20 - жёлтый, 30 - светло красный, 50 - тёмно красный") — 4 диапазона, верхняя граница
+// открытая (30%+ включает и 50%, и всё что больше — "50" в запросе просто ориентир внутри
+// самой тёмной зоны, не отдельный 5й порог).
+function getHeatClasses(pct: number): string {
+  if (pct < 10) return 'bg-green-500 dark:bg-green-600 text-white';
+  if (pct < 20) return 'bg-yellow-400 dark:bg-yellow-500 text-slate-900';
+  if (pct < 30) return 'bg-red-300 dark:bg-red-400/80 text-slate-900';
+  return 'bg-red-700 dark:bg-red-800 text-white';
 }
 
-interface OverlapDetailPage {
-  items: OverlapDetailRow[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
+// Ссылка на страницу пары с уже применённым текущим периодом (запрос пользователя 2026-08-31:
+// период есть и на странице пересечений, и на странице конкретной пары) — те же query-параметры,
+// что usePeriodQueryState уже пишет в адресную строку этой самой страницы.
+function pairHref(aId: string, bId: string, period: AudiencePeriodValue): string {
+  // computeAudiencePeriodDates, не period.from/to напрямую — тот же хук хранит from/to в своём
+  // React-state только для 'custom' (именованные пресеты пишут даты сразу в URL строки, но не
+  // возвращают их обратно в сам объект period) — без пересчёта ссылка на пару могла остаться
+  // без дат для пресетов (функционально не критично — бэкенд сам пересчитывает окно по имени
+  // периода, — но ломает чистоту шаримой ссылки).
+  const dates = computeAudiencePeriodDates(period);
+  const params = new URLSearchParams({ period: period.period });
+  if (dates.from) params.set('from', dates.from);
+  if (dates.to) params.set('to', dates.to);
+  return `/audience/${aId}/${bId}?${params.toString()}`;
 }
-
-const PAGE_SIZE = 20;
 
 export default function AudiencePage() {
-  const [detailPair, setDetailPair] = useState<{ a: { id: string; name: string }; b: { id: string; name: string } } | null>(null);
+  // Дефолт 30d (запрос пользователя 2026-08-31: "изначально поставь чтобы было за 30 дней") —
+  // раньше было 'today', на что часто выпадало пусто, пока пользователь сам не переключал период.
+  const [period, setPeriod] = useAudiencePeriodQueryState('30d');
+  const periodParams = toApiPeriodParams(period);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['audience-overlap'],
-    queryFn: async () => (await api.get<OverlapMatrix>('/audience/overlap')).data,
+    queryKey: ['audience-overlap', periodParams],
+    queryFn: async () => (await api.get<OverlapMatrix>('/audience/overlap', { params: periodParams })).data,
   });
 
   const getCount = (aId: string, bId: string): number => {
@@ -54,15 +60,28 @@ export default function AudiencePage() {
     return pair?.count || 0;
   };
 
+  // % от общего числа подписчиков СТРОКИ (rowId), не колонки — матрица по сырым числам
+  // симметрична (пересечение A∩B = B∩A), а вот проценты — нет, у каждой строки свой знаменатель.
+  const getPercent = (rowId: string, count: number): number => {
+    const total = data?.totals[rowId] || 0;
+    return total > 0 ? Math.round((count / total) * 100) : 0;
+  };
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Пересечение аудиторий</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Клиенты, которые состоят одновременно в нескольких проектах компании — сопоставление
-          по Telegram user id. Диагональ — общее число идентифицированных клиентов проекта.
+          Подписчики, которые состоят одновременно в нескольких проектах компании — сопоставление
+          по Telegram user id. Диагональ — общее число подписчиков проекта (без учёта внешних
+          контактов, которые просто написали боту/аккаунту, но не подписались через воронку).
+          Процент в квадрате — доля ОТ подписчиков проекта в начале строки, поэтому у одной и той
+          же пары ячеек проценты слева направо и сверху вниз обычно разные. Клик по ячейке
+          открывает подробное сравнение этой пары.
         </p>
       </div>
+
+      <AudiencePeriodSelector value={period} onChange={setPeriod} />
 
       {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
 
@@ -82,9 +101,18 @@ export default function AudiencePage() {
               <thead>
                 <tr>
                   <th className="p-2 text-left text-sm text-muted-foreground"></th>
+                  {/* Вертикальные заголовки — каждая колонка теперь занимает место только под
+                      сам квадрат, а не под всё название проекта, помещается заметно больше
+                      проектов. maxHeight+ellipsis — потолок высоты шапки, полное имя в title. */}
                   {data.projects.map((p) => (
-                    <th key={p.id} className="p-2 text-sm font-medium text-left whitespace-nowrap">
-                      {p.name}
+                    <th key={p.id} className="p-1.5 pb-2 text-sm font-medium align-bottom">
+                      <div
+                        className="whitespace-nowrap overflow-hidden text-ellipsis mx-auto"
+                        style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)', maxHeight: 140 }}
+                        title={p.name}
+                      >
+                        {p.name}
+                      </div>
                     </th>
                   ))}
                 </tr>
@@ -92,32 +120,31 @@ export default function AudiencePage() {
               <tbody>
                 {data.projects.map((rowProject) => (
                   <tr key={rowProject.id}>
-                    <td className="p-2 text-sm font-medium whitespace-nowrap">{rowProject.name}</td>
+                    <td className="p-2 text-sm font-medium whitespace-nowrap align-middle">{rowProject.name}</td>
                     {data.projects.map((colProject) => {
                       const isDiagonal = rowProject.id === colProject.id;
                       const count = getCount(rowProject.id, colProject.id);
+                      const pct = getPercent(rowProject.id, count);
+                      // Запрос пользователя 2026-08-31: "сделай ячейку квадратной и большой, все
+                      // одного размера, округлой по нашему дизайну" + покрасить по проценту —
+                      // раньше была маленькая пилюля переменной ширины (зависела от того,
+                      // сколько цифр в числе), теперь фиксированный квадрат 72×72, цвет —
+                      // теплокарта по проценту (только у недиагональных ячеек — у диагонали
+                      // процент не имеет смысла, всегда 100% от самого себя).
                       return (
-                        <td key={colProject.id} className="p-2 text-center">
+                        <td key={colProject.id} className="p-1">
                           {isDiagonal ? (
-                            <Badge variant="outline">{count}</Badge>
-                          ) : count > 0 ? (
-                            <button
-                              type="button"
-                              onClick={() => setDetailPair({ a: rowProject, b: colProject })}
-                              className="inline-flex"
-                            >
-                              <Badge
-                                className={`cursor-pointer hover:opacity-80 ${
-                                  detailPair && detailPair.a.id === rowProject.id && detailPair.b.id === colProject.id
-                                    ? 'ring-2 ring-offset-1 ring-blue-500'
-                                    : ''
-                                }`}
-                              >
-                                {count}
-                              </Badge>
-                            </button>
+                            <div className="w-[72px] h-[72px] rounded-xl bg-muted flex items-center justify-center text-base font-semibold text-muted-foreground">
+                              {count}
+                            </div>
                           ) : (
-                            <span className="text-muted-foreground">0</span>
+                            <Link
+                              href={pairHref(rowProject.id, colProject.id, period)}
+                              className={`w-[72px] h-[72px] rounded-xl flex flex-col items-center justify-center gap-0.5 transition-transform hover:scale-105 ${getHeatClasses(pct)}`}
+                            >
+                              <span className="text-lg font-bold leading-none">{count}</span>
+                              <span className="text-xs opacity-90 leading-none">{pct}%</span>
+                            </Link>
                           )}
                         </td>
                       );
@@ -129,215 +156,6 @@ export default function AudiencePage() {
           </CardContent>
         </Card>
       )}
-
-      {detailPair && <OverlapComparisonPanel pair={detailPair} onClose={() => setDetailPair(null)} />}
     </div>
-  );
-}
-
-// История переделок этой панели за 2026-07-30 (от старой к новой): модалка с одной плоской
-// строкой на клиента → две полные ClientsTable рядом → одна карточка на клиента с 2 колонками
-// (каждая — набор бейджей) → ЭТА версия (запрос: "нужен список маленький как он сделан на
-// странице клиентов... информации не надо много... когда подписался, не статус, есть или нет
-// диалога, сумма покупок, статус бота"). Компактная таблица — один клиент на строку, 4 узких
-// колонки на каждый проект (Подписан/Диалог/Покупки/Бот), без status-бейджей — тот же принцип
-// плотности, что и обычный список клиентов, просто с двумя проекциями рядом вместо одной. Клик
-// по строке открывает ОДНУ модалку с полной карточкой клиента (запрос: "при открытии записи
-// покажет уже расширенную информацию... со всеми данными что есть в карточке клиента... вплоть
-// до данных рекламы") — сразу в двух колонках, по одной на проект, через переиспользуемый
-// ClientDetailContent (вынесен из ClientDetailDrawer тем же днём).
-function OverlapComparisonPanel({
-  pair,
-  onClose,
-}: {
-  pair: { a: { id: string; name: string }; b: { id: string; name: string } };
-  onClose: () => void;
-}) {
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
-  const [expanded, setExpanded] = useState<OverlapDetailRow | null>(null);
-
-  useEffect(() => setPage(1), [pair.a.id, pair.b.id]);
-  // Смена поискового запроса сбрасывает страницу — то же поведение, что и у обычного списка
-  // клиентов (запрос пользователя 2026-07-30: "тоже нужен поиск, по имени, user_id, username").
-  useEffect(() => setPage(1), [search]);
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['audience-overlap-detail', pair.a.id, pair.b.id, page, search],
-    queryFn: async () =>
-      (
-        await api.get<OverlapDetailPage>(`/audience/overlap/${pair.a.id}/${pair.b.id}`, {
-          params: { page, limit: PAGE_SIZE, search: search || undefined },
-        })
-      ).data,
-    placeholderData: (prev) => prev,
-  });
-
-  return (
-    <Card>
-      <CardContent className="p-4 space-y-4">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h2 className="font-medium">
-            {pair.a.name} ∩ {pair.b.name}
-            {data && <span className="text-sm text-muted-foreground font-normal ml-2">{data.total} клиентов</span>}
-          </h2>
-          <div className="flex items-center gap-2">
-            <Input
-              placeholder="Имя, username, user_id..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-56"
-            />
-            <Button size="icon" variant="ghost" onClick={onClose}>
-              <X className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-
-        {isLoading && !data && <p className="text-sm text-muted-foreground">Загрузка...</p>}
-        {data && data.items.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            {search ? 'Ничего не найдено по этому запросу.' : 'Пересечений не найдено.'}
-          </p>
-        )}
-
-        {!!data?.items.length && (
-          <div className="border rounded-lg overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead rowSpan={2} className="align-bottom">
-                    Клиент
-                  </TableHead>
-                  <TableHead colSpan={4} className="text-center border-l">
-                    {pair.a.name}
-                  </TableHead>
-                  <TableHead colSpan={4} className="text-center border-l">
-                    {pair.b.name}
-                  </TableHead>
-                </TableRow>
-                <TableRow>
-                  <TableHead className="border-l">Подписан</TableHead>
-                  <TableHead>Диалог</TableHead>
-                  <TableHead>Покупки</TableHead>
-                  <TableHead>Бот</TableHead>
-                  <TableHead className="border-l">Подписан</TableHead>
-                  <TableHead>Диалог</TableHead>
-                  <TableHead>Покупки</TableHead>
-                  <TableHead>Бот</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.items.map((item) => (
-                  <TableRow key={item.tgUserId} className="cursor-pointer" onClick={() => setExpanded(item)}>
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-2">
-                        <ClientAvatar
-                          projectId={pair.a.id}
-                          clientId={item.clientA.id}
-                          hasAvatar={!!item.clientA.tgPhotoUrl}
-                          fallbackLetter={item.clientA.tgFirstName || item.clientA.tgUsername || '?'}
-                        />
-                        <span className="truncate">{item.clientA.tgFirstName || item.clientA.tgUsername || '—'}</span>
-                        {item.clientA.tgIsPremium && <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400 shrink-0" />}
-                      </div>
-                    </TableCell>
-                    <OverlapCompactCells client={item.clientA} borderLeft />
-                    <OverlapCompactCells client={item.clientB} borderLeft />
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-
-        {data && data.totalPages > 1 && (
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>
-              Страница {data.page} из {data.totalPages}
-            </span>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                Назад
-              </Button>
-              <Button size="sm" variant="outline" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)}>
-                Вперёд
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-
-      <OverlapExpandedDialog item={expanded} pair={pair} onClose={() => setExpanded(null)} />
-    </Card>
-  );
-}
-
-// 4 узкие колонки на один проект — только то, что попросили ("информации не надо много"): дата
-// подписки (не статус-бейдж), диалог да/нет, сумма покупок, статус бота.
-function OverlapCompactCells({ client, borderLeft }: { client: ClientRow; borderLeft?: boolean }) {
-  return (
-    <>
-      <TableCell className={`text-sm text-muted-foreground whitespace-nowrap ${borderLeft ? 'border-l' : ''}`}>
-        {client.subscribedAt ? format(new Date(client.subscribedAt), 'd MMM yyyy, HH:mm') : '—'}
-      </TableCell>
-      <TableCell className="text-sm">{client.firstDialogueAt ? 'Да' : '—'}</TableCell>
-      <TableCell className={`text-sm ${client.hasPurchase ? 'font-semibold text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`}>
-        ${Number(client.totalSpent).toFixed(2)}
-      </TableCell>
-      <TableCell>
-        {!client.botActivatedAt ? (
-          <Badge variant="outline">Не активирован</Badge>
-        ) : !client.isBotActive ? (
-          <Badge variant="destructive">Заблокирован</Badge>
-        ) : (
-          <Badge>Активирован</Badge>
-        )}
-      </TableCell>
-    </>
-  );
-}
-
-// Полная карточка клиента в двух колонках — по одной на проект, тот же ClientDetailContent, что
-// и обычный ClientDetailDrawer использует для одного проекта (включая блок "Источник трафика" со
-// всеми рекламными полями, финансы, историю покупок, удаление GDPR).
-function OverlapExpandedDialog({
-  item,
-  pair,
-  onClose,
-}: {
-  item: OverlapDetailRow | null;
-  pair: { a: { id: string; name: string }; b: { id: string; name: string } };
-  onClose: () => void;
-}) {
-  return (
-    <Dialog open={!!item} onOpenChange={(open) => !open && onClose()}>
-      {/* Баг-репорт пользователя 2026-07-30: "модальное окно слишком маленькое для двух
-          клиентов, ничего не помещается" — max-w-5xl (1024px) на 2 колонки с "Источником
-          трафика" (13 полей) + финансами + историей покупок было слишком тесно. Расширено до
-          почти всей ширины экрана (max-w-[95vw]), с потолком в 1600px, чтобы не растягивалось
-          абсурдно широко на ultra-wide мониторах. Заодно (тот же баг-репорт): "убери функционал
-          удаления клиента, редактирования, добавления покупок" — readOnly на обоих
-          ClientDetailContent, это сравнение для просмотра, а не форма управления. */}
-      <DialogContent className="max-w-[95vw] xl:max-w-[1600px] max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>
-            {item?.clientA.tgFirstName || item?.clientA.tgUsername || 'Клиент'} — {pair.a.name} ∩ {pair.b.name}
-          </DialogTitle>
-        </DialogHeader>
-        {item && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 divide-y md:divide-y-0 md:divide-x">
-            <div className="min-w-0">
-              <div className="text-xs font-medium text-muted-foreground px-1 pb-2">{pair.a.name}</div>
-              <ClientDetailContent projectId={pair.a.id} clientId={item.clientA.id} onClose={onClose} readOnly />
-            </div>
-            <div className="min-w-0 md:pl-6">
-              <div className="text-xs font-medium text-muted-foreground px-1 pb-2">{pair.b.name}</div>
-              <ClientDetailContent projectId={pair.b.id} clientId={item.clientB.id} onClose={onClose} readOnly />
-            </div>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }

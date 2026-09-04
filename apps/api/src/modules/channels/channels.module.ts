@@ -15,6 +15,7 @@ import { TelegramProvider } from './providers/telegram.provider';
 import { TelegramPersonalService } from './providers/telegram-personal.service';
 import { WhatsAppProvider } from './providers/whatsapp.provider';
 import { InstagramProvider } from './providers/instagram.provider';
+import { WebsiteProvider } from './providers/website.provider';
 import { JoinRequestApprovalProcessor } from './join-request-approval.processor';
 import { BotScenarioStepProcessor } from './bot-scenario-step.processor';
 import { TelegramPersonalHealthCron } from './telegram-personal-health.cron';
@@ -43,6 +44,7 @@ import { TelegramPersonalHealthCron } from './telegram-personal-health.cron';
     EncryptionService,
     WhatsAppProvider,
     InstagramProvider,
+    WebsiteProvider,
     JoinRequestApprovalProcessor,
     BotScenarioStepProcessor,
     TelegramPersonalHealthCron,

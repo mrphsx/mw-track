@@ -56,6 +56,10 @@ export interface PrimaryChannel {
   tgPersonalUsername: string | null;
   tgChannelMembersCount: number | null;
   tgAvatarFileId: string | null;
+  // Иконка сайта (запрос пользователя 2026-09-03: "для website такого нет, можешь брать иконку
+  // подключенного сайта?") — необязательное поле, старые типы данных (до этого поля) просто не
+  // будут его нести, hasChannelAvatar ниже трактует undefined так же, как null.
+  websiteFaviconUrl?: string | null;
 }
 
 export interface LandingProject {
@@ -93,6 +97,13 @@ export interface LandingItem {
 
 export function primaryChannel(landing: LandingItem): PrimaryChannel | null {
   return landing.project.channel;
+}
+
+// Есть ли что показать в <ChannelAvatar> — раньше везде инлайнилось как `!!channel.tgAvatarFileId`
+// (запрос пользователя 2026-09-03: "для website такого нет, можешь брать иконку подключенного
+// сайта?"), теперь один общий хелпер вместо ~15 копий одной и той же проверки по всему фронтенду.
+export function hasChannelAvatar(channel: Pick<PrimaryChannel, 'tgAvatarFileId' | 'websiteFaviconUrl'> | null | undefined): boolean {
+  return !!channel?.tgAvatarFileId || !!channel?.websiteFaviconUrl;
 }
 
 // Подпись группы A/B-теста для бейджа на карточке (запрос пользователя 2026-07-17: "не понятно
@@ -233,18 +244,20 @@ export interface LinkPixel {
 // {{ad.id}} и т.п. превратятся в %7B%7Bad.id%7D%7D, а Facebook подставляет макросы именно
 // по буквальному "{{...}}" в URL destination (кодирование тоже валидно для Facebook, но
 // пример пользователя — с сырыми скобками, соответствуем 1:1).
-export function buildTrackedLink(
-  attachment: Pick<LandingAttachment, 'domain' | 'path'>,
+//
+// Извлечено из buildTrackedLink (запрос пользователя 2026-09-03: ссылка для проекта типа
+// "Обычный сайт" — без Лендинга/DomainPath вообще, см. buildWebsiteTrackedLink ниже) — сама
+// логика buyerRef/pixelId/рекламных макросов не зависит от того, куда потом клеится итоговая
+// строка параметров (домен+путь лендинга или сам websiteUrl), поэтому вынесена один раз.
+function buildTrackedLinkParams(
   pixel: LinkPixel | null,
   linkParamMap: Record<string, string> | null | undefined,
   // Скрытая метка баера (Фаза 3.6) — null для управленческих аккаунтов (Owner/Admin/
   // SuperAdmin, см. GetLinkDialog), тогда параметр вообще не добавляется в ссылку и клиент
   // в системе будет отмечен как "БЕЗ БАЕРА". Литеральное значение, как pixel, а не макрос.
-  buyerId: string | null = null,
+  buyerId: string | null,
 ): string {
   const paramMap = resolveParamMap(linkParamMap);
-  const base = attachmentUrl(attachment);
-
   const parts: string[] = [];
   // Порядок параметров (запрос пользователя 2026-08-20: баг-репорт с реально усечёнными
   // buyerId в БД — "cmsddngbo05vfipvusexy80sj" долетал как "cmsddngbo05v"/"cmsddngbo05"/""
@@ -306,7 +319,33 @@ export function buildTrackedLink(
     parts.push(`${paramMap.siteSourceName}={{site_source_name}}`);
   }
 
-  return `${base}?${parts.join('&')}`;
+  return parts.join('&');
+}
+
+export function buildTrackedLink(
+  attachment: Pick<LandingAttachment, 'domain' | 'path'>,
+  pixel: LinkPixel | null,
+  linkParamMap: Record<string, string> | null | undefined,
+  buyerId: string | null = null,
+): string {
+  return `${attachmentUrl(attachment)}?${buildTrackedLinkParams(pixel, linkParamMap, buyerId)}`;
+}
+
+// Ссылка для проекта типа "Обычный сайт" (ChannelType.WEBSITE, запрос пользователя 2026-09-03:
+// "сайт уже на домене стоит и его можно пускать без промежуточных лэндингов") — в отличие от
+// buildTrackedLink выше, здесь нет ни Лендинга, ни DomainPath вообще: сайт уже опубликован на
+// своём домене (Channel.websiteUrl), track.js на нём уже читает window.location.search
+// напрямую (тот же механизм, что и на любом лендинге) — рендерить и редиректить через наш
+// домен просто нечего и незачем, макросы/buyerRef/pixelId клеятся прямо к websiteUrl.
+export function buildWebsiteTrackedLink(
+  websiteUrl: string,
+  pixel: LinkPixel | null,
+  linkParamMap: Record<string, string> | null | undefined,
+  buyerId: string | null = null,
+): string {
+  const params = buildTrackedLinkParams(pixel, linkParamMap, buyerId);
+  const separator = websiteUrl.includes('?') ? '&' : '?';
+  return `${websiteUrl}${separator}${params}`;
 }
 
 // Привязывает лендинг к домену через upsert-путь эндпоинт (POST /domains/:id/paths) — путь

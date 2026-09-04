@@ -14,17 +14,45 @@ export class PushesProcessor {
     private channelsService: ChannelsService,
   ) {}
 
+  // pushLogId — строка уже существует (создана заранее в PushesService.ensureLedger), джоба
+  // здесь только атомарно ЗАХВАТЫВАЕТ её (запрос пользователя 2026-09-01, "полноценный фикс" —
+  // см. подробный разбор в комментарии у PushLog.status в schema.prisma). Раньше строка
+  // создавалась реактивно прямо здесь (`pushLog.create`), из-за чего для получателей, чья джоба
+  // так и не была поставлена в очередь до падения процесса, не оставалось вообще никакого следа.
   @Process('send-push-message')
-  async sendPushMessage(job: Job<{ pushId: string; clientId: string }>) {
-    const [push, client] = await Promise.all([
-      this.prisma.push.findUnique({ where: { id: job.data.pushId } }),
-      this.prisma.client.findUnique({ where: { id: job.data.clientId } }),
-    ]);
-    if (!push || !client) return;
+  async sendPushMessage(job: Job<{ pushId: string; pushLogId: string; clientId: string }>) {
+    const { pushId, pushLogId, clientId } = job.data;
 
-    const log = await this.prisma.pushLog.create({
-      data: { pushId: push.id, clientId: client.id, status: 'pending' },
+    // Атомарный захват — если строка уже не 'pending' (реальная отправка кем-то другим уже
+    // идёт/завершена: повторная джоба того же получателя от recoverStalledSending, случайный
+    // Bull-дубль при stalled-детекте и т.п.), claimed.count===0 и джоба тихо выходит без
+    // повторной отправки. Тот же приём, что PersonalBroadcastLog/JoinRequestApprovalProcessor.
+    const claimed = await this.prisma.pushLog.updateMany({
+      where: { id: pushLogId, status: 'pending' },
+      data: { status: 'sending' },
     });
+    if (claimed.count === 0) return;
+
+    const [push, client] = await Promise.all([
+      this.prisma.push.findUnique({ where: { id: pushId } }),
+      this.prisma.client.findUnique({ where: { id: clientId } }),
+    ]);
+
+    // Push или клиент удалён между постановкой в очередь и обработкой — раньше это молча
+    // выходило БЕЗ обновления лога/счётчиков, из-за чего audienceReachable никогда бы не
+    // сходился и Push завис бы в SENDING точно так же, как и в исходном баге. Теперь считаем
+    // это неудачной отправкой, чтобы арифметика sentCount+failedCount>=audienceReachable
+    // по-прежнему сходилась.
+    if (!push || !client) {
+      await this.prisma.pushLog.update({ where: { id: pushLogId }, data: { status: 'failed', error: 'Push или клиент удалён' } });
+      if (push) {
+        const updated = await this.prisma.push.update({ where: { id: push.id }, data: { failedCount: { increment: 1 } } });
+        if (updated.status === PushStatus.SENDING && updated.sentCount + updated.failedCount >= updated.audienceReachable) {
+          await this.prisma.push.update({ where: { id: push.id }, data: { status: PushStatus.SENT } });
+        }
+      }
+      return;
+    }
 
     // 403 (бот заблокирован пользователем) уже обрабатывается внутри
     // TelegramProvider.sendMessage → ClientsService.markBotBlocked (шаг 1.5) —
@@ -55,7 +83,7 @@ export class PushesProcessor {
     // "добавь логи ошибок при открытии рассылки": PushLog.error теперь показывает то, что
     // реально ответил Telegram/WhatsApp/Instagram (см. SendMessageResult), а не общую фразу.
     await this.prisma.pushLog.update({
-      where: { id: log.id },
+      where: { id: pushLogId },
       data: {
         status: result.success ? 'sent' : 'failed',
         sentAt: result.success ? new Date() : null,

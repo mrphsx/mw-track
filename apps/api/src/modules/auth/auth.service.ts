@@ -14,6 +14,13 @@ import { JwtPayload } from './types/jwt-payload.interface';
 
 const bcrypt = require('bcryptjs');
 
+// Льготное окно ротации refresh-токена — см. подробный разбор гонки нескольких вкладок/доменов
+// у RefreshToken.supersededAt в schema.prisma. 30 секунд с запасом покрывает как параллельные
+// запросы одной вкладки при загрузке страницы, так и обычное быстрое переключение между
+// несколькими открытыми вкладками — но не ослабляет одноразовость токена на сколько-нибудь
+// значимый срок.
+const REFRESH_TOKEN_GRACE_MS = 30 * 1000;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -112,8 +119,19 @@ export class AuthService {
       throw new ForbiddenException('Компания заблокирована администратором платформы');
     }
 
-    // Rotation — старый refresh token инвалидируется
-    await this.prisma.refreshToken.delete({ where: { id: match.id } });
+    if (match.supersededAt) {
+      // Уже был использован для ротации раньше — это либо вторая вкладка/домен, догоняющая
+      // гонку (см. RefreshToken.supersededAt), либо настоящий повторный проигрыш давно
+      // отработавшего токена. В пределах льготного окна выдаём свежую независимую пару
+      // токенов, ничего больше не помечая; за его пределами — честная ошибка, как раньше.
+      const graceEndsAt = match.supersededAt.getTime() + REFRESH_TOKEN_GRACE_MS;
+      if (graceEndsAt < Date.now()) {
+        throw new UnauthorizedException('Refresh token недействителен или истёк');
+      }
+    } else {
+      // Rotation — помечаем как использованный, но не удаляем сразу (льготное окно выше)
+      await this.prisma.refreshToken.update({ where: { id: match.id }, data: { supersededAt: new Date() } });
+    }
 
     return this.issueTokens(user);
   }

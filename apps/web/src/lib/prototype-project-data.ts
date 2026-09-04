@@ -17,7 +17,7 @@ export interface PrototypeProjectSummary {
   id: string;
   name: string;
   status: string;
-  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null } | null;
+  channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null } | null;
   _count: { clients: number; pushes: number };
 }
 
@@ -66,6 +66,12 @@ export interface PrototypeProject {
     // этого канала, хотя раньше они были (реальный ~20-часовой инцидент, обнаруженный только
     // постфактум по логам nginx).
     webhookStale?: boolean;
+    // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — причина, по которой
+    // канал сейчас неактивен (WebsiteProvider.initialize пишет сюда описательный текст: "Укажите
+    // ссылку на сайт" / "Скрипт не найден на странице..."), показывается пользователю как есть.
+    lastError?: string | null;
+    websiteUrl?: string | null;
+    websiteFaviconUrl?: string | null;
   } | null;
   disabledTrackingEvents: string[];
 }

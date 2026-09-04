@@ -4,6 +4,9 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": [{ "include": "modules/landings/templates/**/*", "outDir": "dist", "watchAssets": true }]
+    "assets": [
+      { "include": "modules/landings/templates/**/*", "outDir": "dist", "watchAssets": true },
+      { "include": "modules/landings/sdk-version.json", "outDir": "dist", "watchAssets": true }
+    ]
   }
 }

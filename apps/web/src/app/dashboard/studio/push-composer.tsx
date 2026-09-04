@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
 import { zonedTimeToUtcIso, utcIsoToZonedParts, getBrowserTimezone } from '@/lib/timezone';
 import { ChannelAvatar } from '@/components/channel-avatar';
+import { hasChannelAvatar } from '@/lib/landings';
 import { TimezoneInput } from '@/components/timezone-input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -19,7 +20,7 @@ import { STUDIO_CARD, StudioLinkButton } from './ui';
 interface ProjectSummary {
   id: string;
   name: string;
-  channel: { id: string; tgAvatarFileId: string | null } | null;
+  channel: { id: string; type: string; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null } | null;
 }
 
 type SendMode = 'now' | 'scheduled';
@@ -90,8 +91,10 @@ export function StudioPushComposer({
     queryFn: async () => (await api.get<ProjectSummary[]>('/projects')).data,
   });
 
+  // WEBSITE-проекты исключены (запрос пользователя 2026-09-03) — зеркалит классический
+  // композер, см. его комментарий: getChannelUserId всегда null для WEBSITE-клиентов.
   const allowedProjects = useMemo(
-    () => (allProjects ?? []).filter((p) => hasPermission(user, p.id, 'PUSHES_CREATE')),
+    () => (allProjects ?? []).filter((p) => p.channel?.type !== 'WEBSITE' && hasPermission(user, p.id, 'PUSHES_CREATE')),
     [allProjects, user],
   );
   const projects = useMemo(
@@ -267,7 +270,7 @@ export function StudioPushComposer({
                 {/* Режим редактирования: проект зафиксирован — статичная строка, не чекбокс-список. */}
                 {isEditMode ? (
                   <div className="flex items-center gap-3 px-4 pb-4">
-                    <ChannelAvatar channelId={projects[0]?.channel?.id ?? ''} hasAvatar={!!projects[0]?.channel?.tgAvatarFileId} fallbackLetter={projects[0]?.name ?? ''} />
+                    <ChannelAvatar channelId={projects[0]?.channel?.id ?? ''} hasAvatar={hasChannelAvatar(projects[0]?.channel)} fallbackLetter={projects[0]?.name ?? ''} />
                     <span className="font-medium text-[#131A24] dark:text-[#E9EDF3]">{projects[0]?.name}</span>
                   </div>
                 ) : (
@@ -280,7 +283,7 @@ export function StudioPushComposer({
                         className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-[#F3F5F8] dark:hover:bg-white/5 transition-colors"
                       >
                         <Checkbox checked={selectedIds.includes(p.id)} onCheckedChange={() => toggleProject(p.id)} />
-                        <ChannelAvatar channelId={p.channel?.id ?? ''} hasAvatar={!!p.channel?.tgAvatarFileId} fallbackLetter={p.name} />
+                        <ChannelAvatar channelId={p.channel?.id ?? ''} hasAvatar={hasChannelAvatar(p.channel)} fallbackLetter={p.name} />
                         <span className="flex-1 font-medium truncate text-[#131A24] dark:text-[#E9EDF3]">{p.name}</span>
                         <span className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] shrink-0">
                           Доступно: {stat ? stat.audienceReachable : isCalculating ? '…' : '—'}

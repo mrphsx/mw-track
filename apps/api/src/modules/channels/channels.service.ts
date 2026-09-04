@@ -8,15 +8,18 @@ import { TelegramProvider } from './providers/telegram.provider';
 import { TelegramPersonalService } from './providers/telegram-personal.service';
 import { WhatsAppProvider } from './providers/whatsapp.provider';
 import { InstagramProvider } from './providers/instagram.provider';
+import { WebsiteProvider } from './providers/website.provider';
 import { UpdateChannelDto } from './dto/update-channel.dto';
 import { TestMessageDto } from './dto/test-message.dto';
 import { renderMessagePlaceholders } from '../../common/message-placeholders.util';
+import { assertPublicHost } from '../../common/ssrf-guard.util';
 
 @Injectable()
 export class ChannelsService implements OnModuleInit {
   private readonly logger = new Logger(ChannelsService.name);
 
   // TELEGRAM + WHATSAPP + INSTAGRAM реализованы (шаги 1.5/2.1/2.6 из 15_PHASES.md).
+  // WEBSITE — no-op-провайдер (запрос пользователя 2026-09-03, обычный сайт без мессенджера).
   // Viber/Email — добавляются той же картой без правок бизнес-логики.
   private providers: Partial<Record<ChannelType, ChannelProvider>>;
 
@@ -26,8 +29,14 @@ export class ChannelsService implements OnModuleInit {
     private telegramPersonalService: TelegramPersonalService,
     private whatsAppProvider: WhatsAppProvider,
     private instagramProvider: InstagramProvider,
+    private websiteProvider: WebsiteProvider,
   ) {
-    this.providers = { TELEGRAM: this.telegramProvider, WHATSAPP: this.whatsAppProvider, INSTAGRAM: this.instagramProvider };
+    this.providers = {
+      TELEGRAM: this.telegramProvider,
+      WHATSAPP: this.whatsAppProvider,
+      INSTAGRAM: this.instagramProvider,
+      WEBSITE: this.websiteProvider,
+    };
   }
 
   // При старте процесса bots-карта провайдера (и Basic Auth у WhatsApp) пустая (in-memory) —
@@ -36,10 +45,24 @@ export class ChannelsService implements OnModuleInit {
   // всё равно стоит перепрогнать — Meta может сбросить подписку Page на вебхуки.
   async onModuleInit() {
     const channels = await this.prisma.channel.findMany({
-      where: { type: { in: ['TELEGRAM', 'WHATSAPP', 'INSTAGRAM'] }, isActive: true },
+      where: { type: { in: ['TELEGRAM', 'WHATSAPP', 'INSTAGRAM', 'WEBSITE'] }, isActive: true },
     });
 
     for (const channel of channels) {
+      // WEBSITE — реальная проверка (см. WebsiteProvider.initialize), не просто "восстановить
+      // in-memory состояние" как у Telegram/WhatsApp/Instagram: провал здесь означает, что канал
+      // ДЕЙСТВИТЕЛЬНО больше не верифицирован (ссылку убрали/скрипт сняли), и должен реально
+      // показать "Отключён" — обычный tryInitialize() и делает (пишет isActive/lastError в БД),
+      // в отличие от голого provider.initialize() ниже. Найдено живым багом (запрос
+      // пользователя 2026-09-03, "он пишет что активен, хотя ссылка даже не добавлена") —
+      // канал остался isActive:true в БД, потому что рестарт после появления реальной
+      // проверки просто залогировал провал и не тронул статус.
+      if (channel.type === 'WEBSITE') {
+        await this.tryInitialize(channel).catch((error) =>
+          this.logger.warn(`Failed to re-verify WEBSITE channel ${channel.id}: ${(error as Error).message}`),
+        );
+        continue;
+      }
       try {
         await this.getProvider(channel.type).initialize(channel);
       } catch (error) {
@@ -182,7 +205,7 @@ export class ChannelsService implements OnModuleInit {
   // токен в самом пути), поэтому отдавать эту ссылку клиенту напрямую нельзя.
   async streamAvatar(id: string, companyId: string, res: Response): Promise<void> {
     const channel = await this.findOne(id, companyId);
-    const result = await this.fetchTelegramAvatarBuffer(channel);
+    const result = await this.fetchChannelAvatarBuffer(channel);
     if (!result) {
       res.status(404).end();
       return;
@@ -199,6 +222,45 @@ export class ChannelsService implements OnModuleInit {
   async fetchTelegramAvatarBuffer(channel: Channel): Promise<{ buffer: Buffer; contentType: string } | null> {
     if (!channel.tgAvatarFileId || !channel.tgBotToken) return null;
     return this.fetchTelegramFileBuffer(channel.id, channel.tgBotToken, channel.tgAvatarFileId);
+  }
+
+  // Объединяет Telegram-аватар с иконкой сайта (запрос пользователя 2026-09-03: "для website
+  // такого нет, можешь брать иконку подключенного сайта?") — единая точка для обоих
+  // потребителей (streamAvatar выше, LandingsService.streamAvatar), чтобы фолбэк на фавиконку
+  // не пришлось дублировать в двух местах. Telegram-ветка первой, так что поведение для
+  // TELEGRAM/WHATSAPP/INSTAGRAM не меняется ни на бит — websiteFaviconUrl у них всегда null.
+  async fetchChannelAvatarBuffer(channel: Channel): Promise<{ buffer: Buffer; contentType: string } | null> {
+    const telegram = await this.fetchTelegramAvatarBuffer(channel);
+    // Content-Type принудительно 'image/jpeg' — сырой файловый сервер Telegram реально
+    // отдаёт 'application/octet-stream' для фото (проверено живьём в LandingsService.streamAvatar
+    // до этого рефакторинга), хотя это всегда JPEG (big_file_id канала/бота).
+    if (telegram) return { ...telegram, contentType: 'image/jpeg' };
+    if (channel.type !== 'WEBSITE' || !channel.websiteFaviconUrl) return null;
+    return this.fetchWebsiteFaviconBuffer(channel.id, channel.websiteFaviconUrl);
+  }
+
+  // Проксируем сами, а не отдаём голый websiteFaviconUrl фронтенду напрямую — та же SSRF-защита,
+  // что и у самой верификации (WebsiteProvider), нужна и здесь: адрес когда-то был извлечён из
+  // HTML стороннего сайта, доверять ему без проверки на каждый показ иконки нельзя (сайт мог
+  // сменить DNS-запись на приватный адрес уже ПОСЛЕ того, как иконка была сохранена).
+  private async fetchWebsiteFaviconBuffer(channelId: string, faviconUrl: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+    try {
+      const url = new URL(faviconUrl);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+      await assertPublicHost(url.hostname);
+
+      const response = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
+      const finalUrl = new URL(response.url);
+      await assertPublicHost(finalUrl.hostname);
+      if (!response.ok) return null;
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const contentType = response.headers.get('content-type') || 'image/x-icon';
+      return { buffer, contentType };
+    } catch (error) {
+      this.logger.warn(`Не удалось загрузить фавиконку канала ${channelId}: ${(error as Error).message}`);
+      return null;
+    }
   }
 
   // Обобщённое ядро — тот же двухшаговый Telegram-флоу (getFile → скачать байты), но принимает
@@ -275,6 +337,18 @@ export class ChannelsService implements OnModuleInit {
 
   private async checkChannelHealth(channel: Channel): Promise<{ healthy: boolean; message?: string }> {
     if (channel.type === 'TELEGRAM') return this.checkTelegramHealth(channel);
+    // WEBSITE — реальная переверификация тем же способом, что и при создании/ручной проверке
+    // (WebsiteProvider.initialize ходит на websiteUrl и ищет свой track.js): без этого
+    // 15-минутный крон никогда не заметил бы, что сайт снял скрипт/сменил домен, потому что
+    // circular-фолбэк ниже просто подтверждал бы то, что уже лежит в isActive.
+    if (channel.type === 'WEBSITE') {
+      try {
+        await this.websiteProvider.initialize(channel);
+        return { healthy: true };
+      } catch (error) {
+        return { healthy: false, message: (error as Error).message };
+      }
+    }
     // WhatsApp/прочее: 360dialog не даёт дешёвого "ping" — статус isActive (выставляется
     // false при ошибке initialize()/отсутствии токена) достаточен для текущей фазы.
     return { healthy: channel.isActive };
@@ -290,20 +364,34 @@ export class ChannelsService implements OnModuleInit {
     const bot = this.telegramProvider.getBot(channel.id);
     if (!bot) return { healthy: false, message: 'Бот не инициализирован (см. ошибку при создании канала)' };
 
-    try {
-      const me = await bot.api.getMe();
+    // Один ретрай через 3с перед тем, как считать канал недоступным — без него любой
+    // одиночный транзиентный сетевой сбой (см. 2026-08-25: сервер без реального IPv6-маршрута,
+    // Node verbatim DNS-порядок иногда подсовывал мёртвый IPv6-адрес Telegram) мгновенно валил
+    // канал в isActive:false, а поскольку checkAllChannelsHealth бьёт этот метод по всем каналам
+    // подряд в одном тике крона, один и тот же сбой валил сразу несколько каналов одновременно.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const me = await bot.api.getMe();
 
-      if (channel.tgChannelId) {
-        const member = await bot.api.getChatMember(channel.tgChannelId, me.id);
-        if (!['administrator', 'creator'].includes(member.status)) {
-          return { healthy: false, message: 'Бот удалён из канала!' };
+        if (channel.tgChannelId) {
+          const member = await bot.api.getChatMember(channel.tgChannelId, me.id);
+          if (!['administrator', 'creator'].includes(member.status)) {
+            return { healthy: false, message: 'Бот удалён из канала!' };
+          }
         }
-      }
 
-      return { healthy: true };
-    } catch (error) {
-      return { healthy: false, message: `Ошибка канала: ${(error as Error).message}` };
+        return { healthy: true };
+      } catch (error) {
+        if (attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          continue;
+        }
+        return { healthy: false, message: `Ошибка канала: ${(error as Error).message}` };
+      }
     }
+
+    // Недостижимо (цикл всегда возвращает изнутри), но нужно TypeScript-у для типа возврата.
+    return { healthy: false, message: 'Ошибка канала: неизвестная ошибка' };
   }
 
   // Каждые 15 минут — независимая от событий проверка живости ботов,

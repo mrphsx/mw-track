@@ -14,12 +14,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 // Раньше жила только в настройках, вынесена сюда 2026-07-02 при переходе Project↔Channel
 // на строгий 1:1 (канал больше не "добавляется" отдельным шагом после создания проекта).
 
-export type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'INSTAGRAM';
+export type ChannelType = 'TELEGRAM' | 'WHATSAPP' | 'INSTAGRAM' | 'WEBSITE';
 
 export const CHANNEL_TYPE_LABEL: Record<ChannelType, string> = {
   TELEGRAM: 'Telegram',
   WHATSAPP: 'WhatsApp',
   INSTAGRAM: 'Instagram',
+  WEBSITE: 'Website',
 };
 
 // 4 способа, которыми лендинг ведёт в Telegram — см. prisma/schema.prisma enum TelegramMode
@@ -55,6 +56,7 @@ export interface ChannelFormState {
   wa360Token: string;
   igPageId: string;
   igAccessToken: string;
+  websiteUrl: string;
 }
 
 // tgMode по умолчанию — приватный канал с заявкой (запрос пользователя 2026-08-18: "пусть
@@ -71,6 +73,7 @@ export const EMPTY_CHANNEL_FORM: ChannelFormState = {
   wa360Token: '',
   igPageId: '',
   igAccessToken: '',
+  websiteUrl: '',
 };
 
 // name не входит сюда намеренно — при создании проекта имя канала берётся из имени проекта
@@ -89,6 +92,7 @@ export function channelFormToPayload(f: ChannelFormState) {
     wa360Token: f.type === 'WHATSAPP' ? f.wa360Token : undefined,
     igPageId: f.type === 'INSTAGRAM' ? f.igPageId : undefined,
     igAccessToken: f.type === 'INSTAGRAM' ? f.igAccessToken : undefined,
+    websiteUrl: f.type === 'WEBSITE' ? f.websiteUrl || undefined : undefined,
   };
 }
 
@@ -100,7 +104,9 @@ export function channelFormCanSubmit(f: ChannelFormState): boolean {
         : f.botToken && (f.tgMode === 'BOT_DIRECT' || f.channelId) && (f.tgMode !== 'PUBLIC_CHANNEL_DIRECT' || f.channelUsername)
       : f.type === 'WHATSAPP'
         ? f.wa360Token
-        : f.igPageId && f.igAccessToken,
+        : f.type === 'WEBSITE'
+          ? true
+          : f.igPageId && f.igAccessToken,
   );
 }
 
@@ -183,6 +189,7 @@ export function ChannelFieldsEditor({
               <SelectItem value="TELEGRAM">Telegram</SelectItem>
               <SelectItem value="WHATSAPP">WhatsApp</SelectItem>
               <SelectItem value="INSTAGRAM">Instagram</SelectItem>
+              <SelectItem value="WEBSITE">Website</SelectItem>
             </SelectContent>
           </Select>
         )}
@@ -295,6 +302,25 @@ export function ChannelFieldsEditor({
             onChange={(v) => set('igAccessToken', v)}
             revealable={!!secretsRevealable}
           />
+        </>
+      )}
+
+      {value.type === 'WEBSITE' && (
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="channel-website-url">Адрес сайта</Label>
+            <Input
+              id="channel-website-url"
+              placeholder="https://example.com"
+              value={value.websiteUrl}
+              onChange={(e) => set('websiteUrl', e.target.value)}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Можно указать сейчас или позже. После сохранения зайдите во вкладку «Каналы» и
+            подключите SDK-скрипт (track.js) к сайту — там же можно проверить, что скрипт
+            установлен и работает.
+          </p>
         </>
       )}
     </>

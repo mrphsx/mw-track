@@ -16,7 +16,7 @@ import { ClientAvatar } from '@/components/clients/client-avatar';
 import { ClientRow, CrossProjectOverlapBadge, DIALOGUE_SOURCE_LABEL, TrafficSourceLabel, formatDuration } from '@/components/clients/clients-table';
 import { StudioPill } from './ui';
 
-const CHANNEL_SHORT_LABEL: Record<string, string> = { TELEGRAM: 'TG' };
+const CHANNEL_SHORT_LABEL: Record<string, string> = { TELEGRAM: 'TG', WEBSITE: 'Web' };
 
 // Та же структура, что и оригинальная ClientsTable (запрос пользователя 2026-07-29: "сделай
 // почти как в оригинале") — те же 10 колонок в том же порядке, тот же статус-расчёт и

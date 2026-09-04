@@ -181,8 +181,24 @@ model RefreshToken {
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
+  // Льготное окно ротации (запрос пользователя 2026-09-01: "многие говорят что их делогинит
+  // часто") — тот же логин, открытый в нескольких вкладках/доменах (mw-track.com и
+  // old.mw-track.com делят один refresh-токен ради SSO, см. auth.store.ts), почти всегда
+  // получает ОДИН И ТОТ ЖЕ access-токен из общего localStorage и потому упирается в 401
+  // практически одновременно — но ротация раньше была мгновенной (строка удалялась сразу),
+  // так что вторая вкладка, обновляясь тем же уже использованным токеном, получала честный
+  // "недействителен" и AuthService.refresh() принудительно разлогинивал пользователя целиком.
+  // Теперь строка не удаляется сразу при первой ротации, а помечается supersededAt — повторное
+  // предъявление В ПРЕДЕЛАХ REFRESH_TOKEN_GRACE_MS просто выдаёт свежую независимую пару
+  // токенов вместо ошибки (не ту же самую пару — у RefreshToken и так никогда не было
+  // ограничения "одна строка на пользователя", несколько параллельных живых сессий — штатный
+  // случай, см. вход с телефона+ноутбука одновременно). За пределами окна — как и раньше,
+  // честная ошибка (настоящий повторный проигрыш токена или реально истёкшая сессия).
+  supersededAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([supersededAt])
 }
 
 // Инвайт-ссылка в команду (запрос пользователя 2026-07-04) — Owner/Admin создаёт ссылку с
@@ -318,6 +334,7 @@ model Project {
   abTestGroups          AbTestGroup[]
   storyPosts            StoryPost[]
   personalBroadcasts    PersonalBroadcast[]
+  paymentDetailsLogs    PaymentDetailsLog[]
 
   @@index([companyId])
   @@index([publicToken])
@@ -433,6 +450,22 @@ model Channel {
   emailFromName   String?
   emailFromAddr   String?
   sendgridApiKey  String?
+
+  // Обычный сайт специфично (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — адрес
+  // сайта, куда ведёт кнопка лендинга и куда WebsiteProvider.initialize() реально ходит для
+  // проверки, что track.js установлен. Редактируется свободно (домен сайта может смениться) —
+  // каждое изменение через ChannelsService.update() автоматически перезапускает проверку.
+  websiteUrl String?
+
+  // Иконка сайта для отображения в СРМ (запрос пользователя 2026-09-03: "для website такого нет,
+  // можешь брать иконку подключенного сайта?") — в отличие от Telegram-аватара (свой файл,
+  // скачивается и хранится у нас через bot API), это просто внешний URL, извлечённый регэкспом
+  // из <link rel="icon"> HTML-страницы сайта в момент успешной верификации
+  // (WebsiteProvider.initialize уже фетчит эту HTML для проверки тега track.js — извлечение
+  // фавиконки не требует отдельного запроса). Устанавливается только при успехе проверки —
+  // намеренно не трогается при провале, чтобы не терять последнюю известную иконку из-за
+  // временной недоступности сайта.
+  websiteFaviconUrl String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -615,7 +648,7 @@ model Domain {
   id        String       @id @default(cuid())
   companyId String
   projectId String?
-  domain    String       @unique
+  domain    String
   status    DomainStatus @default(PENDING)
 
   sslStatus   String?     // active, pending, error
@@ -624,6 +657,12 @@ model Domain {
   verificationToken  String @unique @default(cuid())
   verifiedAt         DateTime?
   lastCheckError     String?
+
+  // Soft delete: "удаление" из UI освобождает nginx/webhook/сертификат, но строка остаётся в БД
+  // (история/аудит + возможность разобраться в инциденте позже). Уникальность домена поэтому
+  // частичный индекс WHERE deletedAt IS NULL (см. миграцию) — плоский @unique заблокировал бы
+  // повторное добавление того же хоста после "удаления".
+  deletedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -716,6 +755,27 @@ model Landing {
   cloakingEnabled     Boolean  @default(false)
   cloakingCountries   String[] @default([])
   cloakingRedirectUrl String?
+
+  // Доп. инструкции для TikTok (запрос пользователя 2026-08-20) — встроенный браузер TikTok
+  // (BytedanceWebview) иногда отказывается открывать страницу напрямую ("Мы не можем открыть
+  // эту страницу непосредственно в TikTok") или блокирует переход по tg://-диплинку внутри себя
+  // — известное ограничение самого TikTok/Android/iOS, не наш баг (WebKit/WebView внутри
+  // сторонних приложений намеренно ограничивают переход по чужим URL-схемам и хэндофф во
+  // внешний браузер, это платформенное ограничение, см. apps/sdk/src/browser.ts). Включает:
+  // на Android — попытку авто-эскейпа во внешний браузер через intent://-URL; на iOS (которую
+  // Apple не даёт форсировать программно) — подсказку нажать "···" и выбрать "Open in Browser".
+  tiktokBrowserHint Boolean @default(false)
+
+  // Тексты попапа-подсказки выше (запрос пользователя 2026-08-27, "как у конкурента" — форма
+  // редактирования текстов, англ. по умолчанию). Json, а не отдельные колонки: семь опциональных
+  // строк, которые всегда читаются/пишутся одним блоком и не нуждаются в отдельных индексах —
+  // тот же принцип, что у PersonalBroadcast.variants/filter. Любой отсутствующий ключ = SDK
+  // берёт свой встроенный английский дефолт (apps/sdk/src/browser.ts) — что и даёт UX "оставьте
+  // пустым, чтобы вернуть значение по умолчанию" без отдельного sentinel-значения в БД.
+  // Форма полей: title, subtitle, iosSteps (перевод строки = отдельный шаг), androidSteps
+  // (аналогично — показывается как fallback, если авто-эскейп intent:// не сработал за 1.5с),
+  // openButtonText, copyButtonText, copiedText (тот же текст дублируется на стрелке-указателе).
+  tiktokHintTexts Json?
 
   // Своя аватарка лендинга (запрос пользователя 2026-07-04) — ключ объекта в MinIO
   // (StorageService, префикс landing-avatars/), НЕ хранится в templateData.CHANNEL_AVATAR:
@@ -819,6 +879,14 @@ model Client {
   // именно из-за этой статистики — см. assertValidMembers/updateAbTestGroup). Без @relation —
   // та же мягкая ссылка, что и у buyerId/pixelId выше, не формальный FK.
   abTestGroupId String?
+  // Реальная invite-ссылка, по которой пришла заявка на вступление (запрос пользователя
+  // 2026-08-31: "как это показано у наших конкурентов" — карточка клиента) — PRIVATE_CHANNEL_
+  // REQUEST only, TelegramProvider.handleJoinRequest уже читает её из webhook-события
+  // (ctx.chatJoinRequest.invite_link.invite_link) для сопоставления атрибуции, просто раньше не
+  // сохранял. Может быть как одноразовой per-visit ссылкой (см. createOneTimeInviteLink), так и
+  // общей ссылкой лендинга/канала (fallback-путь) — в любом случае это честная запись того, чем
+  // реально воспользовался человек, не восстановленная задним числом.
+  tgInviteLink String?
 
   // Telegram данные
   tgUserId    String?
@@ -840,6 +908,12 @@ model Client {
   // Instagram данные
   igUserId   String?
   igUsername String?
+
+  // Анонимный визитор чистого веб-сайта (ChannelType.WEBSITE, без Telegram/WA/IG вообще) —
+  // персистентный localStorage id, генерируется apps/sdk/src/browser.ts, шлётся с каждым
+  // событием. НЕ @unique — дедуп у Client всегда app-level через findFirst в
+  // ClientsService.buildIdentityWhere, ни у одного identity-поля нет DB-level unique.
+  visitorId  String?
 
   // Контактные данные (если собрали через форму)
   email      String?
@@ -968,12 +1042,14 @@ model Client {
   events    TrackingEvent[]
   automationEnrollments AutomationEnrollment[]
   personalBroadcastLogs PersonalBroadcastLog[]
+  paymentDetailsLogs    PaymentDetailsLog[]
 
   @@index([companyId, projectId])
   @@index([tgUserId, projectId])
   @@index([landingId])
   @@index([abTestGroupId])
   @@index([fbclid])
+  @@index([visitorId])
 }
 
 // ============================================================
@@ -1180,7 +1256,18 @@ model PushLog {
   id       String     @id @default(cuid())
   pushId   String
   clientId String
-  status   String     // pending, sent, delivered, failed
+  // pending (строка создана заранее, ждёт отправки) -> sending (джоба атомарно захватила
+  // получателя, идёт реальная отправка) -> sent | failed (запрос пользователя 2026-09-01,
+  // "почисти старые без отправки и сделай полноценный фикс" — до этого строка создавалась
+  // РЕАКТИВНО внутри самой джобы отправки, а не заранее: если процесс падал ДО того, как джоба
+  // вообще была поставлена в очередь (например `pm2 restart` посреди цикла постановки джоб на
+  // тысячи получателей в PushesService.send), для этих получателей не существовало вообще
+  // никакого следа — ни строки, ни джобы — а Push уже был переведён в SENDING и не поддавался
+  // повторному send() (EDITABLE_STATUSES). Теперь строки на ВСЮ аудиторию создаются заранее
+  // (см. PushesService.ensureLedger), поэтому "кто ещё не отправлен" всегда можно узнать по
+  // status='pending', и PushesCron.recoverStalledSending может безопасно доставить рассылку
+  // после сбоя — то же решение, что уже применено к PersonalBroadcastLog.
+  status   String
   error    String?
   sentAt   DateTime?
   // Первый клик по любой кнопке этого отправления (Фаза 3.4, Smart Push Timing) — первая
@@ -1194,6 +1281,13 @@ model PushLog {
 
   @@index([pushId])
   @@index([pushId, status])
+  // Один получатель — одна строка на пуш (запрос пользователя 2026-09-01) — без этого
+  // createMany({skipDuplicates:true}) в ensureLedger не смог бы реально предотвратить дубли
+  // при повторном вызове (recoverStalledSending может звать его многократно). Перед добавлением
+  // ограничения на реальных данных нашлись и вручную удалены 2 старые дублирующиеся строки
+  // (оба случая — зависшая 'pending' от той же самой обрываемой процессом джобы, второй ряд —
+  // настоящий терминальный sent/failed от неё же).
+  @@unique([pushId, clientId])
 }
 
 // ============================================================
@@ -1280,6 +1374,47 @@ enum PersonalBroadcastStatus {
   SENT
   FAILED
   CANCELLED
+}
+
+// Журнал реквизитов (запрос пользователя 2026-08-27) — антифрод-контроль: оператор,
+// оперирующий подключённым личным Telegram-аккаунтом напрямую (мимо CRM), теоретически может
+// подменить настоящие реквизиты компании своими и увести деньги клиента себе. Пишется
+// TelegramPersonalService из реального события "исходящее сообщение" (см.
+// NewMessage({outgoing:true}) — тот же механизм, что уже слушает входящие для handleIncomingMessage,
+// только для исходящих), НЕ ретроактивным чтением истории — фича работает только вперёд с
+// момента подключения обработчика, старые сообщения не сканируются (см. память/CLAUDE.md о
+// том, почему ретроактивное чтение переписки не делается). v1 по явному решению пользователя:
+// просто логирует ФАКТ отправки реквизитов, без сверки с "официальным" списком — сверка
+// (обнаружение самой подмены, а не только факта) осознанно отложена.
+model PaymentDetailsLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  channelId   String
+  // Получатель — почти всегда реальный Client (диалог уже отслеживается), но clientId
+  // опционален на случай холодного контакта без записи Client (тот же case, что и у
+  // PersonalBroadcastLog.clientId) — tgUserId остаётся источником истины всегда.
+  clientId    String?
+  tgUserId    String
+  // Снапшот отображаемого имени на момент отправки (запрос пользователя 2026-08-29: "почему
+  // айди а не имя") — для получателей БЕЗ Client (см. clientId выше) единственный источник
+  // хоть какого-то имени, тот же приём, что и PersonalBroadcastLog.tgFirstName/tgUsername.
+  // Резолвится best-effort через event.message.getChat() — тот же метод, который уже один раз
+  // подвёл (см. tgUserId выше) для РЕЗОЛВА ID получателя, но для ИМЕНИ альтернативы нет:
+  // Telegram не отдаёт профиль по голому numeric id без access_hash, который есть только если
+  // локальный кэш сессии уже "видел" этого пользователя — иногда попытка неудачна, тогда оба
+  // поля остаются null и в UI показывается голый tgUserId, как и раньше.
+  tgFirstName String?
+  tgUsername  String?
+  messageText String   @db.Text
+  // Дата самого сообщения в Telegram (event.message.date), не момента записи в БД —
+  // могут отличаться при ретраях обработчика/задержке processing.
+  sentAt      DateTime
+  createdAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id])
+  client  Client? @relation(fields: [clientId], references: [id])
+
+  @@index([projectId, sentAt])
 }
 
 // ============================================================
@@ -1595,6 +1730,12 @@ enum ChannelType {
   INSTAGRAM
   VIBER
   EMAIL
+  // Обычный сайт без мессенджера вообще (запрос пользователя 2026-09-03: "не хочу заводить
+  // неиспользуемый бот ради галочки") — Channel-строка существует только чтобы удовлетворить
+  // обязательную связь Project 1:1 Channel, WebsiteProvider ничего не делает. Client для такого
+  // проекта создаётся только в момент Purchase (см. Client.visitorId, TrackingService), не на
+  // каждый PageView — иначе анонимный трафик e-commerce сайта раздувал бы Company.maxClients.
+  WEBSITE
 }
 
 // 4 способа, которыми лендинг может вести в Telegram (2026-06-29) — выбираются независимо

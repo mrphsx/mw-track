@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
 import { ChannelType, TelegramMode } from '@prisma/client';
 
 export class CreateChannelDto {
@@ -68,4 +68,12 @@ export class CreateChannelDto {
   @IsOptional()
   @IsString()
   igAccessToken?: string;
+
+  // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — адрес, куда ведёт
+  // кнопка лендинга и который WebsiteProvider.initialize() реально проверяет на наличие
+  // track.js. require_tld:false — стейджинг/тест-домены без точки в конце тоже валидны,
+  // реальная защита от произвольного адреса — SSRF-проверка внутри самой верификации, не DTO.
+  @IsOptional()
+  @IsUrl({ require_tld: false, protocols: ['http', 'https'], require_protocol: true })
+  websiteUrl?: string;
 }

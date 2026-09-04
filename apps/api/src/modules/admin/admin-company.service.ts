@@ -68,7 +68,7 @@ export class AdminCompanyService {
     // (найдено живой проверкой 2026-07-20).
     const [teamSize, domainCount] = await Promise.all([
       this.prisma.user.count({ where: { companyId, deletedAt: null, role: { not: UserRole.SUPER_ADMIN } } }),
-      this.prisma.domain.count({ where: { companyId } }),
+      this.prisma.domain.count({ where: { companyId, deletedAt: null } }),
     ]);
 
     // Project/Landing/Client — внутри runAsCompany, иначе middleware подменит companyId на

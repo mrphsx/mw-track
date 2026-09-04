@@ -110,10 +110,10 @@ export default function ProjectSettingsPage() {
           <PixelLogsTab projectId={id} pixels={project.pixels} />
         </TabsContent>
         <TabsContent value="events" className="mt-4">
-          <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} />
+          <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} channelType={project.channel?.type} />
         </TabsContent>
         <TabsContent value="integration" className="mt-4">
-          <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} />
+          <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} channelType={project.channel?.type} />
         </TabsContent>
         {canManageOperators && (
           <TabsContent value="operators" className="mt-4">

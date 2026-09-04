@@ -14,6 +14,7 @@ import { buildPixelCurlCommand } from '../tracking/curl-command.util';
 import { assertCanAccessTeamManagement, assertOperatorAdminScope } from '../team/team-role.util';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
+import { PaymentDetailsLogFiltersDto } from './dto/payment-details-log-filters.dto';
 
 const ELEVATED_ROLES: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN];
 
@@ -216,6 +217,8 @@ export class ProjectsService {
                 tgSessionEncrypted: true,
                 lastWebhookAt: true,
                 tgPersonalLastError: true,
+                websiteUrl: true,
+                websiteFaviconUrl: true,
               },
             },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
@@ -252,12 +255,16 @@ export class ProjectsService {
   // Telegram молча перестал слать вебхуки одному боту, обнаружилось только постфактум по логам
   // nginx, деньги/трафик утекали незаметно) — намеренно щедрый порог: у разных каналов сильно
   // разная частота трафика (от ~15 до ~800+ вебхуков/сутки в проде), при агрессивном пороге
-  // низкотрафичные каналы ложно светились бы "сломанными" в спокойные часы. 6 часов полной
-  // тишины для КАНАЛА, У КОТОРОГО вебхуки уже случались хотя бы раз (lastWebhookAt не null) —
-  // достаточно редкий случай для настоящей проблемы и достаточно долгий, чтобы не шуметь по
-  // мелочи. Совсем свежеподключённый канал без единого вебхука пока не считается "молчащим" —
-  // это норма, не инцидент.
-  private static readonly WEBHOOK_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+  // низкотрафичные каналы ложно светились бы "сломанными" в спокойные часы. Совсем
+  // свежеподключённый канал без единого вебхука пока не считается "молчащим" — это норма, не
+  // инцидент.
+  //
+  // Поднято с 6ч до 12ч 2026-09-03 — живой разбор бейджа у проектов IVAN показал, что 6ч ловил
+  // именно ночные затишья у активных каналов (getWebhookInfo подтвердил, что Telegram-регистрация
+  // у них была полностью исправна — ложные срабатывания), в то время как реально сломанный канал
+  // из того же разбора молчал 40+ часов. 12ч всё ещё намного короче исходного ~20-часового
+  // инцидента, но не реагирует на обычные суточные колебания трафика.
+  private static readonly WEBHOOK_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
 
   // Убираем зашифрованную MTProto-сессию из ответа (тот же приём, что и в
   // ChannelsController.sanitizeChannel) — карточке/странице проекта достаточно знать сам факт
@@ -339,6 +346,8 @@ export class ProjectsService {
             tgSessionEncrypted: true,
             lastWebhookAt: true,
             tgPersonalLastError: true,
+            websiteUrl: true,
+            websiteFaviconUrl: true,
           },
         },
         // testEventCode (запрос пользователя 2026-07-29: "проверь ещё раз создание пикселя...
@@ -437,8 +446,22 @@ export class ProjectsService {
     return this.prisma.project.findFirst({
       where: { publicToken, deletedAt: null },
       include: {
+        // id/tgChannelId — запрос пользователя 2026-08-31, персональная invite-ссылка на визит
+        // (TrackingController.tgRedirect → TelegramProvider.createOneTimeInviteLink нужен
+        // полноценный Channel, не только поля для buildTelegramLink). Оба вызова этого метода
+        // используют результат только внутри сервера, наружу в HTTP-ответ не отдаётся — расширение
+        // select ничего не протекает.
         channel: {
-          select: { type: true, tgMode: true, tgBotUsername: true, tgChannelUsername: true, tgPersonalUsername: true, tgInviteLink: true },
+          select: {
+            id: true,
+            type: true,
+            tgMode: true,
+            tgBotUsername: true,
+            tgChannelUsername: true,
+            tgPersonalUsername: true,
+            tgInviteLink: true,
+            tgChannelId: true,
+          },
         },
       },
     });
@@ -556,19 +579,48 @@ export class ProjectsService {
         async>
 </script>`;
 
-    const apiExample = `// Server-side (Node.js) — npm install @trafficcrm/sdk
-const { TrackClient } = require('@trafficcrm/sdk');
+    // Раньше здесь был пример "npm install @trafficcrm/sdk" — реального пакета с этим именем
+    // в npm-реестре никогда не было (apps/sdk/src/index.ts собирается только в CDN-бандл
+    // track.js для браузера, на npm никогда не публиковался). Внешний разработчик, у которого
+    // `npm install` закономерно падал с 404, не имел рабочего образца и пытался угадать схему
+    // авторизации сам (Bearer/X-API-Key/query-параметр — ни один не существует) вместо реальной
+    // X-Signature/X-Timestamp HMAC-подписи (баг найден по фидбэку 2026-09-03). Теперь пример —
+    // самодостаточный код без единой зависимости (Node 18+ имеет встроенные fetch/crypto),
+    // копипаст-рабочий и зеркалящий тот же контракт, что PHP/Python-примеры ниже.
+    const apiExample = `// Server-side (Node.js 18+, без npm-пакетов — только встроенные fetch/crypto)
+const crypto = require('crypto');
 
-const track = new TrackClient({
-  projectId: '${project.id}',
-  secretKey: '${project.secretKey}',  // KEEP SECRET!
-  apiUrl: '${apiUrl}',
-});
+const projectId = '${project.id}';
+const secretKey = '${project.secretKey}'; // KEEP SECRET!
+const apiUrl = '${apiUrl}';
 
-// Track purchase
-await track.purchase(99.00, 'USD', {
+async function trackPurchase(amount, currency, data) {
+  const timestamp = Date.now().toString();
+  const body = JSON.stringify({ eventName: 'Purchase', value: amount, currency, ...data });
+  const signature = 'sha256=' + crypto.createHmac('sha256', secretKey)
+    .update(\`\${timestamp}.\${body}\`)
+    .digest('hex');
+
+  const res = await fetch(\`\${apiUrl}/track/server/\${projectId}/event\`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Signature': signature,
+      'X-Timestamp': timestamp,
+    },
+    body,
+  });
+  return res.json(); // { eventId: '...' }
+}
+
+// Вызов после подтверждения оплаты:
+await trackPurchase(99.00, 'USD', {
   orderId: 'order_123',
   email: customer.email,
+  // Только для проектов типа "Обычный сайт": id посетителя из window.tcrm.getVisitorId() —
+  // передайте его со своего фронтенда на бэкенд (скрытым полем формы и т.п.), чтобы покупка
+  // привязалась к тому же клиенту, что и его предыдущие просмотры страниц.
+  visitorId: req.body.visitorId,
 });`;
 
     // REST напрямую (без npm-пакета) — для языков без отдельного SDK. Подпись и
@@ -584,6 +636,8 @@ $body = json_encode([
     'value' => 99.00,
     'currency' => 'USD',
     'orderId' => 'order_123',
+    // Только для "Обычного сайта": id посетителя из window.tcrm.getVisitorId() на фронте
+    'visitorId' => $_POST['visitorId'] ?? null,
 ]);
 
 $signature = 'sha256=' . hash_hmac('sha256', $timestamp . '.' . $body, $secretKey);
@@ -611,6 +665,8 @@ body = json.dumps({
     'value': 99.00,
     'currency': 'USD',
     'orderId': 'order_123',
+    # Только для "Обычного сайта": id посетителя из window.tcrm.getVisitorId() на фронте
+    'visitorId': request.form.get('visitorId'),
 })
 
 signature = 'sha256=' + hmac.new(
@@ -1525,5 +1581,74 @@ requests.post(
       this.prisma.projectAccess.deleteMany({ where: { userId, projectId } }),
       this.prisma.userPermission.deleteMany({ where: { userId, projectId } }),
     ]);
+  }
+
+  // Журнал реквизитов (запрос пользователя 2026-08-27) — PaymentDetailsLog не в
+  // modelsWithCompany (ручное projectId-скоупирование, тот же принцип, что у Push/
+  // PersonalBroadcast), поэтому явно проверяем принадлежность проекта компании через
+  // findOne (throws NotFoundException при чужом id) прежде, чем читать записи.
+  // Сводка для страницы-пикера (запрос пользователя 2026-08-29) — сколько записей за СЕГОДНЯ
+  // (календарные сутки в часовом поясе КАЖДОГО проекта — тот же resolveStatsPeriod, что и везде
+  // в проекте) и когда была последняя запись вообще (без ограничения периодом). Проектов с
+  // подключённым личным аккаунтом обычно немного (сейчас 5), поэтому цикл с отдельным запросом
+  // на проект — не проблема производительности, а не одна raw-агрегация на все сразу.
+  async getPaymentDetailsLogSummary(companyId: string, requesterRole: UserRole) {
+    if (requesterRole !== UserRole.OWNER) throw new ForbiddenException('Журнал реквизитов доступен только владельцу компании');
+
+    const projects = await this.prisma.project.findMany({
+      where: { companyId, deletedAt: null, channel: { tgSessionEncrypted: { not: null } } },
+      select: { id: true, timezone: true },
+    });
+
+    const summaries = await Promise.all(
+      projects.map(async (p) => {
+        const { since, until } = await resolveStatsPeriod(this.prisma, p.timezone, { period: 'today' });
+        const [todayCount, last] = await Promise.all([
+          this.prisma.paymentDetailsLog.count({ where: { projectId: p.id, sentAt: { gte: since, lt: until } } }),
+          this.prisma.paymentDetailsLog.findFirst({ where: { projectId: p.id }, orderBy: { sentAt: 'desc' }, select: { sentAt: true } }),
+        ]);
+        return { projectId: p.id, todayCount, lastSentAt: last?.sentAt ?? null };
+      }),
+    );
+
+    return summaries;
+  }
+
+  async getPaymentDetailsLog(projectId: string, companyId: string, requesterRole: UserRole, filters: PaymentDetailsLogFiltersDto) {
+    // Явная проверка, не @Roles() — OWNER/ADMIN на одном ранге в RolesGuard, декоратор не может
+    // выразить "только Owner" (см. комментарий в ProjectsController).
+    if (requesterRole !== UserRole.OWNER) throw new ForbiddenException('Журнал реквизитов доступен только владельцу компании');
+
+    const project = await this.findOne(projectId, companyId);
+
+    const page = filters.page ?? 1;
+    const take = Math.min(Math.max(filters.pageSize ?? 25, 1), 100);
+    const skip = Math.max(page - 1, 0) * take;
+
+    // Период (запрос пользователя 2026-08-29: "добавь периоды как на главной странице проекта") —
+    // тот же resolveStatsPeriod, что и весь остальной проект, календарно выровненный по часовому
+    // поясу проекта. Без period в запросе — вся история (журнал по умолчанию НЕ обрезан 30
+    // днями, в отличие от стат.виджетов проекта: пропустить реквизиты, отправленные раньше,
+    // было бы хуже, чем показать лишнее).
+    const { since, until } = filters.period ? await resolveStatsPeriod(this.prisma, project.timezone, filters) : { since: undefined, until: undefined };
+
+    const where: Prisma.PaymentDetailsLogWhereInput = {
+      projectId,
+      ...(since && until ? { sentAt: { gte: since, lt: until } } : {}),
+      ...(filters.search ? { messageText: { contains: filters.search, mode: 'insensitive' as const } } : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.paymentDetailsLog.findMany({
+        where,
+        orderBy: { sentAt: 'desc' },
+        skip,
+        take,
+        include: { client: { select: { id: true, tgFirstName: true, tgLastName: true, tgUsername: true } } },
+      }),
+      this.prisma.paymentDetailsLog.count({ where }),
+    ]);
+
+    return { items, total, page, pageSize: take };
   }
 }
