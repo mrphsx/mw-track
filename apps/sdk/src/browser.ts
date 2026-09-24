@@ -29,7 +29,23 @@
   // Авторедирект (тумблер на лендинге, LandingRendererService.injectTrackingScripts) —
   // страница сразу уводит в Telegram без клика по кнопке. URL уже собран на сервере
   // (тот же /tg-redirect, что и у кнопки), SDK просто трекает Lead и уходит по нему.
-  const autoRedirectUrl = script?.getAttribute('data-auto-redirect-url') || undefined;
+  // Два независимых переключателя отправки Lead (запрос пользователя 2026-09-15, по образцу
+  // настроек конкурирующей СРМ: "Отправлять событие Lead при клике на Join Channel" и
+  // "Отправлять событие Lead при авто-редиректе"). Дефолты подобраны так, чтобы отсутствие
+  // атрибута означало текущее, уже проверенное поведение: клик по кнопке шлёт Lead,
+  // авторедирект — нет. Сервер выставляет атрибут только когда значение отличается от дефолта
+  // (см. LandingRendererService.injectTrackingScripts), поэтому голый тег = дефолты.
+  const leadOnClick = script?.getAttribute('data-lead-on-click') !== 'false';
+  const leadOnAutoRedirect = script?.getAttribute('data-lead-on-auto-redirect') === 'true';
+
+  // ?ar=0 в адресе страницы отключает авторедирект (перенято с лендинга конкурирующей СРМ,
+  // разбор 2026-09-15) — без этого открыть лендинг с включённым авторедиректом и посмотреть
+  // его глазами невозможно: страница уходит в Telegram через 2 секунды. Чисто отладочный
+  // переключатель на стороне посетителя, на трекинг не влияет — PageView шлётся как обычно.
+  const autoRedirectDisabledByUrl = new URLSearchParams(window.location.search).get('ar') === '0';
+  const autoRedirectUrl = autoRedirectDisabledByUrl
+    ? undefined
+    : script?.getAttribute('data-auto-redirect-url') || undefined;
   // Отложенный авторедирект (запрос пользователя 2026-08-18, шаблон age-gate-invite с двумя
   // попапами) — вместо немедленного срабатывания на загрузке страницы функция редиректа
   // складывается в window.tcrm.triggerAutoRedirect, и сам template.html вызывает её вручную в
@@ -220,7 +236,22 @@
   }
   sessionStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
 
+  // Дедуп кликовых событий в пределах одного визита (баг-репорт пользователя 2026-09-15:
+  // "172613 кликов на 2022 пдп", реальный хвост до 52 Lead с одного рекламного клика).
+  // Причина хвоста: во встроенных браузерах TikTok/Instagram переход по tg:// часто молча не
+  // срабатывает, человек видит "кнопка не работает" и жмёт её снова и снова — каждый тап
+  // отправлял отдельный Lead. Один визит = максимум одно намерение перейти, поэтому повторы
+  // гасим на клиенте, а не чиним постфактум в отчётах. PageView сюда НЕ входит: он и так
+  // срабатывает один раз на загрузку, а реальная перезагрузка страницы — это честный второй
+  // просмотр.
+  const DEDUPED_EVENTS = ['Lead'];
+  const firedOnce = new Set<string>();
+
   async function track(eventName: string, extraData: Record<string, unknown> = {}): Promise<void> {
+    if (DEDUPED_EVENTS.indexOf(eventName) >= 0) {
+      if (firedOnce.has(eventName)) return;
+      firedOnce.add(eventName);
+    }
     const stored = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '{}');
 
     const payload: Record<string, unknown> = {
@@ -292,11 +323,19 @@
   // эндпоинт (TrackingController.tgRedirect) донашивает её в атрибуцию, донесённую до Telegram-
   // события (запрос пользователя 2026-07-29). Без cookie — просто не трогаем URL, обычный
   // переход как раньше.
-  function withFbp(url: string): string {
+  // _fbc добавлен 2026-09-15 по разбору лендинга конкурента: они дожидаются и дописывают в
+  // редирект ОБЕ куки (_fbp и _fbc), мы форвардили только _fbp. _fbc несёт исходный fbclid в
+  // том виде, в каком его записал сам fbevents.js, и заметно поднимает качество матчинга
+  // серверных событий в Facebook.
+  function withFbCookies(url: string): string {
+    const parts: string[] = [];
     const fbp = readCookie('_fbp');
-    if (!fbp) return url;
+    const fbc = readCookie('_fbc');
+    if (fbp && url.indexOf('fbp=') < 0) parts.push(`fbp=${encodeURIComponent(fbp)}`);
+    if (fbc && url.indexOf('fbc=') < 0) parts.push(`fbc=${encodeURIComponent(fbc)}`);
+    if (!parts.length) return url;
     const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}fbp=${encodeURIComponent(fbp)}`;
+    return `${url}${sep}${parts.join('&')}`;
   }
 
   // Предзагрузка готовой tg:// + https:// ссылки (запрос пользователя 2026-08-31, "возьмём у
@@ -313,7 +352,7 @@
   function prefetchTelegramLink(): Promise<{ tg: string | null; https: string | null } | null> {
     if (tgLinkPromise) return tgLinkPromise;
     if (!autoRedirectUrl) return Promise.resolve(null);
-    const base = withFbp(autoRedirectUrl);
+    const base = withFbCookies(autoRedirectUrl);
     const sep = base.includes('?') ? '&' : '?';
     tgLinkPromise = fetch(`${base}${sep}format=json`)
       .then((r) => (r.ok ? r.json() : null))
@@ -358,10 +397,27 @@
   // уходом с лендинга, независимо от состояния cookie.
   const AUTO_REDIRECT_DELAY_MS = 2000;
 
+  // ВАЖНО (баг-репорт пользователя 2026-09-15, разбор лендинга конкурирующей СРМ): здесь
+  // РАНЬШЕ стоял track('Lead') — авторедирект отправлял Lead сам, без какого-либо действия
+  // человека. На боевых данных это давало Lead РОВНО равный PageView (57/57, 180/182,
+  // 2046/2087 за день) и до 52 Lead с одного рекламного клика, то есть метрика "Клик на
+  // кнопку" считала не клики, а второй раз просмотры. Хуже того, этот же фальшивый Lead
+  // уходил в Facebook/TikTok как конверсия (4082 Lead против 20 реальных Subscribe за день) —
+  // площадка видела конверсию почти на каждом клике, оптимизировалась на самый дешёвый клик и
+  // наращивала мусорный объём. Лендинг конкурента в этой же ситуации из браузера шлёт ТОЛЬКО
+  // fbq('track','PageView') и ни одного Lead, а переход считает на сервере (см.
+  // TrackingController.tgRedirect — теперь так же и у нас).
+  // Настоящие клики никуда не делись: кнопка шаблона несёт data-track="Lead", её обрабатывает
+  // общий [data-track]-хендлер ниже — он и остаётся единственным источником Lead.
   function fireAutoRedirect(): void {
-    track('Lead');
+    // По умолчанию ВЫКЛЮЧЕНО, и это не косметика: авторедирект срабатывает на ~100% визитов,
+    // поэтому такой Lead численно равен PageView и, уходя в Facebook/TikTok как конверсия,
+    // ломает обучение пикселя (разбор на боевых данных — см. CLAUDE.md, 2026-09-15). Включать
+    // осознанно и обычно только вместе с выключенным leadOnClick, иначе один визит с реальным
+    // тапом по кнопке даст сразу два Lead.
+    if (leadOnAutoRedirect) track('Lead');
     window.setTimeout(() => {
-      window.location.href = withFbp(autoRedirectUrl!);
+      window.location.href = withFbCookies(autoRedirectUrl!);
     }, AUTO_REDIRECT_DELAY_MS);
   }
 
@@ -628,6 +684,9 @@
 
     const eventName = target.getAttribute('data-track');
     if (!eventName) return;
+    // Переключатель "Lead при клике на кнопку" гасит именно Lead; остальные события
+    // (InitiateCheckout/Purchase/...) он не трогает — они к кнопке перехода отношения не имеют.
+    if (eventName === 'Lead' && !leadOnClick) return;
 
     const extra: Record<string, unknown> = {};
     if (target.getAttribute('data-value')) extra.value = parseFloat(target.getAttribute('data-value')!);
@@ -636,6 +695,54 @@
 
     track(eventName, extra);
   });
+
+  // Прокидывает fbclid/ttclid/utm/рекламные макросы ЭТОЙ страницы в ссылку на /tg-redirect —
+  // нужно только лендингу клиента на ЕГО СОБСТВЕННОМ сервере/домене (запрос пользователя
+  // 2026-09-04: "нужно сделать чтобы можно было интегрировать скрипты api нашей СРМ в их
+  // лэндинг, чтобы он считался как наш"): такую страницу мы не рендерим сами, значит ссылка на
+  // кнопке никогда не несёт готовый ?code= (в отличие от наших TEMPLATE/CUSTOM-лендингов, где
+  // TrackingController.tgRedirect уже получает подготовленный код через
+  // LandingRendererService.injectTrackingScripts) — TrackingController.tgRedirect сам умеет
+  // построить новый start:<code> из ЭТИХ параметров, если код не пришёл (см. его комментарий).
+  // Уже есть ?code= на ссылке — ничего не трогаем (см. проверку ниже), значит это НАША страница,
+  // повторное добавление было бы просто лишним и бессмысленным.
+  function withExternalAttribution(url: string): string {
+    let parsed: URL;
+    try {
+      parsed = new URL(url, window.location.href);
+    } catch {
+      return url;
+    }
+    if (parsed.searchParams.has('code')) return url;
+
+    const namesToForward = ['fbclid', 'ttclid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', ...Object.values(paramMap)];
+    let changed = false;
+    for (const name of namesToForward) {
+      if (parsed.searchParams.has(name)) continue;
+      const value = urlParams.get(name);
+      if (value) {
+        parsed.searchParams.set(name, value);
+        changed = true;
+      }
+    }
+
+    // landingId/abTestGroupId (запрос пользователя 2026-09-07, "внешний лендинг" — полноценная
+    // сущность Landing в СРМ) — это НЕ параметры страницы (window.location.search), а атрибуты
+    // самого тега <script>, уже распарсенные при инициализации SDK. Тот же принцип "только если
+    // ссылка ещё не несёт ?code=" — на наших собственных лендингах эта ветка не срабатывает,
+    // т.к. у них ?code= уже есть.
+    for (const [key, value] of [
+      ['landingId', landingId],
+      ['abTestGroupId', abTestGroupId],
+    ] as const) {
+      if (value && !parsed.searchParams.has(key)) {
+        parsed.searchParams.set(key, value);
+        changed = true;
+      }
+    }
+
+    return changed ? parsed.toString() : url;
+  }
 
   // Кнопка Telegram (все 4 режима) ведёт статичным href на собственный редирект-эндпоинт
   // (TrackingController.tgRedirect, /track/:publicToken/tg-redirect), который сам решает
@@ -646,14 +753,17 @@
   // Единственное, что добавлено обратно (запрос пользователя 2026-07-29) — дописать ?fbp=
   // прямо перед переходом: cookie читается заново на каждый клик (не один раз при загрузке
   // страницы), поэтому не важно, успел ли fbevents.js проставить её к моменту загрузки SDK —
-  // к моменту реального клика уже почти наверняка да. preventDefault только когда cookie
-  // реально есть, что менять — иначе обычная навигация по исходному href, без вмешательства.
+  // к моменту реального клика уже почти наверняка да.
   document.addEventListener('click', function (e: MouseEvent) {
     const link = (e.target as HTMLElement).closest('a[href*="/tg-redirect"]') as HTMLAnchorElement | null;
     if (!link) return;
-    const fbp = readCookie('_fbp');
-    if (!fbp) return;
+    // withExternalAttribution — no-op (возвращает исходный url as-is) для наших собственных
+    // лендингов (у них уже есть ?code=), поэтому preventDefault теперь нужен не только ради fbp,
+    // но объединяем обе правки в одну навигацию, чтобы не перезаписывать location.href дважды.
+    const withAttribution = withExternalAttribution(link.href);
+    const finalUrl = withFbCookies(withAttribution);
+    if (finalUrl === link.href) return;
     e.preventDefault();
-    window.location.href = withFbp(link.href);
+    window.location.href = finalUrl;
   });
 })(window, document);

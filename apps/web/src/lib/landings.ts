@@ -90,9 +90,26 @@ export interface LandingItem {
   // применяет select, только include, так что все скалярные поля Landing и так были в ответе),
   // просто не были описаны в этом типе и не отображались нигде в карточке до сих пор.
   autoRedirect: boolean;
+  leadOnClick: boolean;
+  leadOnAutoRedirect: boolean;
   cloakingEnabled: boolean;
   // Автор (запрос пользователя 2026-08-03) — null у лендингов без резолвящегося создателя.
   createdBy: { id: string; firstName: string; lastName: string | null } | null;
+  // Внешний лендинг (запрос пользователя 2026-09-07) — URL страницы клиента, только для
+  // type === 'EXTERNAL'. lastError — причина, по которой лендинг ещё не PUBLISHED (провал
+  // проверки ZIP при загрузке для CUSTOM, провал "Проверить подключение" для EXTERNAL).
+  externalUrl: string | null;
+  lastError: string | null;
+}
+
+// Общий формат результата проверки — используется и для CUSTOM (проверка ZIP при загрузке), и
+// для EXTERNAL (проверка подключения), одним и тем же ReviewChecklist (запрос пользователя
+// 2026-09-07). Зеркалит apps/api/src/modules/landings/landing-review.util.ts.
+export interface LandingReviewCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail?: string;
 }
 
 export function primaryChannel(landing: LandingItem): PrimaryChannel | null {
@@ -346,6 +363,84 @@ export function buildWebsiteTrackedLink(
   const params = buildTrackedLinkParams(pixel, linkParamMap, buyerId);
   const separator = websiteUrl.includes('?') ? '&' : '?';
   return `${websiteUrl}${separator}${params}`;
+}
+
+// Атрибуты, где может встретиться относительная ссылка на файл CUSTOM-лендинга внутри его
+// собственного index.html — те же теги, что уже проверяет reviewLandingHtml на бэкенде
+// (landing-review.util.ts), намеренно тот же список.
+const REWRITABLE_REFS: Array<{ selector: string; attr: string }> = [
+  { selector: 'img[src]', attr: 'src' },
+  { selector: 'link[href]', attr: 'href' },
+  { selector: 'script[src]', attr: 'src' },
+];
+
+// Абсолютные (http/https/протокол-относительные), data:-инлайновые и ещё не подставленные
+// {{...}}-шаблонные ссылки не нужно (и нельзя) подменять — тот же критерий "это не файл внутри
+// архива", что и у isSkippableRef на бэкенде.
+function isRewritableRelativeRef(value: string): boolean {
+  if (!value) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return false; // любая схема, включая data:
+  if (value.startsWith('//')) return false;
+  if (value.includes('{{')) return false;
+  return true;
+}
+
+// Открывает превью лендинга в новой вкладке — общая реализация для всех 6 мест, где она
+// раньше была продублирована один в один (project/company-wide список, детальная страница,
+// оба дерева). Баг-репорт 2026-09-07: сырой HTML оборачивался в Blob и открывался через
+// createObjectURL — у blob:-URL нет структуры вложенных путей вообще, поэтому у CUSTOM-лендинга
+// с файлами в подпапках относительные ссылки (images/photo.jpg) не могли разрешиться НИ ПРИ
+// КАКИХ обстоятельствах (это не тот же баг, что с доменным роутингом, там помогал слеш — здесь
+// помочь нечем, blob-URL принципиально не поддерживает вложенность). Фикс — до сборки Blob
+// находим в HTML все относительные ссылки на файлы, подгружаем каждый файл через авторизованный
+// /landings/:id/preview-asset/* (тот же LANDINGS_VIEW-доступ, что и у самого /preview) и
+// подменяем на blob-URL уже готовых байтов. Для TEMPLATE-лендингов (нет собственных файлов,
+// только абсолютные CDN-ссылки) цикл ниже просто не находит ни одной подходящей ссылки — вызов
+// безопасен для любого типа лендинга без явной проверки type.
+export async function previewLanding(landingId: string): Promise<void> {
+  const res = await api.get(`/landings/${landingId}/preview`, { responseType: 'text' });
+  const html = res.data as string;
+
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+
+  // Каждый найденный файл — отдельный HTTP-раунд-трип; при последовательных await на реальном
+  // лендинге с десятком фотографий (баг-репорт 2026-09-08: 20 секунд на открытие превью,
+  // объяснилось ровно этим — 15 файлов по ~1.3с каждый) это складывается в реально заметную
+  // задержку. Собираем все подходящие элементы сразу и грузим их ОДНИМ Promise.all — те же
+  // запросы, что и раньше, просто параллельно, а не в очередь. Одинаковые ссылки на один и тот
+  // же файл (изредка встречается — например, одна и та же картинка и в <img>, и в фоне через
+  // отдельный <link>) дедуплицируются через один общий кэш на всю функцию, а не грузятся дважды.
+  const cache = new Map<string, Promise<string | null>>();
+  const fetchOnce = (value: string): Promise<string | null> => {
+    let promise = cache.get(value);
+    if (!promise) {
+      promise = api
+        .get(`/landings/${landingId}/preview-asset/${value}`, { responseType: 'blob' })
+        .then((assetRes) => URL.createObjectURL(assetRes.data as Blob))
+        .catch(() => null); // Файл не нашёлся — оригинальная ссылка останется как есть.
+      cache.set(value, promise);
+    }
+    return promise;
+  };
+
+  const jobs: Array<Promise<void>> = [];
+  for (const { selector, attr } of REWRITABLE_REFS) {
+    for (const el of Array.from(doc.querySelectorAll(selector))) {
+      const value = el.getAttribute(attr) || '';
+      if (!isRewritableRelativeRef(value)) continue;
+      jobs.push(fetchOnce(value).then((objectUrl) => {
+        if (objectUrl) el.setAttribute(attr, objectUrl);
+      }));
+    }
+  }
+  await Promise.all(jobs);
+
+  const finalHtml = `<!DOCTYPE html>${doc.documentElement.outerHTML}`;
+  const blob = new Blob([finalHtml], { type: 'text/html' });
+  const previewUrl = URL.createObjectURL(blob);
+  window.open(previewUrl, '_blank');
+  // Object URL-ы живут до explicit revoke или закрытия вкладки-владельца документа — не отзываем
+  // сразу же после window.open, иначе только что открытая вкладка не успеет их использовать.
 }
 
 // Привязывает лендинг к домену через upsert-путь эндпоинт (POST /domains/:id/paths) — путь

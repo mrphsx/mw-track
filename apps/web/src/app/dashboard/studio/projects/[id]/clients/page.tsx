@@ -5,6 +5,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Download } from 'lucide-react';
 import { api } from '@/lib/api';
+import { downloadBlob } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { PeriodValue } from '@/components/shared/period-selector';
 import { computePeriodDates } from '@/lib/use-period-query-state';
@@ -85,12 +86,41 @@ export default function StudioClientsPage() {
 
   const exportLookalike = async () => {
     const res = await api.get(`/projects/${id}/clients/export/lookalike`, { responseType: 'blob' });
-    const url = URL.createObjectURL(res.data as Blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `lookalike_${id}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(res.data as Blob, `lookalike_${id}.csv`);
+  };
+
+  // Полный экспорт (запрос пользователя 2026-09-08: "список клиентов со всеми данными") — те же
+  // параметры фильтра/периода, что и у самого списка ниже (queryFn) — см. полный комментарий в
+  // classic-версии.
+  const exportClients = async () => {
+    const res = await api.get(`/projects/${id}/clients/export`, {
+      responseType: 'blob',
+      params: {
+        origin,
+        channelType: filters.channelType,
+        hasPurchase: filters.hasPurchase,
+        hasDialogue: filters.hasDialogue,
+        country: filters.country,
+        minSpent: filters.minSpent,
+        landingId: filters.landingId,
+        buyerId: filters.buyerId,
+        pixelId: filters.pixelId,
+        campaignName: filters.campaignName,
+        adName: filters.adName,
+        adsetName: filters.adsetName,
+        siteSourceName: filters.siteSourceName,
+        utmSource: filters.utmSource,
+        utmMedium: filters.utmMedium,
+        utmCampaign: filters.utmCampaign,
+        utmContent: filters.utmContent,
+        adSource: filters.adSource,
+        search: search || undefined,
+        period: periodValue?.period,
+        from: periodValue?.period === 'custom' ? periodValue.from : undefined,
+        to: periodValue?.period === 'custom' ? periodValue.to : undefined,
+      },
+    });
+    downloadBlob(res.data as Blob, `clients_${id}.csv`);
   };
 
   const { data } = useQuery({
@@ -153,8 +183,11 @@ export default function StudioClientsPage() {
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             className="w-56 h-auto border-0 dark:border dark:border-white/10 px-4 py-2 text-sm rounded-lg bg-white dark:bg-[#171F2B] shadow-sm text-[#131A24] dark:text-[#E9EDF3] placeholder:text-[#92A0AF] focus-visible:ring-2 focus-visible:ring-[#1F4E9C]/40 dark:focus-visible:ring-[#7BA9EE]/40"
           />
+          <StudioLinkButton icon={Download} onClick={exportClients}>
+            Скачать CSV
+          </StudioLinkButton>
           <StudioLinkButton icon={Download} onClick={exportLookalike}>
-            Экспорт
+            Lookalike
           </StudioLinkButton>
         </div>
       </div>

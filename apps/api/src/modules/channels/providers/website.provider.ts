@@ -1,11 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Channel } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { assertPublicHost } from '../../../common/ssrf-guard.util';
+import { fetchPublicHtml } from '../../../common/safe-html-fetch.util';
 import { ChannelProvider, SendMessageResult, UserStatus } from './channel.provider.interface';
-
-const VERIFY_TIMEOUT_MS = 8000;
-const MAX_BODY_BYTES = 200_000; // тега в <head> достаточно найти в первых ~200KB
 
 // Обычный сайт без мессенджера вообще (ChannelType.WEBSITE, запрос пользователя 2026-09-03) —
 // у Channel-строки нет своего API, но есть реальная задача — убедиться, что клиент правда
@@ -32,7 +29,7 @@ export class WebsiteProvider implements ChannelProvider {
     });
     if (!project) throw new Error('Проект не найден');
 
-    const html = await this.fetchHtmlSafely(channel.websiteUrl);
+    const html = await fetchPublicHtml(channel.websiteUrl, { userAgent: 'MWTRACK-WebsiteVerifier/1.0' });
 
     const cdnUrl = process.env.CDN_URL || '';
     const hasScriptTag = cdnUrl && html.includes(`${cdnUrl}/track.js`);
@@ -79,57 +76,6 @@ export class WebsiteProvider implements ChannelProvider {
       }
     }
     return null;
-  }
-
-  // Только чтение (HTTP GET + текстовый поиск) — никогда не бросает по сети мимо явных throw
-  // выше, чтобы tryInitialize() (ChannelsService) получил ОДНО описательное сообщение, а не
-  // голую сетевую ошибку без контекста.
-  private async fetchHtmlSafely(rawUrl: string): Promise<string> {
-    let url: URL;
-    try {
-      url = new URL(rawUrl);
-    } catch {
-      throw new Error('Некорректный адрес сайта');
-    }
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      throw new Error('Разрешены только http/https адреса');
-    }
-
-    await assertPublicHost(url.hostname);
-
-    let response: Response;
-    try {
-      response = await fetch(url.toString(), {
-        signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
-        headers: { 'User-Agent': 'MWTRACK-WebsiteVerifier/1.0' },
-      });
-    } catch (error) {
-      throw new Error(`Не удалось загрузить страницу: ${(error as Error).message}`);
-    }
-
-    // Повторная проверка ПОСЛЕ редиректов — response.url отражает финальный адрес,
-    // который может резолвиться в другой (приватный) IP, чем исходный хост
-    // (DNS-rebinding-через-редирект — исходной проверки assertPublicHost выше недостаточно).
-    const finalUrl = new URL(response.url);
-    await assertPublicHost(finalUrl.hostname);
-
-    if (!response.ok) {
-      throw new Error(`Сайт вернул ошибку ${response.status}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) return '';
-    let received = 0;
-    let html = '';
-    const decoder = new TextDecoder();
-    while (received < MAX_BODY_BYTES) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      received += value.byteLength;
-      html += decoder.decode(value, { stream: true });
-    }
-    await reader.cancel().catch(() => {});
-    return html;
   }
 
   async sendMessage(): Promise<SendMessageResult> {

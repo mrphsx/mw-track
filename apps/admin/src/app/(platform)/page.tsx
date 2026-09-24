@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
+import { isAxiosError } from 'axios';
 import { Building2, Users, FolderOpen, AlertTriangle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -139,9 +140,12 @@ export default function CompaniesPage() {
                     {c.pushesToday}/{c.maxPushesPerDay}
                   </TableCell>
                   <TableCell>
-                    <Button size="sm" variant="outline" onClick={() => setEditing(c)}>
-                      Изменить подписку
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setEditing(c)}>
+                        Изменить подписку
+                      </Button>
+                      <ImpersonateButton companyId={c.id} />
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -176,6 +180,33 @@ export default function CompaniesPage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// Вход в дашборд компании под сессией её Owner'а, для дебага (запрос пользователя 2026-09-24).
+// Открывает новую вкладку с одноразовым кодом обмена — сессия самого супер-админа в этой
+// вкладке не трогается. 400 = у компании нет активного OWNER'а, показываем как есть.
+function ImpersonateButton({ companyId }: { companyId: string }) {
+  const [error, setError] = useState('');
+
+  const mutation = useMutation({
+    mutationFn: async () => (await api.post<{ code: string }>(`/admin/companies/${companyId}/impersonate`)).data,
+    onSuccess: ({ code }) => {
+      setError('');
+      const webUrl = process.env.NEXT_PUBLIC_WEB_URL || 'http://localhost:3000';
+      window.open(`${webUrl}/impersonate?code=${code}`, '_blank');
+    },
+    onError: (err) =>
+      setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось войти в компанию'),
+  });
+
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <Button size="sm" variant="outline" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+        {mutation.isPending ? 'Открываем...' : 'Войти как Owner'}
+      </Button>
+      {error && <p className="text-xs text-red-500">{error}</p>}
     </div>
   );
 }

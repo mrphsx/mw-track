@@ -5,13 +5,13 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { ArrowLeft, Eye, Globe, Link2, MessageCircle, MousePointerClick, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
+import { ArrowLeft, Eye, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
-import { STATUS_LABEL, TYPE_LABEL, DomainOption } from '@/lib/landings';
+import { STATUS_LABEL, TYPE_LABEL, DomainOption, previewLanding } from '@/lib/landings';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StatsCard } from '@/components/shared/stats-card';
 import { ClientsTable, ClientRow } from '@/components/clients/clients-table';
@@ -19,7 +19,7 @@ import {
   LandingBehaviorFields,
   LandingBehaviorState,
   EMPTY_LANDING_BEHAVIOR,
-  behaviorStateToPayload,
+  optionsOnlyPayload,
 } from '@/components/landing-behavior-fields';
 import { LandingContentCard } from '@/components/landing-content-card';
 import { GetLinkDialog } from '@/components/get-link-dialog';
@@ -55,17 +55,25 @@ interface TiktokHintTexts {
 interface LandingFull {
   id: string;
   autoRedirect: boolean;
+  leadOnClick: boolean;
+  leadOnAutoRedirect: boolean;
   cloakingEnabled: boolean;
   cloakingCountries: string[];
   cloakingRedirectUrl: string | null;
+  cloakingType: 'REDIRECT' | 'PRELANDING';
+  cloakingPrelandingBasePath: string | null;
   tiktokBrowserHint: boolean;
   tiktokHintTexts: TiktokHintTexts | null;
 }
 
 // Опции лендинга (запрос пользователя 2026-07-03): авторедирект в Telegram без клика по
-// кнопке и клоакинг по странам (allow-list + резервная ссылка для остальных). Отдельный
-// GET /landings/:id (не /stats — тот про аналитику, эти поля про поведение самого лендинга),
-// PATCH сохраняет всё сразу одним запросом.
+// кнопке и т.п. Клоакинг переехал на отдельную страницу /landings/:id/cloaking (запрос
+// пользователя 2026-09-23: "страница будет большой, вариантов клоакинга станет больше — вынеси
+// не в карточку/вкладку, а на отдельную страницу, кнопку наверх страницы лендинга") — см.
+// cloaking/page.tsx и кнопку "Клоакинг" в шапке LandingStatsPage ниже. hideCloaking здесь
+// всегда true; сохранение шлёт optionsOnlyPayload (узкий пейлоад без cloaking* полей вообще —
+// эта карточка их даже не читает), так что не может задеть настройки клоакинга ни при каких
+// обстоятельствах.
 function LandingOptionsCard({ landingId }: { landingId: string }) {
   const queryClient = useQueryClient();
 
@@ -82,7 +90,11 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
     const hintTexts = landing.tiktokHintTexts || {};
     setState({
       autoRedirect: landing.autoRedirect,
+      // ?? — на случай лендинга, отданного до появления полей (старый кэш ответа)
+      leadOnClick: landing.leadOnClick ?? true,
+      leadOnAutoRedirect: landing.leadOnAutoRedirect ?? false,
       cloakingEnabled: landing.cloakingEnabled,
+      cloakingType: landing.cloakingType ?? 'REDIRECT',
       countriesText: landing.cloakingCountries.join(', '),
       redirectUrl: landing.cloakingRedirectUrl || '',
       tiktokBrowserHint: landing.tiktokBrowserHint,
@@ -98,7 +110,7 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      await api.patch(`/landings/${landingId}`, behaviorStateToPayload(state));
+      await api.patch(`/landings/${landingId}`, optionsOnlyPayload(state));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'full'] });
@@ -115,8 +127,12 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
         <CardTitle className="text-base">Опции лендинга</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <LandingBehaviorFields idPrefix="opt" state={state} onChange={(patch) => setState((s) => ({ ...s, ...patch }))} />
-
+        <LandingBehaviorFields
+          idPrefix="opt"
+          state={state}
+          onChange={(patch) => setState((s) => ({ ...s, ...patch }))}
+          hideCloaking
+        />
         {error && <p className="text-sm text-red-500">{error}</p>}
         <Button onClick={() => save.mutate()} disabled={save.isPending}>
           {save.isPending ? 'Сохраняем...' : 'Сохранить'}
@@ -176,11 +192,7 @@ export default function LandingStatsPage() {
   // /landings/:id/preview требует авторизации (JWT) — обычный <a href> не донесёт токен,
   // поэтому грузим как блоб через тот же api-клиент, что и остальной SPA, и открываем
   // готовый HTML в новой вкладке (тот же паттерн, что и на /projects/[id]/landings).
-  const preview = async () => {
-    const res = await api.get(`/landings/${landingId}/preview`, { responseType: 'text' });
-    const blob = new Blob([res.data as string], { type: 'text/html' });
-    window.open(URL.createObjectURL(blob), '_blank');
-  };
+  const preview = () => previewLanding(landingId);
 
   if (!stats) return <p className="text-sm text-muted-foreground">Загрузка...</p>;
 
@@ -219,7 +231,7 @@ export default function LandingStatsPage() {
                   Опубликовать
                 </Button>
               )}
-              {stats.attachment && (
+              {stats.attachment && stats.landing.type !== 'EXTERNAL' && (
                 <a
                   href={`https://${stats.attachment.domain}${stats.attachment.path === '/' ? '' : stats.attachment.path}`}
                   target="_blank"
@@ -240,9 +252,13 @@ export default function LandingStatsPage() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => setShowDomainDialog(true)}>
-              <Globe className="w-4 h-4 mr-1.5" /> {stats.attachment ? 'Сменить домен' : 'Привязать домен'}
-            </Button>
+            {/* Привязка домена бессмысленна для EXTERNAL — такой лендинг мы никогда не рендерим
+                (запрос пользователя 2026-09-07), у него собственный внешний URL. */}
+            {stats.landing.type !== 'EXTERNAL' && (
+              <Button variant="outline" onClick={() => setShowDomainDialog(true)}>
+                <Globe className="w-4 h-4 mr-1.5" /> {stats.attachment ? 'Сменить домен' : 'Привязать домен'}
+              </Button>
+            )}
             {stats.attachment && (
               <Button variant="outline" onClick={() => setShowGetLink(true)}>
                 <Link2 className="w-4 h-4 mr-1.5" /> Получить ссылку
@@ -251,6 +267,12 @@ export default function LandingStatsPage() {
             <Button variant="outline" onClick={preview}>
               <Eye className="w-4 h-4 mr-1.5" /> Предпросмотр
             </Button>
+            {/* Клоакинг — отдельная страница, не карточка/вкладка (запрос пользователя
+                2026-09-23): вариантов клоакинга будет всё больше, места в общей форме опций
+                для этого мало. */}
+            <Link href={`/projects/${projectId}/landings/${landingId}/cloaking`} className={buttonVariants({ variant: 'outline' })}>
+              <Shield className="w-4 h-4 mr-1.5" /> Клоакинг
+            </Link>
             <Button variant="outline" onClick={() => setShowAbTestDialog(true)}>
               <SplitSquareHorizontal className="w-4 h-4 mr-1.5" /> {stats.abTestGroup ? 'A/B/n-тест' : 'Запустить A/B/n-тест'}
             </Button>

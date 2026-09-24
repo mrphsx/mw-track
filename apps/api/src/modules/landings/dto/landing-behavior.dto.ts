@@ -1,5 +1,6 @@
-import { IsArray, IsBoolean, IsOptional, IsString, IsUrl, Matches, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsEnum, IsOptional, IsString, IsUrl, Matches, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { CloakingType } from '@prisma/client';
 
 // Тексты попапа-подсказки (запрос пользователя 2026-08-27, "форма для замены текстов как у
 // конкурента", дефолт — английский, задаётся встроенным дефолтом в SDK, не здесь) — каждое поле
@@ -52,6 +53,18 @@ export class LandingBehaviorDto {
   @IsBoolean()
   autoRedirect?: boolean;
 
+  // Два независимых переключателя отправки Lead (запрос пользователя 2026-09-15, по образцу
+  // настроек конкурирующей СРМ). Дефолты живут в schema.prisma, а не здесь: leadOnClick=true,
+  // leadOnAutoRedirect=false — существующее поведение не меняется, пока арендатор сам не
+  // включит второй переключатель осознанно.
+  @IsOptional()
+  @IsBoolean()
+  leadOnClick?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  leadOnAutoRedirect?: boolean;
+
   @IsOptional()
   @IsBoolean()
   cloakingEnabled?: boolean;
@@ -70,6 +83,14 @@ export class LandingBehaviorDto {
   @ValidateIf((o) => o.cloakingRedirectUrl !== '')
   @IsUrl({ require_protocol: true })
   cloakingRedirectUrl?: string;
+
+  // Тип клоакинга (запрос пользователя 2026-09-23) — REDIRECT (текущее поведение) или
+  // PRELANDING (белая страница, загружается отдельным multipart-эндпоинтом, см.
+  // LandingsController.uploadCloakingPrelanding). cloakingRedirectUrl выше остаётся общим —
+  // используется REDIRECT напрямую и PRELANDING как fallback, пока white page не готова.
+  @IsOptional()
+  @IsEnum(CloakingType)
+  cloakingType?: CloakingType;
 
   // Доп. инструкции для TikTok (запрос пользователя 2026-08-25) — см. Landing.tiktokBrowserHint
   // в schema.prisma для полного объяснения проблемы и подхода.

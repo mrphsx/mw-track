@@ -1,11 +1,10 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { isAxiosError } from 'axios';
-import { History, Plus, SplitSquareHorizontal, UploadCloud, X } from 'lucide-react';
+import { Globe, History, Plus, SplitSquareHorizontal, UploadCloud, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
@@ -13,35 +12,25 @@ import {
   AbTestGroupItem,
   DomainOption,
   LandingItem,
-  NO_DOMAIN,
-  attachLandingToDomain,
   attachmentUrl,
   computeAbTestGroupLabels,
   findGroupAttachment,
   findLandingAttachment,
   groupAutoLabel,
+  previewLanding,
 } from '@/lib/landings';
 import {
   AbTestDialogTarget,
   AbTestGroupDialog,
   LandingCard,
   LandingDomainDialog,
-  DomainSelect,
 } from '@/components/landing-card';
 import { GetLinkDialog, GetLinkLanding } from '@/components/get-link-dialog';
 import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dialog';
-import {
-  LandingBehaviorFields,
-  LandingBehaviorState,
-  EMPTY_LANDING_BEHAVIOR,
-  behaviorStateToPayload,
-  isLandingBehaviorNonDefault,
-} from '@/components/landing-behavior-fields';
+import { CreateExternalLandingDialog } from '@/components/create-external-landing-dialog';
+import { UploadZipLandingDialog, UploadZipLandingTarget } from '@/components/upload-zip-landing-dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 export default function LandingsPage() {
   const { id: projectId } = useParams<{ id: string }>();
@@ -50,26 +39,22 @@ export default function LandingsPage() {
   const user = useAuthStore((s) => s.user);
 
   const [showTemplateModal, setShowTemplateModal] = useState(false);
-  const [error, setError] = useState('');
   // Переключатель "обычные лендинги / группы" (запрос пользователя 2026-08-20) — раньше секция
   // групп всегда показывалась над обычным списком лендингов, теперь это два отдельных режима
   // просмотра одной страницы, а не всегда-видимый блок сверху.
   const [viewMode, setViewMode] = useState<'landings' | 'groups'>('landings');
 
-  // null — закрыто, 'new' — создаём новый кастомный лендинг, иначе id существующего (ре-загрузка)
-  const [uploadTarget, setUploadTarget] = useState<'new' | string | null>(null);
-  const [customName, setCustomName] = useState('');
-  const [uploadDomainId, setUploadDomainId] = useState(NO_DOMAIN);
-  const [uploadBehavior, setUploadBehavior] =
-    useState<LandingBehaviorState>(EMPTY_LANDING_BEHAVIOR);
-  const [zipFile, setZipFile] = useState<File | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // null — закрыто; сама форма/загрузка теперь в общем UploadZipLandingDialog (запрос
+  // пользователя 2026-09-08: та же кнопка нужна и на /landings, вынесено туда же).
+  const [uploadTarget, setUploadTarget] = useState<UploadZipLandingTarget | null>(null);
 
   const [domainDialogLanding, setDomainDialogLanding] = useState<LandingItem | null>(null);
   const [getLinkLanding, setGetLinkLanding] = useState<LandingItem | null>(null);
   const [getLinkGroupId, setGetLinkGroupId] = useState<string | null>(null);
   const [abTestTarget, setAbTestTarget] = useState<AbTestDialogTarget | null>(null);
+  // Лендинг клиента на его сервере (запрос пользователя 2026-09-07) — 'new' или существующий
+  // EXTERNAL-лендинг для повторного открытия сниппета/проверки подключения.
+  const [externalTarget, setExternalTarget] = useState<'new' | LandingItem | null>(null);
 
   // Режим выбора лендингов кликом по карточкам для группового A/B/n-теста (запрос
   // пользователя 2026-07-15) — кнопка "Сравнить" в шапке переключает его, липкая панель внизу
@@ -132,50 +117,6 @@ export default function LandingsPage() {
   );
   const hasEndedAbTestGroups = (abTestGroups ?? []).some((g) => g.endedAt);
 
-  const resetUploadForm = () => {
-    setUploadTarget(null);
-    setCustomName('');
-    setUploadDomainId(NO_DOMAIN);
-    setUploadBehavior(EMPTY_LANDING_BEHAVIOR);
-    setZipFile(null);
-    setDragOver(false);
-    setError('');
-  };
-
-  const uploadZip = useMutation({
-    mutationFn: async () => {
-      const formData = new FormData();
-      if (!zipFile) throw new Error('Файл не выбран');
-      formData.append('file', zipFile);
-
-      if (uploadTarget === 'new') {
-        formData.append('name', customName);
-        return (await api.post(`/projects/${projectId}/landings/custom`, formData)).data as {
-          id: string;
-        };
-      }
-      return (await api.post(`/landings/${uploadTarget}/upload`, formData)).data as { id: string };
-    },
-    onSuccess: async (landing) => {
-      queryClient.invalidateQueries({ queryKey: ['landings'] });
-      if (uploadTarget === 'new' && uploadDomainId !== NO_DOMAIN) {
-        await attachLandingToDomain(projectId, landing.id, uploadDomainId, domains);
-        queryClient.invalidateQueries({ queryKey: ['domains'] });
-      }
-      // createCustom — multipart, не пропускает через себя autoRedirect/cloaking (см.
-      // UploadCustomLandingDto) — если пользователь их включил в форме, донастраиваем
-      // сразу тем же PATCH, что и страница редактирования лендинга.
-      if (uploadTarget === 'new' && isLandingBehaviorNonDefault(uploadBehavior)) {
-        await api.patch(`/landings/${landing.id}`, behaviorStateToPayload(uploadBehavior));
-      }
-      resetUploadForm();
-    },
-    onError: (err) =>
-      setError(
-        (isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось загрузить ZIP',
-      ),
-  });
-
   const publish = useMutation({
     mutationFn: (landingId: string) => api.post(`/landings/${landingId}/publish`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landings'] }),
@@ -210,21 +151,7 @@ export default function LandingsPage() {
     onSuccess: invalidateAbTests,
   });
 
-  const preview = async (landingId: string) => {
-    const res = await api.get(`/landings/${landingId}/preview`, { responseType: 'text' });
-    const blob = new Blob([res.data as string], { type: 'text/html' });
-    window.open(URL.createObjectURL(blob), '_blank');
-  };
-
-  const pickFile = (file: File | undefined) => {
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      setError('Только ZIP-файлы');
-      return;
-    }
-    setError('');
-    setZipFile(file);
-  };
+  const preview = (landingId: string) => previewLanding(landingId);
 
   return (
     <div className="space-y-6">
@@ -271,6 +198,9 @@ export default function LandingsPage() {
                     <>
                       <Button variant="outline" onClick={() => setUploadTarget('new')}>
                         <UploadCloud className="w-4 h-4 mr-1.5" /> Загрузить ZIP
+                      </Button>
+                      <Button variant="outline" onClick={() => setExternalTarget('new')}>
+                        <Globe className="w-4 h-4 mr-1.5" /> Лендинг на вашем сервере
                       </Button>
                       <Button onClick={() => setShowTemplateModal(true)}>
                         <Plus className="w-4 h-4 mr-1.5" /> Создать из шаблона
@@ -420,7 +350,8 @@ export default function LandingsPage() {
               onPreview={() => preview(l.id)}
               onManageDomain={() => setDomainDialogLanding(l)}
               onGetLink={() => setGetLinkLanding(l)}
-              onReupload={l.type === 'CUSTOM' ? () => setUploadTarget(l.id) : undefined}
+              onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
+              onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
               onManageAbTest={() =>
                 setAbTestTarget({
                   projectId,
@@ -453,94 +384,24 @@ export default function LandingsPage() {
         domains={domains}
       />
 
-      <Dialog open={uploadTarget !== null} onOpenChange={(open) => !open && resetUploadForm()}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>
-              {uploadTarget === 'new' ? 'Загрузить кастомный лендинг' : 'Перезалить ZIP'}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            {uploadTarget === 'new' && (
-              <div className="space-y-1.5">
-                <Label htmlFor="custom-name">Название (внутреннее)</Label>
-                <Input
-                  id="custom-name"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                />
-              </div>
-            )}
-
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setDragOver(true);
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setDragOver(false);
-                pickFile(e.dataTransfer.files?.[0]);
-              }}
-              onClick={() => fileInputRef.current?.click()}
-              className={`border-2 border-dashed rounded-lg p-6 text-center text-sm cursor-pointer transition-colors ${
-                dragOver
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
-                  : 'border-border text-muted-foreground hover:border-muted-foreground'
-              }`}
-            >
-              <UploadCloud className="w-6 h-6 mx-auto mb-2" />
-              {zipFile ? zipFile.name : 'Перетащите ZIP сюда или нажмите для выбора'}
-              <p className="text-xs text-muted-foreground mt-1">
-                Архив должен содержать index.html в корне, до 50MB
-              </p>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".zip,application/zip"
-                className="hidden"
-                onChange={(e) => pickFile(e.target.files?.[0])}
-              />
-            </div>
-
-            {uploadTarget === 'new' && (
-              <div className="space-y-1.5">
-                <Label htmlFor="upload-domain">Домен (необязательно)</Label>
-                <DomainSelect
-                  id="upload-domain"
-                  value={uploadDomainId}
-                  onChange={setUploadDomainId}
-                  domains={domains}
-                />
-              </div>
-            )}
-
-            {uploadTarget === 'new' && (
-              <div className="pt-1 border-t">
-                <LandingBehaviorFields
-                  idPrefix="new-upload"
-                  state={uploadBehavior}
-                  onChange={(patch) => setUploadBehavior((s) => ({ ...s, ...patch }))}
-                />
-              </div>
-            )}
-
-            {error && <p className="text-sm text-red-500">{error}</p>}
-            <Button
-              onClick={() => uploadZip.mutate()}
-              disabled={!zipFile || (uploadTarget === 'new' && !customName) || uploadZip.isPending}
-            >
-              {uploadZip.isPending ? 'Загружаем...' : 'Загрузить'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <UploadZipLandingDialog
+        target={uploadTarget}
+        projectId={projectId}
+        domains={domains}
+        onClose={() => setUploadTarget(null)}
+      />
 
       <LandingDomainDialog
         landing={domainDialogLanding}
         domains={domains}
         onClose={() => setDomainDialogLanding(null)}
+      />
+      <CreateExternalLandingDialog
+        open={!!externalTarget}
+        projectId={projectId}
+        landing={externalTarget && externalTarget !== 'new' ? externalTarget : null}
+        onClose={() => setExternalTarget(null)}
+        onInvalidate={() => queryClient.invalidateQueries({ queryKey: ['landings'] })}
       />
       <AbTestGroupDialog
         target={abTestTarget}

@@ -3,6 +3,7 @@ import { ChannelType, Client, DialogueSource, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveStatsPeriod } from '../../common/timezone.util';
 import { formatUserName } from '../../common/user-name.util';
+import { buildCsv, withUtf8Bom } from '../../common/csv.util';
 import { TrackingService } from '../tracking/tracking.service';
 import { ClientFiltersDto } from './dto/client-filters.dto';
 import { PushFilterDto } from './dto/push-filter.dto';
@@ -360,8 +361,14 @@ export class ClientsService {
     return this.prisma.channel.findFirst({ where: { projectId }, select: { id: true, tgBotToken: true } });
   }
 
+  // Без учёта регистра: Telegram не различает @Maria_Lopez и @maria_lopez, а менеджер набирает
+  // имя как запомнил. Если под одним именем осталось несколько записей (человек сменил имя, а
+  // другой занял старое), берём ту, что активна последней.
   async findByUsername(username: string, projectId: string): Promise<Client | null> {
-    return this.prisma.client.findFirst({ where: { projectId, tgUsername: username, deletedAt: null } });
+    return this.prisma.client.findFirst({
+      where: { projectId, tgUsername: { equals: username, mode: 'insensitive' }, deletedAt: null },
+      orderBy: { lastActiveAt: { sort: 'desc', nulls: 'last' } },
+    });
   }
 
   async findByTgId(tgUserId: string, projectId: string): Promise<Client | null> {
@@ -558,10 +565,13 @@ export class ClientsService {
   // "Зарегистрировать диалог" прямо в списке клиентов — для тех же случаев, но без Telegram-
   // бота вообще (клиент ведётся в другом канале целиком). projectId передан явно и
   // проверяется — защита от подделанного clientId (чужого проекта/callback_data).
-  async recordManualDialogue(clientId: string, projectId: string, source: 'MANAGER_CONFIRM' | 'CRM_BUTTON'): Promise<void> {
+  // Возвращает true, если диалог записан впервые (и событие ушло в пиксели), false — если он уже
+  // был зарегистрирован раньше: бот менеджера показывает это в ответе.
+  async recordManualDialogue(clientId: string, projectId: string, source: 'MANAGER_CONFIRM' | 'CRM_BUTTON'): Promise<boolean> {
     const client = await this.prisma.client.findFirst({ where: { id: clientId, projectId, deletedAt: null } });
     if (!client) throw new NotFoundException('Клиент не найден');
     await this.applyDialogueUpdate(projectId, client, undefined, source);
+    return !client.firstDialogueAt;
   }
 
   // companyId передаётся явно (а не доверяется только Prisma-middleware), потому что
@@ -733,6 +743,98 @@ export class ClientsService {
     const rows = clients.map((c) => [c.email || '', c.waPhone || c.phone || '', c.country || '']);
 
     return [headers.join(','), ...rows.map((r) => r.map((v) => `"${v}"`).join(','))].join('\n');
+  }
+
+  // Полный экспорт списка клиентов (запрос пользователя 2026-09-08: "список клиентов со всеми
+  // данными") — в отличие от exportForLookalike выше (3 поля под Facebook Custom Audience), тут
+  // весь набор полей карточки клиента + человекочитаемые имена баера/пикселя/лендинга вместо
+  // голых id (сырые id не несут смысла в выгруженной таблице). Принимает ТЕ ЖЕ фильтры
+  // (ClientFiltersDto), что и findMany, — экспорт всегда отражает ровно то, что сейчас отфильтровано
+  // на странице, а не "экспортировать вообще всё". canViewTrafficSource — тот же критерий, что и
+  // в findMany (Operator не видит рекламную атрибуцию) — здесь применяется куда к большему числу
+  // полей, чем в findMany (там прятались только fbclid/ttclid, поскольку остальные ad-атрибуции
+  // не показывались ни в одной колонке списка вообще; здесь показываются все).
+  async exportClientsCsv(
+    projectId: string,
+    filters: ClientFiltersDto,
+    scopedBuyerId: string | undefined,
+    canViewTrafficSource: boolean,
+  ): Promise<string> {
+    let period: { since: Date; until: Date } | undefined;
+    if (filters.period) {
+      const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
+      period = await resolveStatsPeriod(this.prisma, project.timezone, filters);
+    }
+    const where = this.buildClientFilterWhere(projectId, filters, scopedBuyerId, period);
+
+    // Защитный потолок, а не реальный лимит бизнес-логики — проект с реальными десятками тысяч
+    // клиентов не должен уронить процесс одним запросом на экспорт.
+    const EXPORT_ROW_CAP = 50_000;
+    const clients = await this.prisma.client.findMany({ where, orderBy: { createdAt: 'desc' }, take: EXPORT_ROW_CAP });
+
+    const buyerIds = [...new Set(clients.map((c) => c.buyerId).filter((v): v is string => !!v))];
+    const pixelIds = [...new Set(clients.map((c) => c.pixelId).filter((v): v is string => !!v))];
+    const landingIds = [...new Set(clients.map((c) => c.landingId).filter((v): v is string => !!v))];
+    const [buyers, pixels, landings] = await Promise.all([
+      buyerIds.length
+        ? this.prisma.user.findMany({ where: { id: { in: buyerIds } }, select: { id: true, firstName: true, lastName: true } })
+        : ([] as { id: string; firstName: string; lastName: string | null }[]),
+      pixelIds.length
+        ? this.prisma.trackingPixel.findMany({ where: { id: { in: pixelIds } }, select: { id: true, label: true, platform: true } })
+        : ([] as { id: string; label: string | null; platform: string }[]),
+      landingIds.length
+        ? this.prisma.landing.findMany({ where: { id: { in: landingIds } }, select: { id: true, name: true } })
+        : ([] as { id: string; name: string }[]),
+    ]);
+    const buyerNameMap = new Map<string, string>(buyers.map((b): [string, string] => [b.id, formatUserName(b)]));
+    const pixelNameMap = new Map<string, string>(pixels.map((p): [string, string] => [p.id, p.label || p.platform]));
+    const landingNameMap = new Map<string, string>(landings.map((l): [string, string] => [l.id, l.name]));
+
+    const headers = [
+      'ID', 'Имя', 'Username', 'Telegram User ID', 'Телефон (WhatsApp)', 'Instagram', 'Email',
+      'Канал', 'Страна', 'Город', 'Подписан', 'Бот активен', 'Есть покупка', 'Сумма покупок',
+      'Кол-во покупок', 'Дата создания', 'Дата подписки', 'Дата отписки', 'Первый диалог',
+      'Источник диалога', 'Лендинг', 'Баер', 'Пиксель', 'Кампания', 'Объявление', 'Группа объявлений',
+      'UTM Source', 'UTM Medium', 'UTM Campaign', 'UTM Content', 'UTM Term', 'fbclid', 'ttclid',
+    ];
+
+    const rows: Array<Array<string | number | boolean | null | undefined>> = clients.map((c) => [
+      c.id,
+      [c.tgFirstName, c.tgLastName].filter(Boolean).join(' ') || c.waName || '',
+      c.tgUsername || c.igUsername || '',
+      c.tgUserId || '',
+      c.waPhone || c.phone || '',
+      c.igUsername || '',
+      c.email || '',
+      c.channelType || '',
+      c.country || '',
+      c.city || '',
+      c.isSubscribed ? 'да' : 'нет',
+      c.isBotActive ? 'да' : 'нет',
+      c.hasPurchase ? 'да' : 'нет',
+      Number(c.totalSpent ?? 0),
+      c.purchasesCount ?? 0,
+      c.createdAt.toISOString(),
+      c.subscribedAt ? c.subscribedAt.toISOString() : '',
+      c.unsubscribedAt ? c.unsubscribedAt.toISOString() : '',
+      c.firstDialogueAt ? c.firstDialogueAt.toISOString() : '',
+      c.dialogueSource || '',
+      c.landingId ? landingNameMap.get(c.landingId) || c.landingId : '',
+      canViewTrafficSource ? (c.buyerId ? buyerNameMap.get(c.buyerId) || c.buyerId : '') : '',
+      canViewTrafficSource ? (c.pixelId ? pixelNameMap.get(c.pixelId) || c.pixelId : '') : '',
+      canViewTrafficSource ? c.campaignName || c.campaignId || '' : '',
+      canViewTrafficSource ? c.adName || c.adId || '' : '',
+      canViewTrafficSource ? c.adsetName || c.adsetId || '' : '',
+      canViewTrafficSource ? c.utmSource || '' : '',
+      canViewTrafficSource ? c.utmMedium || '' : '',
+      canViewTrafficSource ? c.utmCampaign || '' : '',
+      canViewTrafficSource ? c.utmContent || '' : '',
+      canViewTrafficSource ? c.utmTerm || '' : '',
+      canViewTrafficSource ? c.fbclid || '' : '',
+      canViewTrafficSource ? c.ttclid || '' : '',
+    ]);
+
+    return withUtf8Bom(buildCsv(headers, rows));
   }
 
   // GDPR-удаление: помимо deletedAt, реально стираем PII (иначе это не "удаление",

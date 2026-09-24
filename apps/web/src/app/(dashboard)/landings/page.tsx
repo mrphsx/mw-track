@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, SplitSquareHorizontal } from 'lucide-react';
+import { Globe, Plus, SplitSquareHorizontal, UploadCloud } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   AbTestGroupItem,
@@ -15,6 +15,7 @@ import {
   findGroupAttachment,
   findLandingAttachment,
   groupAutoLabel,
+  previewLanding,
 } from '@/lib/landings';
 import {
   AbTestDialogTarget,
@@ -24,6 +25,8 @@ import {
 } from '@/components/landing-card';
 import { GetLinkDialog, GetLinkLanding } from '@/components/get-link-dialog';
 import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dialog';
+import { UploadZipLandingDialog, UploadZipLandingTarget } from '@/components/upload-zip-landing-dialog';
+import { CreateExternalLandingDialog } from '@/components/create-external-landing-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { useAuthStore } from '@/store/auth.store';
@@ -50,6 +53,12 @@ export default function AllLandingsPage() {
   const [abTestTarget, setAbTestTarget] = useState<AbTestDialogTarget | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<'landings' | 'groups'>('landings');
+  // Кнопки загрузки ZIP / подключения внешнего лендинга (запрос пользователя 2026-09-08: "добавь
+  // еще кнопки загрузки zip и для подключения внешнего лэндинга на странице /landings") — те же
+  // диалоги, что и на странице проекта, без фиксированного projectId — оба сами показывают
+  // обязательный выбор проекта, тот же приём, что уже применён к CreateLandingFromTemplateDialog.
+  const [uploadTarget, setUploadTarget] = useState<UploadZipLandingTarget | null>(null);
+  const [externalTarget, setExternalTarget] = useState<'new' | LandingItem | null>(null);
 
   const { data: landings, isLoading } = useQuery({
     queryKey: ['landings', 'all'],
@@ -105,11 +114,7 @@ export default function AllLandingsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landings'] }),
   });
 
-  const preview = async (landingId: string) => {
-    const res = await api.get(`/landings/${landingId}/preview`, { responseType: 'text' });
-    const blob = new Blob([res.data as string], { type: 'text/html' });
-    window.open(URL.createObjectURL(blob), '_blank');
-  };
+  const preview = (landingId: string) => previewLanding(landingId);
 
   return (
     <div className="space-y-6">
@@ -142,9 +147,17 @@ export default function AllLandingsPage() {
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {viewMode === 'landings' && hasAnyPermission(user, 'LANDINGS_CREATE') && (
-            <Button onClick={() => setShowCreateDialog(true)}>
-              <Plus className="w-4 h-4 mr-1.5" /> Создать из шаблона
-            </Button>
+            <>
+              <Button onClick={() => setShowCreateDialog(true)}>
+                <Plus className="w-4 h-4 mr-1.5" /> Создать из шаблона
+              </Button>
+              <Button variant="outline" onClick={() => setUploadTarget('new')}>
+                <UploadCloud className="w-4 h-4 mr-1.5" /> Загрузить ZIP
+              </Button>
+              <Button variant="outline" onClick={() => setExternalTarget('new')}>
+                <Globe className="w-4 h-4 mr-1.5" /> Лендинг на вашем сервере
+              </Button>
+            </>
           )}
           {viewMode === 'groups' && hasAnyPermission(user, 'AB_TESTS_CREATE') && (
             <Button onClick={() => setAbTestTarget({ projectId: null, groupId: null, preselectedIds: [] })}>
@@ -265,6 +278,8 @@ export default function AllLandingsPage() {
               onPreview={() => preview(l.id)}
               onManageDomain={() => setDomainDialogLanding(l)}
               onGetLink={() => setGetLinkLanding(l)}
+              onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
+              onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
               onManageAbTest={() =>
                 setAbTestTarget({
                   projectId: l.project.id,
@@ -317,6 +332,17 @@ export default function AllLandingsPage() {
         open={showCreateDialog}
         onOpenChange={setShowCreateDialog}
         domains={domains}
+      />
+      <UploadZipLandingDialog
+        target={uploadTarget}
+        domains={domains}
+        onClose={() => setUploadTarget(null)}
+      />
+      <CreateExternalLandingDialog
+        open={!!externalTarget}
+        landing={externalTarget && externalTarget !== 'new' ? externalTarget : null}
+        onClose={() => setExternalTarget(null)}
+        onInvalidate={() => queryClient.invalidateQueries({ queryKey: ['landings'] })}
       />
     </div>
   );

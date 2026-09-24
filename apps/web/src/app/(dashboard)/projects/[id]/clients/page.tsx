@@ -5,6 +5,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigat
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Download } from 'lucide-react';
 import { api } from '@/lib/api';
+import { downloadBlob } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PeriodValue } from '@/components/shared/period-selector';
@@ -91,12 +92,41 @@ export default function ClientsPage() {
 
   const exportLookalike = async () => {
     const res = await api.get(`/projects/${id}/clients/export/lookalike`, { responseType: 'blob' });
-    const url = URL.createObjectURL(res.data as Blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `lookalike_${id}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(res.data as Blob, `lookalike_${id}.csv`);
+  };
+
+  // Полный экспорт (запрос пользователя 2026-09-08: "список клиентов со всеми данными") — те же
+  // параметры фильтра/периода, что и у самого списка ниже (queryFn), поэтому экспорт всегда
+  // отражает ровно то, что сейчас отфильтровано на странице.
+  const exportClients = async () => {
+    const res = await api.get(`/projects/${id}/clients/export`, {
+      responseType: 'blob',
+      params: {
+        origin,
+        channelType: filters.channelType,
+        hasPurchase: filters.hasPurchase,
+        hasDialogue: filters.hasDialogue,
+        country: filters.country,
+        minSpent: filters.minSpent,
+        landingId: filters.landingId,
+        buyerId: filters.buyerId,
+        pixelId: filters.pixelId,
+        campaignName: filters.campaignName,
+        adName: filters.adName,
+        adsetName: filters.adsetName,
+        siteSourceName: filters.siteSourceName,
+        utmSource: filters.utmSource,
+        utmMedium: filters.utmMedium,
+        utmCampaign: filters.utmCampaign,
+        utmContent: filters.utmContent,
+        adSource: filters.adSource,
+        search: search || undefined,
+        period: periodValue?.period,
+        from: periodValue?.period === 'custom' ? periodValue.from : undefined,
+        to: periodValue?.period === 'custom' ? periodValue.to : undefined,
+      },
+    });
+    downloadBlob(res.data as Blob, `clients_${id}.csv`);
   };
 
   // placeholderData: keepPreviousData (запрос пользователя 2026-07-21: "надпись 'Всего' ненадолго
@@ -154,8 +184,11 @@ export default function ClientsPage() {
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
             className="w-56"
           />
+          <Button variant="outline" onClick={exportClients}>
+            <Download className="w-4 h-4 mr-1.5" /> Скачать CSV
+          </Button>
           <Button variant="outline" onClick={exportLookalike}>
-            <Download className="w-4 h-4 mr-1.5" /> Экспорт
+            <Download className="w-4 h-4 mr-1.5" /> Lookalike
           </Button>
         </div>
       </div>

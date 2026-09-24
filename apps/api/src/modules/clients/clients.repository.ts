@@ -424,8 +424,12 @@ export class ClientsRepository {
       SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL${buyerId ? Prisma.sql` AND "buyerId" = ${buyerId}` : Prisma.empty}
     )`;
 
-    const [pageViews, leads, subscribes, dialogueRows, deposits] = await Promise.all([
+    const [pageViews, redirects, leads, subscribes, dialogueRows, deposits] = await Promise.all([
       this.prisma.trackingEvent.count({ where: { projectId, eventName: 'PageView', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
+      // "Переход в Telegram" — серверная отметка на /tg-redirect (TrackingController.tgRedirect,
+      // 2026-09-15). Считает и автоматический увод по таймеру, и живой тап по кнопке: это
+      // единственная стадия, через которую физически проходят ОБА пути к боту/каналу.
+      this.prisma.trackingEvent.count({ where: { projectId, eventName: 'TelegramRedirect', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
       this.prisma.trackingEvent.count({ where: { projectId, eventName: 'Lead', createdAt: { gte: since, lt: until }, ...buyerWhere } }),
       this.prisma.client.count({ where: { projectId, deletedAt: null, subscribedAt: { gte: since, lt: until }, ...buyerWhere } }),
       // Диалог в воронке должен идти строго ПОСЛЕ Subscribe — значит считаем только
@@ -476,12 +480,28 @@ export class ClientsRepository {
 
     return [
       { stage: 'PageView', count: pageViews, label: 'Просмотры лендинга' },
+      // Стадия показывается только Telegram-проектам и только когда переходы реально пишутся:
+      // у WEBSITE-канала /tg-redirect не используется вообще, а у исторических данных (до
+      // 2026-09-15) этого события нет — рисовать всем нулевую стадию было бы хуже, чем не
+      // рисовать её вовсе.
+      ...(!isWebsite && redirects > 0
+        ? [
+            {
+              stage: 'TelegramRedirect',
+              count: redirects,
+              label: 'Переход в Telegram',
+              rate: pageViews ? Math.round((redirects / pageViews) * 100) : 0,
+            },
+          ]
+        : []),
       { stage: 'Lead', count: leads, label: 'Клик на кнопку', rate: pageViews ? Math.round((leads / pageViews) * 100) : 0 },
       {
         stage: 'Subscribe',
         count: subscribes,
         label: isWebsite ? 'Стали клиентом' : 'Вступили в канал',
-        rate: leads ? Math.round((subscribes / leads) * 100) : 0,
+        // Знаменатель — переходы, если они есть: подписка физически возможна только после
+        // перехода, а не после клика (при авторедиректе клика может не быть вовсе).
+        rate: redirects || leads ? Math.round((subscribes / (redirects || leads)) * 100) : 0,
       },
       {
         stage: 'Dialogue',

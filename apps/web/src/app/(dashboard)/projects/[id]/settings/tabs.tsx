@@ -812,6 +812,11 @@ export function PixelsTab({
                     Без Test Event Code тестовое событие уйдёт как настоящее и попадёт в статистику пикселя.
                   </p>
                 )}
+                {testEvent.isError && (
+                  <p className="text-sm text-red-500">
+                    {(isAxiosError(testEvent.error) && testEvent.error.response?.data?.error?.message) || 'Не удалось отправить тест'}
+                  </p>
+                )}
                 {testEvent.data && (
                   <div className="space-y-2 pt-1">
                     <p className={`text-sm ${testEvent.data.success ? 'text-emerald-600' : 'text-red-500'}`}>
@@ -1359,6 +1364,13 @@ export function IntegrationTab({
             <ol className="text-sm space-y-2 list-decimal pl-4">
               <li>Скопируйте код ниже (карточка «JS-сниппет»).</li>
               <li>Вставьте его в код сайта прямо перед закрывающим тегом <code>&lt;/head&gt;</code> — на всех страницах, где нужна статистика.</li>
+              <li>
+                На кнопках, по которым нужно считать клики (переход к покупке, заявка и т.п.), добавьте
+                атрибут <code>data-track=&quot;Lead&quot;</code> — например,{' '}
+                <code>&lt;button data-track=&quot;Lead&quot;&gt;Купить&lt;/button&gt;</code>. Без этого
+                атрибута клики по кнопке не попадут в статистику проекта как «Клик на кнопку» — просмотры
+                страницы при этом продолжат считаться и без него.
+              </li>
               <li>
                 Откройте вкладку «Каналы» и нажмите «Проверить» — канал станет «Активен» только
                 после того, как мы реально найдём этот код на странице.

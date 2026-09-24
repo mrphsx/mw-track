@@ -13,6 +13,7 @@ import { TikTokEventsService } from '../tracking/tiktok-events.service';
 import { PixelSendResult } from '../tracking/providers/pixel.provider.interface';
 import { buildPixelCurlCommand } from '../tracking/curl-command.util';
 import { withUniqueShortCode } from '../../common/short-code.util';
+import { assertPixelIdMatchesPlatform } from './pixel-id-format.util';
 
 @Injectable()
 export class PixelsService {
@@ -39,12 +40,17 @@ export class PixelsService {
     });
     if (!project) throw new NotFoundException('Проект не найден');
     await this.getProjectsService().assertAccess(dto.projectId, companyId, userId, role, [Permission.PIXELS_CREATE]);
+    assertPixelIdMatchesPlatform(dto.platform, dto.pixelId);
 
     // createdById — запрос пользователя 2026-08-03, тот же паттерн, что у Landing.createdById.
     // shortCode (запрос пользователя 2026-08-20) — см. комментарий у AuthService.register,
     // тот же принцип для pixel= в трекинг-ссылке вместо z=.
     return withUniqueShortCode((shortCode) =>
-      this.prisma.trackingPixel.create({ data: { ...dto, createdById: userId, shortCode } }),
+      // Пробелы по краям обрезаем при сохранении: вставка из Events Manager часто захватывает
+      // лишний пробел, а с ним Facebook не находит пиксель (см. FacebookCAPIService).
+      this.prisma.trackingPixel.create({
+        data: { ...dto, pixelId: dto.pixelId.trim(), accessToken: dto.accessToken.trim(), createdById: userId, shortCode },
+      }),
     );
   }
 
@@ -58,8 +64,17 @@ export class PixelsService {
   }
 
   async update(id: string, companyId: string, dto: UpdatePixelDto, userId: string, role: UserRole): Promise<TrackingPixel> {
-    await this.findOne(id, companyId, userId, role, [Permission.PIXELS_EDIT]);
-    return this.prisma.trackingPixel.update({ where: { id }, data: dto });
+    const pixel = await this.findOne(id, companyId, userId, role, [Permission.PIXELS_EDIT]);
+    // Платформа после создания не меняется, поэтому новый ID сверяем с уже сохранённой.
+    if (dto.pixelId !== undefined) assertPixelIdMatchesPlatform(pixel.platform, dto.pixelId);
+    return this.prisma.trackingPixel.update({
+      where: { id },
+      data: {
+        ...dto,
+        ...(dto.pixelId !== undefined && { pixelId: dto.pixelId.trim() }),
+        ...(dto.accessToken !== undefined && { accessToken: dto.accessToken.trim() }),
+      },
+    });
   }
 
   // Без hard delete (см. инвариант "no hard deletes" в CLAUDE.md) и без отдельной
@@ -117,6 +132,9 @@ export class PixelsService {
     });
     if (!project) throw new NotFoundException('Проект не найден');
     await this.getProjectsService().assertAccess(dto.projectId, companyId, userId, role, [Permission.PIXELS_CREATE]);
+    // Та же проверка ещё до тестовой отправки — иначе владелец увидит только непонятный отказ
+    // Facebook "Cannot parse access token", а не настоящую причину.
+    assertPixelIdMatchesPlatform(dto.platform, dto.pixelId);
 
     const event = this.buildTestEvent(dto.projectId, dto.eventName, req, dto.actionSource);
     const pixel = {

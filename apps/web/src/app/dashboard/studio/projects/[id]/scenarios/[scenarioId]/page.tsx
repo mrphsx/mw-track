@@ -422,9 +422,16 @@ function AbTestSection({
   });
 
   const [weights, setWeights] = useState<Record<string, number>>({});
+  const [weightsError, setWeightsError] = useState('');
   useEffect(() => {
     if (abStats) setWeights(Object.fromEntries(abStats.variants.map((v) => [v.scenarioId, v.weight])));
+    setWeightsError('');
   }, [abStats]);
+
+  // Баг-репорт пользователя 2026-09-15: "выбрал 50% для одной, 25% для второй — где ещё 25%?" —
+  // см. полный комментарий в classic-версии этой же страницы и в
+  // BotScenariosService.updateAbTestWeights.
+  const totalWeight = Object.values(weights).reduce((sum, w) => sum + (w || 0), 0);
 
   const addVariant = useMutation({
     mutationFn: () => api.post<{ id: string }>(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/variant`),
@@ -439,8 +446,21 @@ function AbTestSection({
       api.patch(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/weights`, {
         weights: Object.entries(weights).map(([id, weight]) => ({ scenarioId: id, weight })),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: abTestQueryKey }),
+    onSuccess: () => {
+      setWeightsError('');
+      queryClient.invalidateQueries({ queryKey: abTestQueryKey });
+    },
+    onError: (err) => setWeightsError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось сохранить веса'),
   });
+
+  const trySaveWeights = () => {
+    if (totalWeight !== 100) {
+      setWeightsError('Сумма процентов должна быть равна 100');
+      return;
+    }
+    setWeightsError('');
+    saveWeights.mutate();
+  };
 
   const endTest = useMutation({
     mutationFn: () => api.post(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/end`),
@@ -543,9 +563,15 @@ function AbTestSection({
         ))}
       </div>
 
-      <StudioLinkButton size="sm" onClick={() => saveWeights.mutate()} disabled={saveWeights.isPending}>
-        {saveWeights.isPending ? 'Сохраняем...' : 'Сохранить веса'}
-      </StudioLinkButton>
+      <div className="flex items-center gap-3 flex-wrap">
+        <StudioLinkButton size="sm" onClick={trySaveWeights} disabled={saveWeights.isPending}>
+          {saveWeights.isPending ? 'Сохраняем...' : 'Сохранить веса'}
+        </StudioLinkButton>
+        <span className={totalWeight === 100 ? 'text-xs text-[#5F6B7A] dark:text-[#92A0AF]' : 'text-xs text-red-500 font-medium'}>
+          Итого: {totalWeight}%{totalWeight !== 100 && ' (должно быть 100%)'}
+        </span>
+      </div>
+      {weightsError && <p className="text-sm text-red-500">{weightsError}</p>}
     </div>
   );
 }

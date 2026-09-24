@@ -3,6 +3,26 @@ import { Injectable, Logger } from '@nestjs/common';
 import { TrackingEvent, TrackingPixel } from '@prisma/client';
 import { PixelProvider, PixelSendResult } from './providers/pixel.provider.interface';
 
+// Внутренние имена событий CRM, которые Facebook понимает под другим именем (запрос пользователя
+// 2026-09-17: "клиенты STT жалуются, что диалоги не доходят до фейсбука"). "Dialogue" — не
+// стандартное событие Meta, а пользовательское: Facebook его принимает (events_received:1), но
+// система показов не знает, что это такое, пока баер вручную не соберёт из него пользовательскую
+// конверсию, — поэтому в кабинете оно выглядело "недошедшим", и оптимизироваться по нему было
+// нельзя. Contact — стандартное событие Meta ровно для этого случая ("человек связался с бизнесом
+// по телефону, SMS, email, чату"), так же его шлёт конкурирующая СРМ. Внутри CRM событие
+// по-прежнему называется Dialogue (воронка, логи, переключатели) — меняется только имя на проводе.
+const FACEBOOK_EVENT_NAMES: Record<string, string> = {
+  Dialogue: 'Contact',
+};
+
+// action_source по событию. По документации Meta event_source_url ОБЯЗАТЕЛЕН для
+// action_source:'website', а у диалога в Telegram адреса страницы не бывает в принципе. Для
+// разговора в мессенджере документированное значение — 'chat' ("conversion was made via a
+// messaging app"), так же у конкурента. Остальные события — 'website', как решено 2026-07-30.
+const FACEBOOK_ACTION_SOURCES: Record<string, string> = {
+  Dialogue: 'chat',
+};
+
 @Injectable()
 export class FacebookCAPIService implements PixelProvider {
   private readonly logger = new Logger(FacebookCAPIService.name);
@@ -55,7 +75,7 @@ export class FacebookCAPIService implements PixelProvider {
       if (Object.keys(userData).length === 0 && event.clientId) userData.external_id = sha256(event.clientId);
 
       const eventData: Record<string, unknown> = {
-        event_name: event.eventName,
+        event_name: FACEBOOK_EVENT_NAMES[event.eventName] ?? event.eventName,
         event_time: Math.floor(new Date(event.eventTime).getTime() / 1000),
         // event_source_url — только у браузерных событий (payload.pageUrl), для Telegram-
         // событий отсутствует и просто выпадает из JSON (undefined), как и в примере конкурента.
@@ -69,7 +89,7 @@ export class FacebookCAPIService implements PixelProvider {
         // намеренная замена этого решения, не забытый старый код). Тестовые события (кнопка
         // "Проверка ивента") — единственное место, где 'chat' всё ещё достижим, через явный
         // payload.forceActionSource из PixelsService.buildTestEvent.
-        action_source: (payload.forceActionSource as string) || 'website',
+        action_source: (payload.forceActionSource as string) || FACEBOOK_ACTION_SOURCES[event.eventName] || 'website',
         user_data: userData,
         // custom_data/data_processing_options — запрос пользователя 2026-07-29: у конкурента
         // оба поля присутствуют всегда, даже пустыми (custom_data: [] когда нечего передать —
@@ -93,7 +113,10 @@ export class FacebookCAPIService implements PixelProvider {
 
       const body: Record<string, unknown> = {
         data: [eventData],
-        access_token: pixel.accessToken,
+        // trim() — баг-репорт 2026-09-17: у 7 пикселей ID сохранился с пробелом по краю; с
+        // пробелом В КОНЦЕ Facebook отвечал "Object with ID '...  ' does not exist" на каждое
+        // событие (у одного пикселя — ни одной успешной отправки за всё время).
+        access_token: pixel.accessToken.trim(),
       };
       if (pixel.testEventCode) body.test_event_code = pixel.testEventCode;
 
@@ -115,7 +138,7 @@ export class FacebookCAPIService implements PixelProvider {
       // что действительно ушло по проводу.
       const requestPayload = [eventData];
 
-      const response = await fetch(`${this.baseUrl}/${pixel.pixelId}/events`, {
+      const response = await fetch(`${this.baseUrl}/${pixel.pixelId.trim()}/events`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

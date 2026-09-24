@@ -9,7 +9,7 @@ import { PermissionsService } from '../../common/permissions/permissions.service
 import { formatUserName } from '../../common/user-name.util';
 import { ChannelsService } from '../channels/channels.service';
 import { TelegramPersonalService } from '../channels/providers/telegram-personal.service';
-import { LINK_PARAM_KEYS, LINK_PARAM_NAME_REGEX } from '../tracking/link-params.const';
+import { LINK_PARAM_KEYS, LINK_PARAM_NAME_REGEX, resolveParamMap } from '../tracking/link-params.const';
 import { buildPixelCurlCommand } from '../tracking/curl-command.util';
 import { assertCanAccessTeamManagement, assertOperatorAdminScope } from '../team/team-role.util';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -264,7 +264,9 @@ export class ProjectsService {
   // у них была полностью исправна — ложные срабатывания), в то время как реально сломанный канал
   // из того же разбора молчал 40+ часов. 12ч всё ещё намного короче исходного ~20-часового
   // инцидента, но не реагирует на обычные суточные колебания трафика.
-  private static readonly WEBHOOK_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+  // Публичный с 2026-09-16: тот же порог читает NotificationsEvaluator (оповещение WEBHOOK_STALE),
+  // иначе бейдж в интерфейсе и сообщение в Telegram разошлись бы при следующей правке числа.
+  static readonly WEBHOOK_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
 
   // Убираем зашифрованную MTProto-сессию из ответа (тот же приём, что и в
   // ChannelsController.sanitizeChannel) — карточке/странице проекта достаточно знать сам факт
@@ -572,10 +574,18 @@ export class ProjectsService {
 
     // data-api-url обязателен: track.js хостится на отдельном CDN-домене (apps/sdk,
     // см. CDN_URL), а не на одном origin с API — без него browser.ts не знает, куда стучаться.
+    // data-param-map (запрос пользователя 2026-09-04: "лэндинг на стороне клиента... нужно
+    // сделать чтобы можно было интегрировать") — без него SDK на внешней странице клиента не
+    // знал бы, под каким именем искать ad_id/campaign_id/buyerRef/pixelId в
+    // window.location.search, если в проекте настроены нестандартные имена параметров
+    // (resolveParamMap уже возвращает полную карту — дефолты + переопределения проекта, тот же
+    // источник правды, что и у серверного рендера лендингов).
+    const paramMapAttr = JSON.stringify(resolveParamMap(project.linkParamMap)).replace(/"/g, '&quot;');
     const snippet = `<!-- TrafficCRM Tracking -->
 <script src="${process.env.CDN_URL}/track.js"
         data-project-id="${project.publicToken}"
         data-api-url="${apiUrl}"
+        data-param-map="${paramMapAttr}"
         async>
 </script>`;
 

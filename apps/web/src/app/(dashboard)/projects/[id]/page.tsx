@@ -28,10 +28,12 @@ import {
   Contact,
   Globe,
   Link2,
+  Download,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
+import { downloadBlob } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -462,6 +464,13 @@ export default function ProjectOverviewPage() {
   const compareHref = (category: string) =>
     `/projects/${id}/leaderboards/${category}?${new URLSearchParams(periodParams as Record<string, string>).toString()}`;
 
+  // Скачивание статистики проекта одним CSV (запрос пользователя 2026-09-08) — тот же период,
+  // что сейчас выбран на странице (periodParams выше).
+  const exportStats = async () => {
+    const res = await api.get(`/projects/${id}/clients/stats/export`, { responseType: 'blob', params: periodParams });
+    downloadBlob(res.data as Blob, `project_stats_${id}.csv`);
+  };
+
   const { data: project } = useQuery({
     queryKey: ['project', id],
     queryFn: async () => (await api.get<Project>(`/projects/${id}`)).data,
@@ -718,7 +727,12 @@ export default function ProjectOverviewPage() {
         })}
       </div>
 
-      <PeriodSelector value={periodValue} onChange={setPeriodValue} />
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <PeriodSelector value={periodValue} onChange={setPeriodValue} />
+        <Button variant="outline" size="sm" onClick={exportStats}>
+          <Download className="w-4 h-4 mr-1.5" /> Скачать статистику
+        </Button>
+      </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard

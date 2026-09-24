@@ -1,0 +1,2 @@
+ALTER TABLE "Landing" ADD COLUMN "leadOnClick" BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE "Landing" ADD COLUMN "leadOnAutoRedirect" BOOLEAN NOT NULL DEFAULT false;

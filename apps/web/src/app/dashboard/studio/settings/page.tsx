@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { NotificationSettings } from '@/components/notifications/notification-settings';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../ui';
 
 interface Invoice {
@@ -31,7 +32,10 @@ const ROLE_LABELS: Record<string, string> = {
 // личная страница пользователя (профиль/выход, история платежей компании).
 export default function StudioAccountSettingsPage() {
   const { user, logout } = useAuthStore();
-  const [tab, setTab] = useState<'profile' | 'payments'>('profile');
+  const [tab, setTab] = useState<'profile' | 'payments' | 'notifications'>('profile');
+  // Бот оповещений хранит учётные данные компании и видит её баланс — как и на бэкенде
+  // (NotificationsController, @Roles(OWNER, ADMIN)), вкладка только для владельца и админов.
+  const canManageNotifications = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
   const { data: invoices } = useQuery({
     queryKey: ['billing', 'invoices'],
@@ -39,7 +43,7 @@ export default function StudioAccountSettingsPage() {
   });
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className={`${tab === 'notifications' ? 'max-w-5xl' : 'max-w-2xl'} space-y-6`}>
       <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Настройки</h1>
 
       <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
@@ -61,7 +65,20 @@ export default function StudioAccountSettingsPage() {
         >
           История платежей
         </button>
+        {canManageNotifications && (
+          <button
+            type="button"
+            onClick={() => setTab('notifications')}
+            className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              tab === 'notifications' ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]' : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+            }`}
+          >
+            Оповещения
+          </button>
+        )}
       </div>
+
+      {tab === 'notifications' && canManageNotifications && <NotificationSettings containerClassName={`${STUDIO_CARD} border-0`} />}
 
       {tab === 'profile' && (
         <div className={`${STUDIO_CARD} p-5 space-y-3`}>

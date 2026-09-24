@@ -9,6 +9,9 @@ import { LandingsService } from './landings.service';
 import { LandingRendererService } from './landing-renderer.service';
 import { NginxService } from './nginx.service';
 import { StorageService } from './storage.service';
+import { CloakingService } from './cloaking/cloaking.service';
+import { RedirectCloakingHandler } from './cloaking/redirect-cloaking.handler';
+import { PrelandingCloakingHandler } from './cloaking/prelanding-cloaking.handler';
 
 // ChannelsModule — LandingsService.publish() создаёт персональную invite-ссылку лендинга
 // через TelegramProvider (см. Client.landingId, пер-лендинговая атрибуция подписчиков).
@@ -17,7 +20,15 @@ import { StorageService } from './storage.service';
 @Module({
   imports: [ProjectsModule, ChannelsModule],
   controllers: [LandingsController, ProjectLandingsController, AbTestGroupsController, InternalController],
-  providers: [LandingsService, LandingRendererService, NginxService, StorageService],
+  providers: [
+    LandingsService,
+    LandingRendererService,
+    NginxService,
+    StorageService,
+    CloakingService,
+    RedirectCloakingHandler,
+    PrelandingCloakingHandler,
+  ],
   // LandingRendererService — экспортирован для AdminModule (превью лендинга в дрилл-дауне
   // компании, см. AdminCompanyService.getLandingPreview), не только внутримодульное использование.
   exports: [LandingsService, NginxService, LandingRendererService],

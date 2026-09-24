@@ -63,6 +63,7 @@ model Company {
   teamInvites         TeamInvite[]
   errorLogs           ErrorLog[]
   adminActionLogs     AdminActionLog[]
+  notificationBot     NotificationBot?
 }
 
 // Super Admin панель (Фаза 4.3, запрос пользователя 2026-07-19) — первая по-настоящему
@@ -727,6 +728,18 @@ model Landing {
   // Для внешних лендингов (серверы клиента)
   isExternal Boolean @default(false)  // использует SDK
 
+  // Реализация "внешнего" лендинга (запрос пользователя 2026-09-07) — URL страницы клиента,
+  // которую мы никогда не рендерим сами (в отличие от TEMPLATE/CUSTOM), аналог
+  // Channel.websiteUrl, но на уровне одного лендинга, а не всего проекта.
+  externalUrl String?
+
+  // Причина, по которой лендинг ещё не PUBLISHED несмотря на попытку — тот же паттерн, что
+  // Channel.isActive/lastError. Для CUSTOM — последняя проваленная проверка ZIP при
+  // загрузке/перезаливке (LandingsService.reviewCustomLanding). Для EXTERNAL — последняя
+  // проваленная проверка подключения (LandingsService.verifyExternalLanding). Обнуляется в
+  // publish(). Для TEMPLATE всегда null.
+  lastError String?
+
   // SEO
   metaTitle       String?
   metaDescription String?
@@ -756,6 +769,17 @@ model Landing {
   cloakingCountries   String[] @default([])
   cloakingRedirectUrl String?
 
+  // Тип клоакинга (запрос пользователя 2026-09-23) — см. enum CloakingType выше и
+  // apps/api/src/modules/landings/cloaking/ за конкретной реализацией каждого типа.
+  // @default(REDIRECT) переводит все уже существующие cloakingEnabled=true записи на текущее
+  // поведение без ручного бэкфилла. cloakingRedirectUrl используется REDIRECT напрямую и
+  // PRELANDING как fallback, пока white page ещё не загружена (см. PrelandingCloakingHandler).
+  cloakingType               CloakingType @default(REDIRECT)
+  // MinIO-префикс белой страницы для PRELANDING (свой ZIP на каждый лендинг, отдельно от
+  // customBasePath основного контента — см. LandingsService.uploadCloakingPrelanding). Null,
+  // пока ничего не загружено или после удаления.
+  cloakingPrelandingBasePath String?
+
   // Доп. инструкции для TikTok (запрос пользователя 2026-08-20) — встроенный браузер TikTok
   // (BytedanceWebview) иногда отказывается открывать страницу напрямую ("Мы не можем открыть
   // эту страницу непосредственно в TikTok") или блокирует переход по tg://-диплинку внутри себя
@@ -764,6 +788,16 @@ model Landing {
   // внешний браузер, это платформенное ограничение, см. apps/sdk/src/browser.ts). Включает:
   // на Android — попытку авто-эскейпа во внешний браузер через intent://-URL; на iOS (которую
   // Apple не даёт форсировать программно) — подсказку нажать "···" и выбрать "Open in Browser".
+  // Управление событием Lead (запрос пользователя 2026-09-15, по образцу настроек конкурента:
+  // два независимых переключателя "Отправлять Lead при клике на кнопку" и "при авторедиректе").
+  // Предыстория: до 2026-09-15 авторедирект ВСЕГДА слал Lead сам, без действия человека — Lead
+  // выходил равен PageView, метрика "Клик на кнопку" считала просмотры, а площадки получали
+  // конверсию почти на каждом клике и оптимизировались на мусор (см. запись в CLAUDE.md).
+  // Дефолты выбраны так, чтобы поведение уже существующих лендингов не изменилось ни на шаг:
+  // клик по кнопке шлёт Lead (как всегда), авторедирект — нет (как после фикса).
+  leadOnClick        Boolean @default(true)
+  leadOnAutoRedirect Boolean @default(false)
+
   tiktokBrowserHint Boolean @default(false)
 
   // Тексты попапа-подсказки выше (запрос пользователя 2026-08-27, "как у конкурента" — форма
@@ -1173,6 +1207,9 @@ model TrackingEventDelivery {
 
   @@unique([eventId, pixelId])
   @@index([eventId])
+  // Последние доставки конкретного пикселя — оповещение "пиксель не принимает события"
+  // (NotificationsEvaluator, 2026-09-17). Без него запрос шёл бы полным перебором таблицы.
+  @@index([pixelId, sentAt])
 }
 
 // ============================================================
@@ -1772,6 +1809,16 @@ enum LandingType {
   EXTERNAL  // на сервере клиента
 }
 
+// Клоакинг — растущее семейство взаимозаменяемых поведений (запрос пользователя 2026-09-23,
+// "дальше клоакинг будет сильно расширяться"), тот же принцип, что уже применяется к
+// ChannelProvider для типов каналов: один класс-обработчик на значение enum
+// (apps/api/src/modules/landings/cloaking/), реестр в CloakingService. Добавление нового типа
+// клоакинга в будущем — новый класс + новое значение здесь, без if/else в бизнес-логике.
+enum CloakingType {
+  REDIRECT    // текущее поведение: 302 на cloakingRedirectUrl (или Wikipedia по умолчанию)
+  PRELANDING  // отдать заранее загруженную статическую white page с того же домена
+}
+
 enum LandingStatus {
   DRAFT
   PUBLISHED
@@ -1805,4 +1852,92 @@ enum EventSource {
   BROWSER   // JS Pixel на лендинге
   SERVER    // наш сервер (Telegram бот)
   SDK       // внешний сервер клиента
+}
+
+// Telegram-бот служебных оповещений компании (запрос пользователя 2026-09-16: "вкладка настроек,
+// где сможем добавить бота ТГ для оповещений... вписываются юзернеймы, кто будет получать...
+// права, кто и какие оповещения будет получать"). Один бот на компанию. Отдельная сущность, а не
+// Channel: у Channel другой жизненный цикл (1:1 с проектом, клиенты, сценарии), а этот бот пишет
+// только сотрудникам компании.
+//
+// Жёсткое удаление (как у TeamInvite/RefreshToken — задокументированное исключение из правила
+// soft delete в CLAUDE.md): строка хранит учётные данные (токен бота), при отключении их нужно
+// реально стереть, а не пометить. Получатели удаляются каскадом.
+model NotificationBot {
+  id        String @id @default(cuid())
+  companyId String @unique
+  // Числовой id бота — часть токена до двоеточия. @unique: один и тот же бот не может быть
+  // подключён двум компаниям (второй setWebhook молча перехватил бы первый — тот же класс
+  // проблемы, что инцидент 2026-08-05 с ботом, подключённым к трём проектам).
+  tgBotId       String @unique
+  tgBotUsername String
+  // Токен бота — зашифрован EncryptionService (в отличие от Channel.tgBotToken, который исторически
+  // хранится открытым текстом): новый код не повторяет старый пробел.
+  tokenEncrypted String
+  // Значение заголовка X-Telegram-Bot-Api-Secret-Token — Telegram присылает его в каждом вебхуке,
+  // без совпадения апдейт отбрасывается. У ботов каналов такой защиты нет; здесь она обязательна,
+  // иначе любой, кто знает id строки, мог бы подделать /start и привязать свой чат.
+  webhookSecret String
+  isActive      Boolean @default(true)
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  company    Company                 @relation(fields: [companyId], references: [id])
+  recipients NotificationRecipient[]
+}
+
+// Получатель оповещений. Владелец вписывает юзернейм, но после первого /start получатель
+// опознаётся по tgUserId (запрос пользователя 2026-09-16: "пользователь может поменять юзернейм...
+// лучше брать его user_id и дальше отталкиваться от него"). Раньше, при добавлении, id получить
+// нельзя: Bot API не находит частного пользователя по юзернейму (getChat с @username работает
+// только для каналов и супергрупп), а писать первым бот всё равно не может до Start.
+//
+// Юзернейм после привязки — только подпись: обновляется сам из ответов Telegram (см.
+// NotificationsService.syncProfile) и может стать null, если человек убрал юзернейм совсем.
+// Поэтому уникальность держится на tgUserId, а не на юзернейме: иначе переименование упиралось бы
+// в чужую строку с тем же именем. Дубли юзернеймов при добавлении отсекает сервис.
+model NotificationRecipient {
+  id                String    @id @default(cuid())
+  notificationBotId String
+  // Без @, в нижнем регистре — юзернеймы Telegram регистронезависимы.
+  username          String?
+  // Постоянный id пользователя Telegram — проставляется при первом /start и дальше не меняется,
+  // даже после /stop (иначе после переименования человек не смог бы вернуться по своему id).
+  tgUserId          String?
+  tgFirstName       String?
+  // Куда слать. Для личного чата совпадает с tgUserId, но обнуляется при /stop или блокировке
+  // бота — отдельное поле означает "доставка возможна", а не "кто это".
+  chatId            String?
+  linkedAt          DateTime?
+  // Когда в последний раз сверяли юзернейм/имя с Telegram — чтобы фоновая сверка трогала только
+  // тех, о ком давно не было вестей (сообщения и апдейты обновляют профиль бесплатно).
+  profileCheckedAt  DateTime?
+  // Значения NotificationType из apps/api/src/modules/notifications/notification-types.ts.
+  // String[], не Prisma-enum: набор типов будет расти, а enum требует миграции на каждый новый.
+  enabledTypes      String[]
+  // Последняя ошибка доставки (например, получатель заблокировал бота) — видна в настройках.
+  lastError         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  notificationBot NotificationBot @relation(fields: [notificationBotId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationBotId, tgUserId])
+  @@index([notificationBotId, username])
+}
+
+// Какие проблемы уже были отправлены и пока не исчезли — чтобы NotificationsCron (каждые 5 минут)
+// слал сообщение один раз при появлении проблемы и один раз при её исчезновении, а не на каждом
+// тике. subjectId — projectId для проблем проекта, companyId (или id транзакции) для проблем
+// компании. Переходное состояние, удаляется жёстко при исчезновении проблемы.
+model NotificationAlertState {
+  id          String   @id @default(cuid())
+  companyId   String
+  type        String
+  subjectId   String
+  activeSince DateTime @default(now())
+
+  @@unique([companyId, type, subjectId])
+  @@index([companyId])
 }

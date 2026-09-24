@@ -440,9 +440,18 @@ function AbTestSection({
   });
 
   const [weights, setWeights] = useState<Record<string, number>>({});
+  const [weightsError, setWeightsError] = useState('');
   useEffect(() => {
     if (abStats) setWeights(Object.fromEntries(abStats.variants.map((v) => [v.scenarioId, v.weight])));
+    setWeightsError('');
   }, [abStats]);
+
+  // Баг-репорт пользователя 2026-09-15: "выбрал 50% для одной, 25% для второй — где ещё 25%?" —
+  // веса это доли общего пирога (движок выбора варианта нормализует по их фактической сумме, не
+  // считает её равной 100), поэтому 50+25 реально даёт сплит 66.7%/33.3%, а не "куда-то делись
+  // 25% трафика". Тот же принцип уже строго требуется у A/B-теста лендингов (и на фронте, и на
+  // бэке) — здесь добавляем зеркальную проверку, которую сценарии ошибочно не унаследовали.
+  const totalWeight = Object.values(weights).reduce((sum, w) => sum + (w || 0), 0);
 
   const addVariant = useMutation({
     mutationFn: () => api.post<{ id: string }>(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/variant`),
@@ -457,8 +466,21 @@ function AbTestSection({
       api.patch(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/weights`, {
         weights: Object.entries(weights).map(([id, weight]) => ({ scenarioId: id, weight })),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: abTestQueryKey }),
+    onSuccess: () => {
+      setWeightsError('');
+      queryClient.invalidateQueries({ queryKey: abTestQueryKey });
+    },
+    onError: (err) => setWeightsError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось сохранить веса'),
   });
+
+  const trySaveWeights = () => {
+    if (totalWeight !== 100) {
+      setWeightsError('Сумма процентов должна быть равна 100');
+      return;
+    }
+    setWeightsError('');
+    saveWeights.mutate();
+  };
 
   const endTest = useMutation({
     mutationFn: () => api.post(`/channels/${channelId}/scenarios/${scenarioId}/ab-test/end`),
@@ -581,9 +603,15 @@ function AbTestSection({
           ))}
         </div>
 
-        <Button size="sm" variant="outline" onClick={() => saveWeights.mutate()} disabled={saveWeights.isPending}>
-          {saveWeights.isPending ? 'Сохраняем...' : 'Сохранить веса'}
-        </Button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button size="sm" variant="outline" onClick={trySaveWeights} disabled={saveWeights.isPending}>
+            {saveWeights.isPending ? 'Сохраняем...' : 'Сохранить веса'}
+          </Button>
+          <span className={totalWeight === 100 ? 'text-xs text-muted-foreground' : 'text-xs text-red-500 font-medium'}>
+            Итого: {totalWeight}%{totalWeight !== 100 && ' (должно быть 100%)'}
+          </span>
+        </div>
+        {weightsError && <p className="text-sm text-red-500">{weightsError}</p>}
       </CardContent>
     </Card>
   );

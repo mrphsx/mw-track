@@ -1,10 +1,11 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Company, SubscriptionPlan, User } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { addDays } from 'date-fns';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RedisService } from '../../redis/redis.service';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { withUniqueShortCode } from '../../common/short-code.util';
 import { PLANS } from '../billing/plans';
@@ -21,6 +22,13 @@ const bcrypt = require('bcryptjs');
 // значимый срок.
 const REFRESH_TOKEN_GRACE_MS = 30 * 1000;
 
+// Impersonation (запрос пользователя 2026-09-24, "зайти в компанию по сессии овнера, для
+// дебага") — одноразовый код обмена между admin.mw-track.com и mw-track.com, т.к. это разные
+// origin'ы и localStorage между ними не шарится (вся авторизация в системе — Bearer JWT, см.
+// main.ts enableCors без credentials). TTL короткий: ровно на время "открыть новую вкладку и
+// сделать один запрос", дальше бесполезен, даже если осядет где-то в логах/истории.
+const IMPERSONATION_CODE_TTL_SECONDS = 60;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -28,6 +36,7 @@ export class AuthService {
     private jwt: JwtService,
     private config: ConfigService,
     private permissionsService: PermissionsService,
+    private redis: RedisService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -177,6 +186,58 @@ export class AuthService {
     return this.issueTokens(user);
   }
 
+  // Impersonation — вызывается AdminCompanyService.impersonate() (SUPER_ADMIN-only роут).
+  // Осознанно НЕ issueTokens(): только короткоживущий (15 мин) access-токен, без refresh и без
+  // строки в RefreshToken — это разовый дебаг-инструмент, а не постоянная альтернативная сессия;
+  // по истечении 15 минут apps/web сам корректно разлогинит (обычный refreshAccessToken() упадёт
+  // без refresh-токена → logout()), доп. код на фронте для этого не нужен.
+  // Возвращает не только {code}, а и данные владельца — AdminCompanyService.impersonate нужен
+  // targetUserId/targetUserEmail для синхронного audit-лога сразу, без повторного похода в БД.
+  async startImpersonation(companyId: string): Promise<{ code: string; targetUserId: string; targetUserEmail: string }> {
+    const owner = await this.prisma.user.findFirst({
+      where: { companyId, role: 'OWNER', deletedAt: null, isActive: true },
+    });
+    if (!owner) {
+      throw new BadRequestException('У компании нет активного владельца — некого впустить');
+    }
+
+    const accessToken = this.signAccessToken(owner);
+    const code = randomUUID();
+    await this.redis.set(
+      `impersonation:${code}`,
+      JSON.stringify({ accessToken, user: this.sanitizeUser(owner) }),
+      'EX',
+      IMPERSONATION_CODE_TTL_SECONDS,
+    );
+
+    return { code, targetUserId: owner.id, targetUserEmail: owner.email };
+  }
+
+  // Одноразовый — читает и сразу удаляет ключ, второй вызов с тем же кодом уже не сработает.
+  async exchangeImpersonationCode(code: string) {
+    const key = `impersonation:${code}`;
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      throw new UnauthorizedException('Код недействителен или устарел');
+    }
+    await this.redis.del(key);
+    return JSON.parse(raw) as { accessToken: string; user: unknown };
+  }
+
+  // Вынесено из issueTokens, чтобы startImpersonation ниже подписывал access-токен ровно тем
+  // же способом (тот же секрет/TTL/форма payload), не дублируя опции jwt.sign в двух местах.
+  private signAccessToken(user: User): string {
+    const payload: JwtPayload = {
+      sub: user.id,
+      companyId: user.companyId,
+      role: user.role,
+    };
+    return this.jwt.sign(payload, {
+      secret: this.config.get<string>('JWT_SECRET'),
+      expiresIn: '15m',
+    });
+  }
+
   private async issueTokens(user: User & { company?: Company | null }) {
     const payload: JwtPayload = {
       sub: user.id,
@@ -184,10 +245,7 @@ export class AuthService {
       role: user.role,
     };
 
-    const accessToken = this.jwt.sign(payload, {
-      secret: this.config.get<string>('JWT_SECRET'),
-      expiresIn: '15m',
-    });
+    const accessToken = this.signAccessToken(user);
     const refreshToken = this.jwt.sign(
       { ...payload, jti: randomUUID() },
       {

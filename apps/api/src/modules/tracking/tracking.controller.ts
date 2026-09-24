@@ -25,8 +25,13 @@ import { TrackingService } from './tracking.service';
 import { TrackEventDto } from './dto/track-event.dto';
 import { buildTelegramHttpsLink, buildTelegramLink } from '../channels/telegram-link.util';
 import { TelegramProvider } from '../channels/providers/telegram.provider';
+import { nanoid } from 'nanoid';
+import { buildAttributionFromQuery, hasAnyAttributionSignal } from '../../common/external-landing-attribution.util';
 
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+// Зеркалит START_CODE_TTL_SECONDS в LandingRendererService — тот же одноразовый Redis-код,
+// просто сгенерированный здесь вместо renderAndServe (см. tgRedirect ниже).
+const START_CODE_TTL_SECONDS = 24 * 60 * 60;
 
 @Controller('track')
 export class TrackingController {
@@ -139,6 +144,7 @@ export class TrackingController {
     // одноразовая invite-ссылка, что и у обычного 302-варианта ниже — просто отдаём готовый
     // результат телом ответа вместо самого редиректа, чтобы SDK мог собрать intent на клиенте.
     @Query('format') format: string | undefined,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     // code — одноразовый (см. комментарий выше), поэтому ответ никогда не должен оседать в
@@ -147,17 +153,41 @@ export class TrackingController {
     // следующим посетителям чужую атрибуцию/устаревший инвайт вместо честного редиректа.
     res.set('Cache-Control', 'no-store');
 
+    const project = await this.projectsService.findByPublicToken(publicToken);
+
+    // Лендинг клиента на ЕГО СОБСТВЕННОМ сервере/домене (запрос пользователя 2026-09-04:
+    // "нужно сделать чтобы можно было интегрировать скрипты api нашей СРМ в их лэндинг, чтобы он
+    // считался как наш") — такая страница никогда не проходит через
+    // LandingRendererService.injectTrackingScripts (мы её не рендерим), поэтому явного ?code=
+    // взять неоткуда. Если код всё же не передан, но у ЭТОГО запроса на /tg-redirect есть свои
+    // fbclid/utm/рекламные макросы (клиентская страница просто перекладывает их из своего
+    // window.location.search в query кнопки — тот же приём, каким мы сами шлём трекинг-ссылки
+    // в Facebook/TikTok), генерируем start:<code> здесь же, тем же способом и с тем же TTL, что
+    // и при рендере НАШЕГО лендинга — дальше вся остальная атрибуция (Client/TrackingEvent)
+    // работает уже без единого отличия. Полностью безвредно для уже работающих
+    // TEMPLATE/CUSTOM-лендингов: у них ?code= уже передан из renderTemplate/injectTrackingScripts
+    // всегда, эта ветка для них попросту не достигается.
+    let effectiveCode = code;
+    if (!effectiveCode && project) {
+      const attribution = await buildAttributionFromQuery(this.prisma, req, project.linkParamMap, {
+        landingId: landingId ?? null,
+        abTestGroupId: null,
+      });
+      if (hasAnyAttributionSignal(attribution)) {
+        effectiveCode = nanoid(16);
+        await this.redis.set(`start:${effectiveCode}`, JSON.stringify(attribution), 'EX', START_CODE_TTL_SECONDS);
+      }
+    }
+
     if (fbp) {
       await Promise.all([
-        code ? this.patchCachedAttribution(`start:${code}`, { fbp }) : Promise.resolve(),
+        effectiveCode ? this.patchCachedAttribution(`start:${effectiveCode}`, { fbp }) : Promise.resolve(),
         // landing-visit-attribution:<landingId> стал FIFO-очередью, не одиночным значением
         // (см. LandingRendererService.injectTrackingScripts, баг-репорт 2026-08-19) — донашиваем
         // fbp в её ПОСЛЕДНИЙ элемент (patchCachedListTail), не GET/SET одного ключа.
         landingId ? this.patchCachedListTail(`landing-visit-attribution:${landingId}`, { fbp }) : Promise.resolve(),
       ]);
     }
-
-    const project = await this.projectsService.findByPublicToken(publicToken);
 
     // Персональная invite-ссылка лендинга (Landing.tgInviteLink) — для точной
     // пер-лендинговой атрибуции (TelegramProvider.handleJoinRequest). Если лендинг ещё не
@@ -170,21 +200,24 @@ export class TrackingController {
     // общую ссылку лендинга, когда получилось её создать: TelegramProvider.handleJoinRequest
     // тогда находит атрибуцию ТОЧНЫМ совпадением по ссылке, без всякой FIFO/lookahead-очереди.
     // Только PRIVATE_CHANNEL_REQUEST (другие режимы уже несут атрибуцию через code/&start=
-    // напрямую, invite-ссылка у них не используется вообще) и только когда есть code — без него
-    // неоткуда взять уже готовую атрибуцию визита. Любая проблема (нет start:<code>, канал не
-    // инициализирован, ошибка Bot API) — просто не выставляем landingInviteLink, дальше работает
-    // прежний путь (общая ссылка + очередь), тот же fallback, что и до этой фичи.
+    // напрямую, invite-ссылка у них не используется вообще) и только когда есть код — без него
+    // неоткуда взять уже готовую атрибуцию визита. effectiveCode, не code — так и внешний
+    // лендинг клиента получает ту же одноразовую invite-ссылку, что и наш собственный рендер.
+    // Любая проблема (нет start:<code>, канал не инициализирован, ошибка Bot API) — просто не
+    // выставляем landingInviteLink, дальше работает прежний путь (общая ссылка + очередь), тот
+    // же fallback, что и до этой фичи.
     let landingInviteLink = landing?.tgInviteLink ?? undefined;
-    if (code && project?.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
-      const cachedRaw = await this.redis.get(`start:${code}`);
+    if (effectiveCode && project?.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
+      const cachedRaw = await this.redis.get(`start:${effectiveCode}`);
       if (cachedRaw) {
         try {
           const cachedAttribution = JSON.parse(cachedRaw);
           const telegramProvider = this.moduleRef.get(TelegramProvider, { strict: false });
-          const oneTimeLink = await telegramProvider.createOneTimeInviteLink(project.channel, {
-            ...cachedAttribution,
-            landingId: landingId ?? null,
-          });
+          const oneTimeLink = await telegramProvider.createOneTimeInviteLink(
+            project.channel,
+            { ...cachedAttribution, landingId: landingId ?? null },
+            effectiveCode,
+          );
           if (oneTimeLink) landingInviteLink = oneTimeLink;
         } catch (error) {
           this.logger.warn(`Одноразовая invite-ссылка не создана, откат на общую: ${(error as Error).message}`);
@@ -192,7 +225,7 @@ export class TrackingController {
       }
     }
 
-    const tgUrl = buildTelegramLink(project?.channel ?? null, code, landingInviteLink);
+    const tgUrl = buildTelegramLink(project?.channel ?? null, effectiveCode, landingInviteLink);
 
     if (!tgUrl) {
       if (format === 'json') {
@@ -204,9 +237,50 @@ export class TrackingController {
     }
 
     if (format === 'json') {
-      const httpsUrl = buildTelegramHttpsLink(project?.channel ?? null, code, landingInviteLink);
+      const httpsUrl = buildTelegramHttpsLink(project?.channel ?? null, effectiveCode, landingInviteLink);
       res.json({ tg: tgUrl, https: httpsUrl || null });
       return;
+    }
+
+    // Серверный учёт перехода в Telegram (баг-репорт пользователя 2026-09-15, по образцу
+    // лендинга конкурирующей СРМ). У них кнопка и авторедирект ведут на ОДИН эндпоинт
+    // /ldpg/<id>/redirect, из браузера не уходит ни одного Lead, а сам переход считается на
+    // сервере — именно поэтому их цифры не раздуваются клиентскими повторами.
+    //
+    // Почему это отдельное событие, а не Lead: через /tg-redirect проходят ОБА случая —
+    // и живой тап по кнопке, и автоматический увод по таймеру. Смешивать их в "Клик на
+    // кнопку" — ровно та ошибка, которую мы только что убрали из SDK. Здесь честная стадия
+    // воронки "Переход в Telegram" (сколько человек вообще ушло к боту/каналу), а Lead
+    // остаётся исключительно за настоящим кликом по data-track="Lead".
+    //
+    // На площадки (Facebook CAPI / TikTok Events API) НЕ уходит: пишем строку напрямую, минуя
+    // TrackingService.recordEvent, который занимается доставкой в пиксели. Это внутренняя
+    // метрика СРМ — событие, срабатывающее на ~100% визитов, для оптимизации бесполезно и
+    // именно оно ломало обучение пикселя.
+    //
+    // Только на ветке реального 302: ?format=json выше — это префетч ссылки ДО тапа
+    // (см. prefetchTelegramLink в SDK), перехода в этот момент ещё не произошло, считать его
+    // значило бы вернуть ту же накрутку с другой стороны.
+    //
+    // Fire-and-forget: /tg-redirect — самый горячий путь во всей системе (каждый рекламный
+    // клик), задерживать редирект ради записи метрики нельзя. Ошибка записи не должна ломать
+    // сам переход, поэтому только логируем.
+    if (project) {
+      this.prisma.trackingEvent
+        .create({
+          data: {
+            projectId: project.id,
+            eventName: 'TelegramRedirect',
+            eventId: nanoid(21),
+            source: 'SERVER',
+            payload: {
+              landingId: landingId ?? null,
+              pageUrl: req.headers.referer ?? null,
+              userAgent: req.headers['user-agent'] ?? null,
+            },
+          },
+        })
+        .catch((error: Error) => this.logger.warn(`Не записан переход в Telegram: ${error.message}`));
     }
 
     res.redirect(302, tgUrl);

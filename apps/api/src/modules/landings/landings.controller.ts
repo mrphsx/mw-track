@@ -10,6 +10,7 @@ import { ProjectsService } from '../projects/projects.service';
 import { LandingsService } from './landings.service';
 import { LandingRendererService } from './landing-renderer.service';
 import { UpdateLandingDto } from './dto/update-landing.dto';
+import { UploadPrelandingHtmlDto } from './dto/upload-prelanding-html.dto';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -95,6 +96,22 @@ export class LandingsController {
     return this.rendererService.renderPreviewHtml(id, companyId);
   }
 
+  // Отдаёт один файл CUSTOM-лендинга (картинку/css/js) с той же проверкой доступа, что и сам
+  // /preview выше — используется фронтендом (previewLanding в lib/landings.ts) для подмены
+  // относительных ссылок внутри превью-HTML на прямые blob-URL, см. комментарий у
+  // streamPreviewAsset в LandingRendererService.
+  @Get(':id/preview-asset/*')
+  async previewAsset(
+    @Param('id') id: string,
+    @Param('0') subPath: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    await this.rendererService.streamPreviewAsset(id, companyId, subPath, res);
+  }
+
   @Get(':id/stats')
   async stats(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
@@ -111,6 +128,54 @@ export class LandingsController {
   ) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.uploadCustomLanding(id, companyId, file);
+  }
+
+  // Белая страница для клоакинга типа PRELANDING (запрос пользователя 2026-09-23). Всегда 200 —
+  // успех/отказ кодируются в теле {accepted, checks}, а не в HTTP-статусе: HttpExceptionFilter
+  // прокидывает наружу только message, молча отбрасывая любые другие поля исключения (напр.
+  // checks), это сломало бы фронтовый ReviewChecklist. Тот же приём, что уже использует
+  // uploadCustomLanding/processAndReviewZip выше.
+  @Post(':id/cloaking/prelanding')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_ZIP_SIZE } }))
+  async uploadCloakingPrelanding(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.uploadCloakingPrelanding(id, companyId, file);
+  }
+
+  @Delete(':id/cloaking/prelanding')
+  async removeCloakingPrelanding(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.removeCloakingPrelanding(id, companyId);
+  }
+
+  // Альтернатива ZIP для white page (запрос пользователя 2026-09-23) — обычный JSON body, не
+  // multipart. Тот же 200-всегда-с-{accepted,checks} приём, что и у ZIP-варианта выше.
+  @Post(':id/cloaking/prelanding/html')
+  async uploadCloakingPrelandingHtml(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UploadPrelandingHtmlDto,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.uploadCloakingPrelandingHtml(id, companyId, dto.html);
+  }
+
+  @Post(':id/verify-connection')
+  async verifyConnection(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.verifyExternalLanding(id, companyId);
+  }
+
+  @Get(':id/external-snippet')
+  async externalSnippet(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    return this.landingsService.getExternalLandingSnippet(id, companyId);
   }
 
   @Delete(':id')

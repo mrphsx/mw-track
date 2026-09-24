@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Copy } from 'lucide-react';
 import { api } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
-import { LinkPixel, buildTrackedLink } from '@/lib/landings';
+import { LinkPixel, buildTrackedLink, buildWebsiteTrackedLink } from '@/lib/landings';
 import { useAuthStore } from '@/store/auth.store';
 
 // Управленческие роли (Фаза 3.6, Team Analytics) — та же группа, что уже используется на
@@ -32,6 +32,10 @@ export interface GetLinkLanding {
   id: string;
   name: string;
   project: { id: string };
+  // Внешний лендинг (запрос пользователя 2026-09-07) — ссылка клеится прямо к externalUrl, без
+  // Landing/DomainPath (тот же приём, что buildWebsiteTrackedLink уже делает для WEBSITE-каналов).
+  type?: string;
+  externalUrl?: string | null;
 }
 
 export interface GetLinkAttachment {
@@ -74,7 +78,16 @@ export function GetLinkDialog({
   const pixels: LinkPixel[] = (project?.pixels ?? []).filter((p: LinkPixel) => p.isActive);
   const selectedPixel = pixels.find((p) => p.id === pixelSelection) ?? null;
   const buyerId = resolveLinkBuyerId(currentUser);
-  const link = attachment ? buildTrackedLink(attachment, selectedPixel, project?.linkParamMap, buyerId) : null;
+  // Внешний лендинг (запрос пользователя 2026-09-07) — клеим параметры прямо к его собственному
+  // URL, без Landing/DomainPath вообще (та же buildWebsiteTrackedLink, что уже используется для
+  // ChannelType.WEBSITE — здесь тот же принцип "мы это никогда не рендерим").
+  const link =
+    landing.type === 'EXTERNAL' && landing.externalUrl
+      ? buildWebsiteTrackedLink(landing.externalUrl, selectedPixel, project?.linkParamMap, buyerId)
+      : attachment
+        ? buildTrackedLink(attachment, selectedPixel, project?.linkParamMap, buyerId)
+        : null;
+  const needsDomainAttachment = landing.type !== 'EXTERNAL' && !attachment;
 
   return (
     <Dialog open={!!landing} onOpenChange={(open) => !open && onClose()}>
@@ -89,7 +102,7 @@ export function GetLinkDialog({
           <DialogTitle>Ссылка для «{landing.name}»</DialogTitle>
         </DialogHeader>
 
-        {!attachment ? (
+        {needsDomainAttachment ? (
           <p className="text-sm text-muted-foreground">Сначала привяжите домен к лендингу.</p>
         ) : (
           <PixelLinkFields pixels={pixels} pixelSelection={pixelSelection} onPixelChange={setPixelSelection} link={link} />

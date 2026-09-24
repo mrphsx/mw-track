@@ -1,7 +1,6 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import * as geoip from 'geoip-lite';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Landing, Project, TrackingPixel } from '@prisma/client';
 import { Request, Response } from 'express';
@@ -14,6 +13,9 @@ import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-lin
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { isBotUserAgent } from '../../common/bot-user-agent.util';
+import { getClientIp } from '../../common/client-ip.util';
+import { resolveVisitorCountry } from '../../common/geo-country.util';
+import { CloakingService } from './cloaking/cloaking.service';
 
 // Хэш содержимого track.js (см. apps/sdk/scripts/publish-cdn.js — перезаписывается на каждом
 // SDK-паблише, попадает в dist через nest-cli.json assets). Добавляется в URL скрипта как
@@ -98,11 +100,6 @@ function decodeAdMacro(value: string | null): string | null {
   return UNSUBSTITUTED_MACRO_PATTERN.test(decoded) ? null : decoded;
 }
 
-// Клоакинг без явно заданной cloakingRedirectUrl — куда отправлять посетителей из
-// не-разрешённых стран по умолчанию (запрос пользователя 2026-07-03, пример "например
-// википедия").
-const DEFAULT_CLOAK_REDIRECT_URL = 'https://en.wikipedia.org';
-
 type ProjectWithLandingData = Project & {
   // tgAvatarFileId — не часть TelegramLinkChannel (тот только для buildTelegramLink), нужен
   // отдельно здесь для дефолтной аватарки лендинга ("изначально как в канале", см.
@@ -120,6 +117,7 @@ export class LandingRendererService {
     private prisma: PrismaService,
     private redis: RedisService,
     private storage: StorageService,
+    private cloakingService: CloakingService,
   ) {}
 
   // Один домен -> много лендингов/проектов через путь (2026-06-29, DomainPath) — вызывается
@@ -139,6 +137,23 @@ export class LandingRendererService {
     const resolved = matchDomainPath(paths, fullPath);
     if (!resolved) {
       res.status(404).send('<h1>Page not found</h1>');
+      return;
+    }
+
+    // Каноникализация "директорийного" URL (баг 2026-09-07): matchDomainPath отдаёт
+    // subPath==='' И для точного совпадения БЕЗ конечного слеша ("/code1/code2"), И для
+    // совпадения С ним ("/code1/code2/") — обе ветки одинаково рендерят index.html. Но браузер
+    // по RFC 3986 резолвит относительные ссылки внутри index.html (img/logo.png и т.п. — ровно
+    // то, что описано в инструкции для CUSTOM-лендингов) против URL БЕЗ последнего сегмента —
+    // без слеша это "/code1/", с слешем — корректно "/code1/code2/". Отличить эти две ветки
+    // можно только по исходному fullPath (matchDomainPath само это отличие стирает) — 301 на
+    // тот же путь с добавленным слешем, тот же приём, что у любого веб-сервера для
+    // "директорийных" адресов. Query string (buyerRef/pixel/fbclid и т.д.) пробрасывается как
+    // есть через req.originalUrl, а не пересобирается — не рискуем задеть порядок параметров.
+    if (resolved.subPath === '' && !fullPath.endsWith('/')) {
+      const queryIndex = req.originalUrl.indexOf('?');
+      const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : '';
+      res.redirect(301, `${fullPath}/${query}`);
       return;
     }
 
@@ -219,10 +234,9 @@ export class LandingRendererService {
     // Клоакинг — до любого рендера контента: посетитель не из разрешённой страны никогда
     // не должен получить реальный HTML лендинга, даже на подресурсы (style.css/картинки —
     // сюда же попадают через тот же renderAndServe с непустым subPath, см. renderByDomain).
-    if (landing.cloakingEnabled && !this.isCountryAllowed(req, landing.cloakingCountries)) {
-      res.redirect(302, landing.cloakingRedirectUrl || DEFAULT_CLOAK_REDIRECT_URL);
-      return;
-    }
+    // Конкретное поведение (редирект/предзагрузка/...) зависит от landing.cloakingType и
+    // решается внутри CloakingService — см. apps/api/src/modules/landings/cloaking/.
+    if (await this.cloakingService.applyCloaking(landing, subPath, req, res)) return;
 
     if (landing.type === 'CUSTOM') {
       await this.serveCustomFile(landing as Landing & { project: ProjectWithLandingData }, subPath, req, res, abTestGroupId);
@@ -285,6 +299,38 @@ export class LandingRendererService {
     } catch (error) {
       this.logger.warn(`serveCustomFile failed for ${key}: ${(error as Error).message}`);
       res.status(404).send(isIndex ? '<h1>Page not found</h1>' : 'Not found');
+    }
+  }
+
+  // Баг-репорт 2026-09-07 (тот же день, что и trailing-slash-фикс выше): предпросмотр
+  // CUSTOM-лендинга (renderPreviewHtml ниже) отдаёт сырой HTML, который фронтенд оборачивает в
+  // Blob и открывает через createObjectURL — у blob:-URL нет структуры путей вообще, поэтому
+  // ЛЮБАЯ относительная ссылка (images/icon.jpg) внутри такого HTML в принципе не может
+  // разрешиться ни при каких условиях (это не тот же баг, что с доменным роутингом — там
+  // помогал слеш, здесь помочь нечем, т.к. blob-URL не поддерживает вложенные пути). Фронтенд
+  // (previewLanding в lib/landings.ts) сам находит такие ссылки и подменяет их на blob-URL
+  // конкретных файлов, полученных через этот авторизованный эндпоинт — тот же
+  // assertAccess/LANDINGS_VIEW, что и у самого /preview, просто на уровне файла. Доступ только
+  // на CUSTOM (у TEMPLATE своего customBasePath нет) — остальные типы получают пустой 404, что
+  // безопасно: фронтенд просто оставляет оригинальную (нерабочую) ссылку как есть.
+  async streamPreviewAsset(landingId: string, companyId: string, subPath: string, res: Response): Promise<void> {
+    const landing = await this.prisma.landing.findFirst({ where: { id: landingId, companyId, deletedAt: null } });
+    if (!landing || landing.type !== 'CUSTOM' || !landing.customBasePath) {
+      res.status(404).send('Not found');
+      return;
+    }
+
+    const key = `${landing.customBasePath}/${subPath}`;
+    try {
+      const stream = await this.storage.getObjectStream(key);
+      res.type(path.extname(key) || '.bin');
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(404).send('Not found');
+      });
+      stream.pipe(res);
+    } catch (error) {
+      this.logger.warn(`streamPreviewAsset failed for ${key}: ${(error as Error).message}`);
+      res.status(404).send('Not found');
     }
   }
 
@@ -536,12 +582,12 @@ export class LandingRendererService {
       utmCampaign: decodeAdMacro(urlParams.get('utm_campaign')),
       utmContent: urlParams.get('utm_content'),
       ...adMacroData,
-      ip: this.getClientIp(req),
+      ip: getClientIp(req),
       userAgent: req.headers['user-agent'],
-      // countryCode (запрос пользователя 2026-07-29, Facebook Advanced Matching) — resolveCountry
+      // countryCode (запрос пользователя 2026-07-29, Facebook Advanced Matching) — resolveVisitorCountry
       // уже отдаёт ISO alpha-2 (Cloudflare cf-ipcountry/geoip-lite), просто раньше нигде не
       // прокидывался дальше fbclid/ip/userAgent через тот же start:<code>-мост.
-      countryCode: this.resolveCountry(req),
+      countryCode: resolveVisitorCountry(req),
       landingUrl: req.url,
       // Запрос пользователя 2026-07-04 (диалоги) — для PERSONAL_DM это единственный способ
       // атрибутировать лендинг: код долетает как обычный текст первого сообщения (см.
@@ -565,7 +611,7 @@ export class LandingRendererService {
     // ключ на весь лендинг, "последний побеждает") мог затереть реальную атрибуцию настоящего
     // посетителя прямо перед вступлением в канал.
     if (project.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'PRIVATE_CHANNEL_REQUEST' && !isBotUserAgent(trackingData.userAgent)) {
-      const country = this.resolveCountry(req);
+      const country = resolveVisitorCountry(req);
       if (country) await this.redis.set(`landing-visit-country:${landing.id}`, country, 'EX', LANDING_VISIT_TTL_SECONDS);
 
       // Полный блок атрибуции (fbclid/ttclid/utm/пиксель/рекламные макросы) — тот же приём,
@@ -650,20 +696,34 @@ export class LandingRendererService {
       html = html.replaceAll('{{TG_REDIRECT_URL}}', websiteDestination);
     }
 
+    // Готовая ссылка на /tg-redirect с уже готовым startCode — вынесена один раз, используется
+    // и ниже (autoRedirectUrl), и здесь. Раньше {{TG_REDIRECT_URL}} для Telegram-канала
+    // подставлялся только в renderTemplate() (TEMPLATE-лендинги), а CUSTOM-лендинги вообще не
+    // проходят через renderTemplate — клиент, загрузивший свой ZIP, не имел способа получить
+    // готовую ссылку на кнопку и был вынужден вручную собирать сырой внутренний URL с
+    // publicToken/landingId (баг-репорт пользователя 2026-09-04: "непонятно как должен быть
+    // оформлен лендинг"). Безопасно для уже работающих TEMPLATE-лендингов: к этому месту
+    // renderTemplate() уже заменил ЛЮБОЕ вхождение {{TG_REDIRECT_URL}} (Telegram/сайт/пусто —
+    // все три ветки), так что replaceAll ниже находит для них ровно 0 совпадений и не более чем
+    // тратит один проход по строке.
+    const telegramJoinUrl = buildTelegramLink(project.channel)
+      ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${project.publicToken}/tg-redirect?code=${startCode}&landingId=${landing.id}`
+      : '';
+    if (telegramJoinUrl) {
+      html = html.replaceAll('{{TG_REDIRECT_URL}}', telegramJoinUrl);
+    }
+
     // Проект не привязан к одной платформе — пикселей одной и той же платформы
     // может быть несколько (несколько FB-аккаунтов и т.п.), поэтому ниже цикл,
     // а не одно фиксированное fbPixelId/ttPixelId.
     const fbPixels = project.pixels.filter((p) => p.platform === 'FACEBOOK');
     const ttPixels = project.pixels.filter((p) => p.platform === 'TIKTOK');
 
-    // Авторедирект (запрос пользователя 2026-07-03) — та же /tg-redirect-ссылка, что и у
-    // кнопки (см. TG_REDIRECT_URL в renderTemplate), просто с собственным startCode, т.к.
-    // CUSTOM-лендинги вообще не проходят через renderTemplate/{{TG_REDIRECT_URL}}. Пустая
-    // строка, если у проекта нет Telegram-канала и нет сайта — SDK тогда просто не найдёт
-    // атрибут и ведёт себя как обычно (только PageView, без редиректа).
+    // Авторедирект (запрос пользователя 2026-07-03) — переиспользует telegramJoinUrl выше вместо
+    // повторного построения той же строки.
     const autoRedirectUrl =
-      landing.autoRedirect && buildTelegramLink(project.channel)
-        ? `${process.env.TG_REDIRECT_BASE_URL}/api/v1/track/${project.publicToken}/tg-redirect?code=${startCode}&landingId=${landing.id}`
+      landing.autoRedirect && telegramJoinUrl
+        ? telegramJoinUrl
         : landing.autoRedirect && websiteDestination
           ? websiteDestination
           : '';
@@ -706,7 +766,7 @@ export class LandingRendererService {
         data-project-id="${project.publicToken}"
         data-api-url="${process.env.API_URL}/api/v1"
         data-landing-id="${landing.id}"${abTestGroupId ? `\n        data-ab-test-group-id="${abTestGroupId}"` : ''}
-        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}${autoRedirectUrl && deferAutoRedirect ? `\n        data-auto-redirect-defer="true"` : ''}${landing.tiktokBrowserHint ? `\n        data-tiktok-browser-hint="true"` : ''}${tiktokHintTextsAttr}${tiktokHintDeferAttr}
+        data-param-map="${paramMapAttr}"${autoRedirectUrl ? `\n        data-auto-redirect-url="${autoRedirectUrl}"` : ''}${autoRedirectUrl && deferAutoRedirect ? `\n        data-auto-redirect-defer="true"` : ''}${landing.leadOnClick === false ? `\n        data-lead-on-click="false"` : ''}${landing.leadOnAutoRedirect ? `\n        data-lead-on-auto-redirect="true"` : ''}${landing.tiktokBrowserHint ? `\n        data-tiktok-browser-hint="true"` : ''}${tiktokHintTextsAttr}${tiktokHintDeferAttr}
         async></script>
 ${
   fbPixels.length > 0
@@ -761,39 +821,4 @@ ttq.page();}(window,document,'ttq');
     return html;
   }
 
-  private getClientIp(req: Request): string {
-    return (
-      (req.headers['cf-connecting-ip'] as string) ||
-      (req.headers['x-real-ip'] as string) ||
-      req.socket.remoteAddress ||
-      ''
-    );
-  }
-
-  // Клиентские домены — self-service (см. 04_BACKEND_PROJECTS_DOMAINS.md): клиент сам
-  // управляет DNS в своём аккаунте (Cloudflare или любой другой), платформа не держит
-  // Cloudflare-токен и не гарантирует, что домен проксируется через Cloudflare. Поэтому
-  // cf-ipcountry — только быстрый путь, когда он есть, а не единственный источник:
-  // офлайн-геобаза geoip-lite по IP работает для любого домена независимо от того, стоит
-  // ли перед ним Cloudflare.
-  private resolveCountry(req: Request): string | null {
-    const cfCountry = req.headers['cf-ipcountry'] as string | undefined;
-    // "XX" — Cloudflare не смог определить страну, "T1" — Tor. Ни то ни другое не считаем
-    // реальным ответом, чтобы не пропустить их через allow-list по ошибке.
-    if (cfCountry && cfCountry !== 'XX' && cfCountry !== 'T1') return cfCountry.toUpperCase();
-
-    const ip = this.getClientIp(req);
-    if (!ip) return null;
-    return geoip.lookup(ip)?.country ?? null;
-  }
-
-  private isCountryAllowed(req: Request, allowedCountries: string[]): boolean {
-    const country = this.resolveCountry(req);
-    // Страна не определилась вообще — считаем посетителя НЕ разрешённым (безопаснее
-    // спрятать лендинг лишний раз, чем случайно показать его тому, от кого клоакинг должен
-    // скрывать — весь смысл опции в том, чтобы не светить лендинг перед не-целевой
-    // аудиторией/модерацией рекламных сетей).
-    if (!country) return false;
-    return allowedCountries.includes(country);
-  }
 }

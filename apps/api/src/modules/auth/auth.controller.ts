@@ -7,6 +7,7 @@ import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ExchangeImpersonationCodeDto } from './dto/exchange-impersonation-code.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -39,5 +40,14 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: { userId: string }) {
     return this.authService.me(user.userId);
+  }
+
+  // Обмен одноразового кода на access-токен для дебаг-имперсонации (см.
+  // AdminCompanyService.impersonate) — код уже прошёл проверку прав на стороне admin-панели
+  // (@Roles(SUPER_ADMIN)), здесь только читаем то, что уже лежит в Redis.
+  @Public()
+  @Post('exchange-impersonation-code')
+  exchangeImpersonationCode(@Body() dto: ExchangeImpersonationCodeDto) {
+    return this.authService.exchangeImpersonationCode(dto.code);
   }
 }

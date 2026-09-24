@@ -3,6 +3,7 @@ import { PushesModule } from '../pushes/pushes.module';
 import { LandingsModule } from '../landings/landings.module';
 import { DomainsModule } from '../domains/domains.module';
 import { TeamModule } from '../team/team.module';
+import { AuthModule } from '../auth/auth.module';
 import { AdminController } from './admin.controller';
 import { AdminCompanyController } from './admin-company.controller';
 import { AdminService } from './admin.service';
@@ -17,9 +18,10 @@ import { AdminCron } from './admin.cron';
 // ProjectsService/ClientsService лениво через ModuleRef, тот же приём, что уже у
 // AudienceService/AutomationsService. PushesModule/LandingsModule/DomainsModule/TeamModule
 // вне этого цикла — обычный constructor injection для них подтверждён безопасным (PushesModule
-// сам их импортирует так же, без проблем).
+// сам их импортирует так же, без проблем). AuthModule (для impersonation, запрос пользователя
+// 2026-09-24) тоже вне цикла — сам ни от чего доменного не зависит (только Passport/JwtModule).
 @Module({
-  imports: [PushesModule, LandingsModule, DomainsModule, TeamModule],
+  imports: [PushesModule, LandingsModule, DomainsModule, TeamModule, AuthModule],
   controllers: [AdminController, AdminCompanyController],
   providers: [AdminService, AdminCompanyService, AdminCron],
 })

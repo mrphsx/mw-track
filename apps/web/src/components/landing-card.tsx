@@ -71,6 +71,7 @@ export function LandingCard({
   onManageDomain,
   onGetLink,
   onReupload,
+  onManageExternal,
   onManageAbTest,
   onPublish,
   onUnpublish,
@@ -95,6 +96,10 @@ export function LandingCard({
   onManageDomain: () => void;
   onGetLink: () => void;
   onReupload?: () => void;
+  // Открывает диалог сниппета/проверки подключения для EXTERNAL-лендинга (запрос пользователя
+  // 2026-09-07) — тот же паттерн, что onReupload у CUSTOM: рендерится только при
+  // landing.type === 'EXTERNAL'.
+  onManageExternal?: () => void;
   // Опционально (запрос пользователя 2026-07-30, только Studio: "убери кнопку для сравнения из
   // карточки" — судя по всему про эту кнопку, она рисуется тем же SplitSquareHorizontal-значком,
   // что и "Сравнить лендинги" в шапке страницы) — когда не передан, кнопка вообще не рендерится,
@@ -271,7 +276,22 @@ export function LandingCard({
           <p className="text-xs text-muted-foreground">Канал не привязан к проекту</p>
         )}
 
-        {attachment ? (
+        {/* Привязка ДОМЕНА (DomainPath на нашей стороне) не имеет смысла для EXTERNAL — такой
+            лендинг мы никогда не рендерим (запрос пользователя 2026-09-07), у него вместо этого
+            собственный externalUrl, показанный внутри диалога подключения. */}
+        {landing.type === 'EXTERNAL' ? (
+          landing.externalUrl && (
+            <a
+              href={landing.externalUrl}
+              target="_blank"
+              rel="noopener"
+              onClick={(e) => e.stopPropagation()}
+              className="block text-xs font-mono text-muted-foreground hover:underline truncate"
+            >
+              {landing.externalUrl}
+            </a>
+          )
+        ) : attachment ? (
           <a
             href={attachmentUrl(attachment)}
             target="_blank"
@@ -315,13 +335,15 @@ export function LandingCard({
           <Button size="sm" variant="ghost" onClick={onPreview} title="Предпросмотр">
             <Eye className="w-4 h-4" />
           </Button>
-          <Button size="sm" variant="ghost" onClick={onManageDomain} title="Домен">
-            <Globe className="w-4 h-4" />
-          </Button>
+          {landing.type !== 'EXTERNAL' && (
+            <Button size="sm" variant="ghost" onClick={onManageDomain} title="Домен">
+              <Globe className="w-4 h-4" />
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={onGetLink} title="Получить ссылку">
             <Link2 className="w-4 h-4" />
           </Button>
-          {onManageAbTest && (
+          {onManageAbTest && landing.type !== 'EXTERNAL' && (
             <Button size="sm" variant="ghost" onClick={onManageAbTest} title="A/B-тест">
               <SplitSquareHorizontal className="w-4 h-4" />
             </Button>
@@ -329,6 +351,11 @@ export function LandingCard({
           {landing.type === 'CUSTOM' && onReupload && (
             <Button size="sm" variant="ghost" onClick={onReupload} title="Перезалить ZIP">
               <Upload className="w-4 h-4" />
+            </Button>
+          )}
+          {landing.type === 'EXTERNAL' && onManageExternal && (
+            <Button size="sm" variant="ghost" onClick={onManageExternal} title="Подключение">
+              <Globe className="w-4 h-4" />
             </Button>
           )}
           {/* Короткие подписи (баг-репорт пользователя 2026-07-30: "кнопки уходят вниз... такого
@@ -708,13 +735,21 @@ export function AbTestGroupDialog({
                 const checked = checkedIds.has(l.id);
                 // Эта ветка рендерится только при создании нового теста (target.groupId ===
                 // null, см. ветку выше) — исключение "уже состоит в СВОЕЙ группе" тут не нужно.
-                const disabled = !!l.abTestGroupId;
+                // EXTERNAL исключены по решению пользователя 2026-09-07 — единая ссылка со
+                // случайным сплитом между чужими доменами потребовала бы отдельного
+                // редирект-механизма, от которого пользователь явно отказался.
+                const isExternal = l.type === 'EXTERNAL';
+                const disabled = !!l.abTestGroupId || isExternal;
                 return (
                   <div key={l.id} className="flex items-center gap-2 py-1">
                     <Checkbox checked={checked} disabled={disabled} onCheckedChange={() => !disabled && toggle(l.id)} />
                     <span className={cn('flex-1 truncate text-sm', disabled && 'text-muted-foreground')}>
                       {l.name}
-                      {disabled && <span className="ml-1 text-xs">(уже в другом тесте)</span>}
+                      {isExternal ? (
+                        <span className="ml-1 text-xs">(внешний лендинг — нельзя тестировать)</span>
+                      ) : (
+                        disabled && <span className="ml-1 text-xs">(уже в другом тесте)</span>
+                      )}
                     </span>
                     {checked && (
                       <>
@@ -753,6 +788,17 @@ export function AbTestGroupDialog({
             </p>
           </div>
 
+          {/* Живой итог по мере ввода (баг-репорт пользователя 2026-09-15: "выбрал 50% и 25% —
+              где ещё 25%?") — сумма и так проверяется перед отправкой (trySave), но без этой
+              подсказки пользователь узнаёт о несовпадении только после клика "Запустить тест",
+              а не пока ещё вводит проценты. Только при создании — при редактировании веса
+              зафиксированы и не редактируются (см. ветку выше). */}
+          {!target.groupId && checkedIds.size >= 2 && (
+            <p className={cn('text-xs', Object.values(weights).reduce((s, w) => s + (w || 0), 0) === 100 ? 'text-muted-foreground' : 'text-red-500 font-medium')}>
+              Итого: {Object.values(weights).reduce((s, w) => s + (w || 0), 0)}%
+              {Object.values(weights).reduce((s, w) => s + (w || 0), 0) !== 100 && ' (должно быть 100%)'}
+            </p>
+          )}
           {error && <p className="text-sm text-red-500">{error}</p>}
           <div className="flex gap-2">
             <Button onClick={trySave} disabled={save.isPending || !effectiveProjectId}>

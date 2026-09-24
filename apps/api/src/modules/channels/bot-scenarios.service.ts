@@ -350,6 +350,24 @@ export class BotScenariosService {
     const updates = dto.weights.filter((w) => memberIds.has(w.scenarioId));
     if (updates.length === 0) throw new BadRequestException('Не переданы веса для сценариев этой группы');
 
+    // Баг-репорт пользователя 2026-09-15: "выбрал 50% для одной, 25% для второй — где ещё 25%?"
+    // Веса — это ДОЛИ общего пирога, не абсолютные проценты: движок выбора варианта
+    // (TelegramProvider, метод рядом с этим сервисом) нормализует по фактической СУММЕ весов
+    // участников (roll = random() * totalWeight), а не считает её равной 100 — при 50+25=75
+    // реальный трафик всё равно делится ПОЛНОСТЬЮ (66.7%/33.3%), просто не так, как показывают
+    // введённые числа, отсюда и путаница "куда делись 25%". LandingsService.assertValidMembers
+    // уже требует сумму=100 при создании теста лендингов (и на фронте, и здесь на бэке) — это
+    // тот же самый принцип, который "зеркальный" A/B-тест сценариев ошибочно не унаследовал.
+    // Требуем веса СРАЗУ для всех живых участников (а не частичный набор) — единственный
+    // реальный вызывающий (AbTestSection, apps/web) и так всегда шлёт полный список.
+    if (updates.length !== members.length) {
+      throw new BadRequestException('Нужно указать вес для каждого варианта теста');
+    }
+    const totalWeight = updates.reduce((sum, u) => sum + u.weight, 0);
+    if (totalWeight !== 100) {
+      throw new BadRequestException('Сумма процентов должна быть равна 100');
+    }
+
     await this.prisma.$transaction(
       updates.map((w) => this.prisma.botScenario.update({ where: { id: w.scenarioId }, data: { abTestWeight: w.weight } })),
     );

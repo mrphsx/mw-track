@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Contact,
   DollarSign,
+  Download,
   Eye,
   Globe,
   LayoutTemplate,
@@ -34,6 +35,7 @@ import {
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { downloadBlob } from '@/lib/utils';
 import { ChannelAvatar } from '@/components/channel-avatar';
 import { hasChannelAvatar } from '@/lib/landings';
 import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
@@ -126,6 +128,14 @@ export default function StudioProjectPage() {
   const compareHref = (category: string) => {
     const params = period.period === 'custom' ? { period: period.period, from: period.from, to: period.to } : { period: period.period };
     return `/projects/${id}/leaderboards/${category}?${new URLSearchParams(params as Record<string, string>).toString()}`;
+  };
+
+  // Скачивание статистики проекта одним CSV (запрос пользователя 2026-09-08) — см. полный
+  // комментарий в classic-версии (apps/web/.../(dashboard)/projects/[id]/page.tsx).
+  const exportStats = async () => {
+    const params = period.period === 'custom' ? { period: period.period, from: period.from, to: period.to } : { period: period.period };
+    const res = await api.get(`/projects/${id}/clients/stats/export`, { responseType: 'blob', params });
+    downloadBlob(res.data as Blob, `project_stats_${id}.csv`);
   };
 
   const metrics: { key: string; label: string; value: string | number; icon: LucideIcon; hue: StudioHueName; danger?: boolean }[] = [
@@ -410,6 +420,9 @@ export default function StudioProjectPage() {
               />
             </div>
           )}
+          <StudioLinkButton icon={Download} onClick={exportStats}>
+            Скачать статистику
+          </StudioLinkButton>
         </div>
       </div>
 

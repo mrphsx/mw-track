@@ -611,6 +611,13 @@ export function PixelsTab({
               {platform === 'FACEBOOK' && !testEventCode && (
                 <p className="text-xs text-[#B23A1E] dark:text-[#F0855E]">Без Test Event Code тестовое событие уйдёт как настоящее и попадёт в статистику пикселя.</p>
               )}
+              {/* Отказ самого запроса (400 — например, ID не той платформы, 2026-09-17) раньше не
+                  показывался вовсе: блок ниже рисует только успешно полученный ответ. */}
+              {testEvent.isError && (
+                <p className="text-sm text-red-600 dark:text-red-400">
+                  {(isAxiosError(testEvent.error) && testEvent.error.response?.data?.error?.message) || 'Не удалось отправить тест'}
+                </p>
+              )}
               {testEvent.data && (
                 <div className="space-y-2 pt-1">
                   <p className={`text-sm ${testEvent.data.success ? 'text-[#1F7A6C] dark:text-[#6FCBBA]' : 'text-red-600 dark:text-red-400'}`}>
@@ -1063,6 +1070,13 @@ export function IntegrationTab({
               на всех страницах, где нужна статистика.
             </li>
             <li>
+              На кнопках, по которым нужно считать клики (переход к покупке, заявка и т.п.), добавьте
+              атрибут <code>data-track=&quot;Lead&quot;</code> — например,{' '}
+              <code>&lt;button data-track=&quot;Lead&quot;&gt;Купить&lt;/button&gt;</code>. Без этого
+              атрибута клики по кнопке не попадут в статистику проекта как «Клик на кнопку» — просмотры
+              страницы при этом продолжат считаться и без него.
+            </li>
+            <li>
               Откройте вкладку «Каналы» и нажмите «Проверить» — канал станет «Активен» только
               после того, как мы реально найдём этот код на странице.
             </li>
@@ -1437,9 +1451,11 @@ function ManagersCard({ channelId, projectId, full }: { channelId: string; proje
     <div className={`${STUDIO_CARD} p-5 space-y-3`}>
       <h2 className={`text-sm font-semibold ${FG}`}>Менеджеры</h2>
       <p className={`text-sm ${MUTED}`}>
-        По одному Telegram-username на строку, без @. Эти люди смогут переслать боту сообщение клиента и
-        подтвердить запись диалога — без подключения личного аккаунта. Сами менеджеры клиентами не считаются:
-        пуши, воронки и сценарии этого бота им не приходят.
+        По одному Telegram-username на строку, без @. Менеджер присылает боту клиента — пересланное сообщение,
+        @username, ссылку t.me или Telegram ID — и выбирает, что записать: «Диалог» (сразу) или «Покупка»
+        (бот попросит сумму в долларах). Так диалоги и депозиты регистрируются, не выходя из Telegram и без
+        подключения личного аккаунта. Сами менеджеры клиентами не считаются: пуши, воронки и сценарии этого бота
+        им не приходят.
       </p>
       <Textarea
         value={text}

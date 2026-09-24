@@ -7,6 +7,9 @@ import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveScopedBuyerId } from '../../common/buyer-scope.util';
+import { resolveStatsPeriod } from '../../common/timezone.util';
+import { buildProjectStatsCsv } from '../projects/project-stats-export.util';
+import { withUtf8Bom } from '../../common/csv.util';
 import { ProjectsService } from '../projects/projects.service';
 import { ClientsService } from './clients.service';
 import { ClientsRepository } from './clients.repository';
@@ -79,6 +82,56 @@ export class ClientsController {
     return this.clientsRepository.getConversionFunnel(projectId, period, scopedBuyerId);
   }
 
+  // Скачивание статистики проекта за период одним CSV-файлом (запрос пользователя 2026-09-08) —
+  // те же данные и то же разрешение-скоупинг, что уже показывает сама страница проекта: общая
+  // статистика + воронка + топ-лидерборды (только при STATS_VIEW_TEAM_LEADERBOARDS и без
+  // активного buyer-скоупа — тот же критерий, что и у GET .../leaderboards) + разбивка по
+  // объявлениям. Деньги обнуляются, а не убираются из отчёта, без STATS_VIEW_REVENUE — тот же
+  // принцип, что везде в этом контроллере/ProjectsController.
+  @Get('stats/export')
+  async exportStats(
+    @Param('projectId') projectId: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() period: StatsPeriodDto,
+    @Res() res: Response,
+  ) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    const canViewRevenue = await this.permissionsService.hasPermission(user.userId, projectId, user.role, Permission.STATS_VIEW_REVENUE);
+    const canViewLeaderboards =
+      !scopedBuyerId && (await this.permissionsService.hasPermission(user.userId, projectId, user.role, Permission.STATS_VIEW_TEAM_LEADERBOARDS));
+
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
+    const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, period);
+    const periodLabel = `${since.toISOString().slice(0, 10)} — ${until.toISOString().slice(0, 10)}`;
+
+    const categories = ['buyers', 'pixels', 'landings', 'campaigns', 'sources'] as const;
+    const [stats, funnel, adBreakdown, leaderboardRows] = await Promise.all([
+      this.clientsRepository.getProjectStats(projectId, period, scopedBuyerId),
+      this.clientsRepository.getConversionFunnel(projectId, period, scopedBuyerId),
+      this.projectsService.getAdBreakdown(projectId, companyId, period, scopedBuyerId),
+      canViewLeaderboards
+        ? Promise.all(categories.map((category) => this.projectsService.getLeaderboardFull(projectId, companyId, category, period, scopedBuyerId)))
+        : Promise.resolve(null),
+    ]);
+
+    const leaderboards = leaderboardRows
+      ? {
+          buyers: leaderboardRows[0],
+          pixels: leaderboardRows[1],
+          landings: leaderboardRows[2],
+          campaigns: leaderboardRows[3],
+          sources: leaderboardRows[4],
+        }
+      : null;
+
+    const csv = buildProjectStatsCsv({ periodLabel, stats, funnel, adBreakdown, leaderboards, canViewRevenue });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="project_stats_${projectId}.csv"`);
+    res.send(withUtf8Bom(csv));
+  }
+
   // "Моя статистика" (Operator, запрос пользователя 2026-07-30) — сколько клиентов вообще на
   // проекте + сколько депозитов ЛИЧНО зарегистрировал этот сотрудник (Purchase.registeredBy,
   // не "клиенты назначенные оператору" — такой привязки в модели нет). STATS_VIEW переиспользован
@@ -92,6 +145,27 @@ export class ClientsController {
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     return this.clientsRepository.getMyStats(projectId, user.userId, period);
+  }
+
+  // Полный экспорт списка клиентов (запрос пользователя 2026-09-08) — те же фильтры, что и у
+  // самого списка (findMany выше), поэтому экспорт всегда отражает ровно то, что отфильтровано
+  // на странице в момент клика на "Скачать". CLIENTS_EXPORT — та же разрешение, что уже гейтит
+  // exportLookalike ниже (экспорт всех данных клиента — логическое продолжение того же права).
+  @Get('export')
+  async exportClients(
+    @Param('projectId') projectId: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() filters: ClientFiltersDto,
+    @Res() res: Response,
+  ) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EXPORT]);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    const canViewTrafficSource = user.role !== UserRole.OPERATOR;
+    const csv = await this.clientsService.exportClientsCsv(projectId, filters, scopedBuyerId, canViewTrafficSource);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="clients_${projectId}.csv"`);
+    res.send(csv);
   }
 
   @Get('export/lookalike')

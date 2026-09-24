@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bull';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BotScenario, BotScenarioTrigger, Channel, Client } from '@prisma/client';
 import { Queue } from 'bull';
@@ -14,6 +14,14 @@ import { ApproveJoinRequestJob } from '../join-request-approval.processor';
 import { BotScenarioEngineService } from '../bot-scenario-engine.service';
 import { VideoProcessingService } from '../video-processing.service';
 import { extractInviteHash } from '../telegram-link.util';
+import {
+  ClientIdentifier,
+  looksLikeAmountInput,
+  looksLikeUserIdInsteadOfAmount,
+  MAX_MANAGER_PURCHASE_USD,
+  parseClientIdentifier,
+  parseUsdAmount,
+} from '../manager-input.util';
 
 // Форма JSON, кэшируемого LandingRendererService.injectTrackingScripts под
 // landing-visit-attribution:<landingId> (см. getCachedLandingAttribution ниже) — buyerRef, не
@@ -53,6 +61,10 @@ interface CachedLandingAttribution {
   // landing-visit-attribution:<landingId> landingId уже есть в самом ключе, здесь же ключ один
   // на всю ссылку без привязки к лендингу заранее, поэтому landingId кладётся прямо в payload.
   landingId?: string | null;
+  // Ключ переиспользования ссылки визита (см. VISIT_INVITE_REUSE_TTL_SECONDS) — удаляется вместе с
+  // самой атрибуцией, когда по ссылке пришла заявка: использованная ссылка отзывается, и
+  // следующее нажатие должно получить новую.
+  visitInviteKey?: string | null;
 }
 
 // Персональная invite-ссылка НА КОНКРЕТНЫЙ ВИЗИТ, не на лендинг целиком (запрос пользователя
@@ -73,6 +85,76 @@ const ONE_TIME_INVITE_TTL_SECONDS = 24 * 60 * 60; // как START_CODE_TTL_SECON
 
 function oneTimeInviteRedisKey(hash: string): string {
   return `landing-visit-link:${hash}`;
+}
+
+// Одна персональная ссылка на визит (запрос пользователя 2026-09-19): повторное нажатие того же
+// посетителя (тот же start:<code>) получает уже созданную ссылку, а не новую. Около 20% переходов —
+// повторные нажатия; каждое раньше тратило вызов createChatInviteLink, а Telegram ограничивает
+// частоту этого метода (429) — и повторное нажатие, не получив ссылку, уходило на общую ссылку
+// лендинга с угадыванием атрибуции через очередь. Чуть короче срока жизни самой ссылки, чтобы
+// никогда не выдать уже истёкшую.
+const VISIT_INVITE_REUSE_TTL_SECONDS = ONE_TIME_INVITE_TTL_SECONDS - 60 * 60;
+
+// Повторная заявка того же человека, пока первая ждёт одобрения (см. handleJoinRequest), — окно
+// поверх задержки одобрения канала.
+const REPEAT_JOIN_WINDOW_MS = 10 * 60 * 1000;
+
+// Менеджер нажал "Покупка" — бот ждёт от него сумму следующим сообщением. Ключ на пару
+// канал + менеджер: у одного менеджера может быть несколько проектов с разными ботами.
+const MANAGER_PURCHASE_TTL_SECONDS = 15 * 60;
+
+interface ManagerPurchasePending {
+  clientId: string;
+  clientName: string;
+  chatId: number;
+  promptMessageId: number;
+}
+
+function managerPurchaseKey(channelId: string, managerTgUserId: number): string {
+  return `mgr-purchase:${channelId}:${managerTgUserId}`;
+}
+
+const MANAGER_CARD_QUESTION = 'Что зарегистрировать?';
+
+const MANAGER_HELP_TEXT = [
+  'Чтобы зарегистрировать событие клиента, пришлите сюда одно из:',
+  '• пересланное сообщение клиента',
+  '• его @username или ссылку t.me/username',
+  '• его Telegram ID цифрами',
+  '',
+  'Затем выберите «Диалог» или «Покупка». Для покупки бот попросит сумму в долларах.',
+  '/cancel — отменить ввод суммы',
+].join('\n');
+
+function formatUsd(amount: number): string {
+  return amount.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function clientDisplayName(client: Client): string {
+  const fullName = [client.tgFirstName, client.tgLastName].filter(Boolean).join(' ');
+  return fullName || (client.tgUsername ? `@${client.tgUsername}` : client.tgUserId ? `ID ${client.tgUserId}` : 'Клиент');
+}
+
+// Карточка в чате менеджера — чтобы перед нажатием кнопки было видно, тот ли это человек и что
+// по нему уже записано. Без parse_mode: имена клиентов приходят как есть.
+function describeClientForManager(client: Client): string {
+  const lines = [`👤 ${clientDisplayName(client)}${client.tgUsername && (client.tgFirstName || client.tgLastName) ? ` (@${client.tgUsername})` : ''}`];
+  if (client.tgUserId) lines.push(`ID: ${client.tgUserId}`);
+  lines.push(client.firstDialogueAt ? 'Диалог: уже зарегистрирован' : 'Диалог: ещё не зарегистрирован');
+  lines.push(
+    client.purchasesCount > 0
+      ? `Покупок: ${client.purchasesCount} на $${formatUsd(Number(client.totalSpent))}`
+      : 'Покупок пока нет',
+  );
+  if (!client.subscribedAt) {
+    lines.push('⚠️ Не подписчик канала — его покупки не входят в статистику проекта.');
+  }
+  return lines.join('\n');
+}
+
+function stripCardQuestion(text: string | undefined): string {
+  if (!text) return '';
+  return text.endsWith(`\n\n${MANAGER_CARD_QUESTION}`) ? text.slice(0, -(MANAGER_CARD_QUESTION.length + 2)) : text;
 }
 
 @Injectable()
@@ -115,6 +197,17 @@ export class TelegramProvider implements ChannelProvider {
 
     if (!channel.tgBotToken) throw new Error('Bot token required');
 
+    // Этот же бот уже подключён как бот оповещений компании (NotificationBot, 2026-09-16) —
+    // setWebhook ниже молча перехватил бы его вебхук, и оповещения перестали бы приходить.
+    // Ошибка здесь, а не в местах создания/правки канала: initialize() вызывается из всех путей
+    // (создание, правка, переподключение, старт процесса), и tryInitialize сам покажет причину
+    // в lastError канала.
+    const tokenBotId = channel.tgBotToken.split(':')[0];
+    const notifierClash = await this.prisma.notificationBot.findUnique({ where: { tgBotId: tokenBotId }, select: { id: true } });
+    if (notifierClash) {
+      throw new Error('Этот бот уже подключён для служебных оповещений компании. Для канала нужен отдельный бот из @BotFather.');
+    }
+
     if (mode === 'PUBLIC_CHANNEL_DIRECT' && !channel.tgChannelUsername) {
       throw new Error('Укажите публичный @username канала — без него лендинг не может вести в канал напрямую');
     }
@@ -141,24 +234,21 @@ export class TelegramProvider implements ChannelProvider {
       await next();
     });
 
-    bot.callbackQuery(/^mgr_dlg_yes:(.+)$/, async (ctx) => {
-      if (!this.isManager(channel, ctx.from?.username)) {
-        await ctx.answerCallbackQuery();
-        return;
-      }
-      const clientId = ctx.match[1];
-      try {
-        await this.clientsService.recordManualDialogue(clientId, channel.projectId, 'MANAGER_CONFIRM');
-        await ctx.answerCallbackQuery({ text: 'Диалог записан' });
-        await ctx.editMessageReplyMarkup();
-        const text = ctx.callbackQuery.message?.text;
-        if (text) await ctx.editMessageText(`${text}\n\n✅ Записано`);
-      } catch (error) {
-        this.logger.warn(`mgr_dlg_yes failed for channel ${channel.id}: ${(error as Error).message}`);
-        await ctx.answerCallbackQuery({ text: 'Ошибка, попробуйте ещё раз' });
-      }
+    // Кнопки под карточкой клиента в чате менеджера (см. handleManagerMessage).
+    bot.callbackQuery(/^mgr_dlg:(.+)$/, async (ctx) => {
+      await this.handleManagerDialogueButton(ctx, channel, ctx.match[1]);
     });
-
+    bot.callbackQuery(/^mgr_buy:(.+)$/, async (ctx) => {
+      await this.handleManagerPurchaseButton(ctx, channel, ctx.match[1]);
+    });
+    bot.callbackQuery('mgr_cancel', async (ctx) => {
+      await this.handleManagerCancelButton(ctx, channel);
+    });
+    // Кнопки из карточек, отправленных до 2026-09-17 ("✅ Да, диалог" / "❌ Нет"), — в чатах
+    // менеджеров они остались и должны продолжать работать.
+    bot.callbackQuery(/^mgr_dlg_yes:(.+)$/, async (ctx) => {
+      await this.handleManagerDialogueButton(ctx, channel, ctx.match[1]);
+    });
     bot.callbackQuery('mgr_dlg_no', async (ctx) => {
       await ctx.answerCallbackQuery();
       await ctx.editMessageReplyMarkup();
@@ -315,11 +405,25 @@ export class TelegramProvider implements ChannelProvider {
   // — просто переиспользуется, а не строится заново). Возвращает null при любой проблеме
   // (канал не PRIVATE_CHANNEL_REQUEST, бот не поднят, ошибка Bot API) — вызывающий код тогда
   // просто откатывается на прежнее поведение (общая ссылка лендинга/канала + очередь).
+  // visitCode — start:<code> визита: по нему повторные нажатия получают ту же ссылку (см.
+  // VISIT_INVITE_REUSE_TTL_SECONDS).
   async createOneTimeInviteLink(
     channel: Pick<Channel, 'id' | 'type' | 'tgMode' | 'tgChannelId'>,
     attribution: CachedLandingAttribution,
+    visitCode?: string,
   ): Promise<string | null> {
     if (channel.type !== 'TELEGRAM' || channel.tgMode !== 'PRIVATE_CHANNEL_REQUEST' || !channel.tgChannelId) return null;
+
+    const reuseKey = visitCode ? `visit-invite:${channel.id}:${visitCode}` : null;
+    if (reuseKey) {
+      const existing = await this.redis.get(reuseKey);
+      if (existing) return existing;
+    }
+
+    // Пока действует ограничение Telegram (429 с retry_after), вызов заранее обречён — а каждый
+    // лишний вызов в это время только продлевает ограничение. Сразу откатываемся на общую ссылку.
+    const cooldownKey = `invite-link-cooldown:${channel.id}`;
+    if (await this.redis.exists(cooldownKey)) return null;
 
     const bot = this.getBot(channel.id);
     if (!bot) return null;
@@ -335,9 +439,17 @@ export class TelegramProvider implements ChannelProvider {
       });
       const hash = extractInviteHash(invite.invite_link);
       if (!hash) return invite.invite_link; // не должно случиться (та же схема, что и у createInviteLink), но не блокирует редирект
-      await this.redis.set(oneTimeInviteRedisKey(hash), JSON.stringify(attribution), 'EX', ONE_TIME_INVITE_TTL_SECONDS);
+      await this.redis.set(
+        oneTimeInviteRedisKey(hash),
+        JSON.stringify({ ...attribution, visitInviteKey: reuseKey }),
+        'EX',
+        ONE_TIME_INVITE_TTL_SECONDS,
+      );
+      if (reuseKey) await this.redis.set(reuseKey, invite.invite_link, 'EX', VISIT_INVITE_REUSE_TTL_SECONDS);
       return invite.invite_link;
     } catch (error) {
+      const retryAfter = error instanceof GrammyError ? error.parameters?.retry_after : undefined;
+      if (retryAfter) await this.redis.set(cooldownKey, '1', 'EX', retryAfter);
       this.logger.warn(`createOneTimeInviteLink failed for channel ${channel.id}: ${(error as Error).message}`);
       return null;
     }
@@ -502,7 +614,9 @@ export class TelegramProvider implements ChannelProvider {
       bot.api.revokeChatInviteLink(channel.tgChannelId, usedInviteLink).catch(() => {});
     }
     try {
-      return JSON.parse(raw) as CachedLandingAttribution;
+      const attribution = JSON.parse(raw) as CachedLandingAttribution;
+      if (attribution.visitInviteKey) await this.redis.del(attribution.visitInviteKey);
+      return attribution;
     } catch {
       return undefined;
     }
@@ -560,6 +674,30 @@ export class TelegramProvider implements ChannelProvider {
         await this.approveJoinRequestMaybeDelayed(ctx.chatJoinRequest!.chat.id, tgUser.id, channel, false);
       } catch (error) {
         this.logger.error(`Error approving untracked join request for channel ${channel.id}: ${(error as Error).message}`);
+      }
+      return;
+    }
+
+    // Повторная заявка, пока первая ждёт одобрения (задержка tgJoinDelaySeconds): человек нажал
+    // «Вступить» ещё раз, и Telegram прислал новую заявку — нередко уже по общей ссылке лендинга,
+    // если персональная ссылка не создалась (429). Раньше она проходила весь путь заново: общая
+    // очередь визитов отдавала ЧУЖОЙ визит, из него заполнялись пустые поля клиента (баер,
+    // ttclid), в пиксели уходил второй Subscribe, а вторая отложенная заявка отправляла
+    // приветствие ещё раз (живой случай 2026-09-19: клиент админа с Facebook получил баера с
+    // TikTok). Клиент и событие уже записаны первой заявкой, приветствие уйдёт с ней же — эту
+    // просто одобряем, не трогая очередь и атрибуцию.
+    const existingClient = await this.clientsService.findByTgId(String(tgUser.id), channel.projectId);
+    const repeatWindowMs = (channel.tgJoinDelaySeconds ?? 0) * 1000 + REPEAT_JOIN_WINDOW_MS;
+    if (
+      existingClient?.subscribedAt &&
+      existingClient.isSubscribed &&
+      Date.now() - existingClient.subscribedAt.getTime() < repeatWindowMs
+    ) {
+      this.logger.log(`Повторная заявка ${tgUser.id} в канал ${channel.id} до одобрения первой — атрибуция не меняется`);
+      try {
+        await this.approveJoinRequestMaybeDelayed(ctx.chatJoinRequest!.chat.id, tgUser.id, channel, false);
+      } catch (error) {
+        this.logger.error(`Error approving repeat join request for channel ${channel.id}: ${(error as Error).message}`);
       }
       return;
     }
@@ -838,59 +976,270 @@ export class TelegramProvider implements ChannelProvider {
 
   // Единственный вход для сообщений от менеджера — команда не хочет подключать личный
   // MTProto-аккаунт, но всё равно ведёт диалоги с клиентами вне системы (свой личный Telegram,
-  // WhatsApp и т.п.) и хочет фиксировать это как "Диалог". Менеджер может: (1) переслать
-  // сообщение клиента — Telegram кладёт настоящего автора пересылки в forward_origin; (2) если
-  // у автора включена приватность "скрывать отправителя при пересылке" (частый случай, узнать
-  // личность в этом варианте технически невозможно — ограничение самого Telegram, не нашего
-  // кода), прислать вместо пересылки просто @username или числовой user_id клиента текстом —
-  // запрос пользователя 2026-07-21: "многие скрывают данные при пересылке... чтобы я не
-  // отправил он должен понять и найти". Тот же identifier-паттерн ("@" → username, иначе
-  // tgUserId), что уже использует /purchase.
+  // WhatsApp и т.п.) и фиксирует их через бота. Клиента можно указать тремя способами (запрос
+  // пользователя 2026-09-17): переслать его сообщение (Telegram кладёт автора в forward_origin),
+  // прислать @username / ссылку t.me / упоминание, или прислать числовой Telegram ID. Второй и
+  // третий способ нужны, когда у клиента включено "скрывать отправителя при пересылке" — тогда
+  // узнать его по пересылке невозможно, это ограничение самого Telegram.
+  // Дальше бот показывает карточку клиента с двумя кнопками: "Диалог" (записывается сразу) и
+  // "Покупка" (бот ждёт следующим сообщением сумму в долларах, см. MANAGER_PURCHASE_TTL_SECONDS).
   private async handleManagerMessage(ctx: Context, channel: Channel): Promise<void> {
-    const origin = ctx.message?.forward_origin;
+    const message = ctx.message;
+    if (!message || !ctx.from) return;
+    const pendingKey = managerPurchaseKey(channel.id, ctx.from.id);
+    const origin = message.forward_origin;
+    const text = (message.text ?? '').trim();
 
-    let client: Client | null = null;
-    let notFoundLabel = '';
-
-    if (origin) {
-      if (origin.type !== 'user') {
-        await ctx.reply(
-          'Не удалось определить отправителя — Telegram скрывает эти данные для этого типа пересылки. ' +
-            'Пришлите вместо этого его @username или user_id текстом.',
-        );
+    if (!origin && text.startsWith('/')) {
+      const command = text.split(/[\s@]/)[0].toLowerCase();
+      if (command === '/cancel') {
+        const pending = await this.readManagerPurchase(pendingKey);
+        if (pending) {
+          await this.redis.del(pendingKey);
+          await this.clearManagerPromptButtons(ctx, pending, '✖ Отменено');
+          await ctx.reply('Ввод суммы отменён.');
+        } else {
+          await ctx.reply('Сейчас нечего отменять.');
+        }
         return;
       }
-      const senderId = String(origin.sender_user.id);
-      client = await this.clientsService.findByTgId(senderId, channel.projectId);
-      notFoundLabel = origin.sender_user.username ? `@${origin.sender_user.username}` : senderId;
-    } else {
-      const identifier = ctx.message?.text?.trim();
-      if (!identifier) {
-        await ctx.reply('Перешлите сообщение клиента, либо пришлите его @username или user_id, чтобы записать диалог.');
-        return;
-      }
-      client = identifier.startsWith('@')
-        ? await this.clientsService.findByUsername(identifier.slice(1), channel.projectId)
-        : await this.clientsService.findByTgId(identifier, channel.projectId);
-      notFoundLabel = identifier;
-    }
-
-    if (!client) {
-      await ctx.reply(`Клиент ${notFoundLabel} не найден среди клиентов проекта.`);
+      await ctx.reply(MANAGER_HELP_TEXT);
       return;
     }
 
-    const label = client.tgFirstName || client.tgUsername || client.tgUserId || client.id;
-    await ctx.reply(`Найден клиент: ${label}. Записать диалог?`, {
+    // Бот ждёт сумму покупки: число — это сумма. Исключение — число из 7+ цифр, это ID
+    // следующего клиента. @username, ссылка или пересылка тоже означают, что менеджер перешёл
+    // к другому клиенту, и ожидание суммы снимается ниже.
+    const pending = await this.readManagerPurchase(pendingKey);
+    if (pending && !origin && looksLikeAmountInput(text) && !looksLikeUserIdInsteadOfAmount(text)) {
+      await this.handleManagerAmount(ctx, channel, pendingKey, pending, text);
+      return;
+    }
+
+    let identifier: ClientIdentifier | null = null;
+    if (origin) {
+      if (origin.type !== 'user') {
+        await ctx.reply(
+          'Не удалось определить отправителя — клиент скрывает себя при пересылке. ' +
+            'Пришлите вместо этого его @username или Telegram ID цифрами.',
+        );
+        return;
+      }
+      identifier = { kind: 'id', value: String(origin.sender_user.id) };
+    } else if (text) {
+      identifier = parseClientIdentifier(text, message.entities ?? []);
+    }
+
+    if (!identifier) {
+      if (pending && !origin) {
+        await ctx.reply('Введите сумму в долларах цифрами, например 150 или 49.99, или нажмите «Отмена».');
+      } else if (looksLikeAmountInput(text)) {
+        await ctx.reply('Чтобы записать покупку, сначала пришлите клиента (пересланное сообщение, @username или ID), затем нажмите «Покупка».');
+      } else {
+        await ctx.reply(MANAGER_HELP_TEXT);
+      }
+      return;
+    }
+
+    const client =
+      identifier.kind === 'id'
+        ? await this.clientsService.findByTgId(identifier.value, channel.projectId)
+        : await this.clientsService.findByUsername(identifier.value, channel.projectId);
+
+    if (!client) {
+      const label =
+        identifier.kind === 'username'
+          ? `@${identifier.value}`
+          : origin?.type === 'user' && origin.sender_user.username
+            ? `@${origin.sender_user.username} (ID ${identifier.value})`
+            : `с ID ${identifier.value}`;
+      const amountHint = looksLikeAmountInput(text)
+        ? '\nЕсли это сумма покупки — сначала пришлите клиента и нажмите «Покупка».'
+        : '';
+      await ctx.reply(`Клиент ${label} не найден среди клиентов этого проекта.${amountHint}`);
+      return;
+    }
+
+    // Новый клиент — прежнее ожидание суммы больше не актуально.
+    if (pending) {
+      await this.redis.del(pendingKey);
+      await this.clearManagerPromptButtons(ctx, pending, '✖ Отменено — выбран другой клиент');
+    }
+
+    await ctx.reply(`${describeClientForManager(client)}\n\n${MANAGER_CARD_QUESTION}`, {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '✅ Да, диалог', callback_data: `mgr_dlg_yes:${client.id}` },
-            { text: '❌ Нет', callback_data: 'mgr_dlg_no' },
+            { text: '💬 Диалог', callback_data: `mgr_dlg:${client.id}` },
+            { text: '💰 Покупка', callback_data: `mgr_buy:${client.id}` },
           ],
         ],
       },
     });
+  }
+
+  private async handleManagerDialogueButton(ctx: Context, channel: Channel, clientId: string): Promise<void> {
+    if (!this.isManager(channel, ctx.from?.username)) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+    // Двойное нажатие не должно дважды увеличивать счётчик сообщений клиента.
+    const lock = await this.redis.set(`mgr-dlg-lock:${clientId}`, '1', 'EX', 10, 'NX');
+    if (!lock) {
+      await ctx.answerCallbackQuery({ text: 'Уже записываем…' });
+      return;
+    }
+    let isFirst: boolean;
+    try {
+      isFirst = await this.clientsService.recordManualDialogue(clientId, channel.projectId, 'MANAGER_CONFIRM');
+    } catch (error) {
+      this.logger.warn(`Manager dialogue button failed for channel ${channel.id}: ${(error as Error).message}`);
+      await this.redis.del(`mgr-dlg-lock:${clientId}`);
+      await ctx.answerCallbackQuery({
+        text: error instanceof NotFoundException ? 'Клиент не найден' : 'Ошибка, попробуйте ещё раз',
+      });
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: isFirst ? 'Диалог записан' : 'Диалог уже был записан' });
+
+    // Карточка остаётся с кнопкой "Покупка": после диалога менеджеру часто нужно сразу
+    // записать и депозит.
+    const status = isFirst ? '✅ Диалог записан' : '☑️ Диалог уже был зарегистрирован раньше — в пиксели повторно не отправлен';
+    const cardText = stripCardQuestion(ctx.callbackQuery?.message && 'text' in ctx.callbackQuery.message ? ctx.callbackQuery.message.text : undefined);
+    try {
+      await ctx.editMessageText(`${cardText ? `${cardText}\n\n` : ''}${status}`, {
+        reply_markup: { inline_keyboard: [[{ text: '💰 Покупка', callback_data: `mgr_buy:${clientId}` }]] },
+      });
+    } catch (error) {
+      this.logger.debug(`Manager card edit skipped: ${(error as Error).message}`);
+    }
+  }
+
+  private async handleManagerPurchaseButton(ctx: Context, channel: Channel, clientId: string): Promise<void> {
+    if (!this.isManager(channel, ctx.from?.username) || !ctx.from || !ctx.chat) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+    const client = await this.prisma.client.findFirst({ where: { id: clientId, projectId: channel.projectId, deletedAt: null } });
+    if (!client) {
+      await ctx.answerCallbackQuery({ text: 'Клиент не найден' });
+      return;
+    }
+    await ctx.answerCallbackQuery();
+
+    const pendingKey = managerPurchaseKey(channel.id, ctx.from.id);
+    const previous = await this.readManagerPurchase(pendingKey);
+    if (previous) await this.clearManagerPromptButtons(ctx, previous, '✖ Отменено — начат ввод новой покупки');
+
+    const prompt = await ctx.reply(
+      `💰 Покупка для ${clientDisplayName(client)}\nВведите сумму в долларах, например 150 или 49.99.`,
+      { reply_markup: { inline_keyboard: [[{ text: '✖ Отмена', callback_data: 'mgr_cancel' }]] } },
+    );
+    const state: ManagerPurchasePending = {
+      clientId: client.id,
+      clientName: clientDisplayName(client),
+      chatId: ctx.chat.id,
+      promptMessageId: prompt.message_id,
+    };
+    await this.redis.set(pendingKey, JSON.stringify(state), 'EX', MANAGER_PURCHASE_TTL_SECONDS);
+  }
+
+  private async handleManagerCancelButton(ctx: Context, channel: Channel): Promise<void> {
+    if (!this.isManager(channel, ctx.from?.username) || !ctx.from) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+    const pendingKey = managerPurchaseKey(channel.id, ctx.from.id);
+    const pending = await this.readManagerPurchase(pendingKey);
+    // Отмена под старым запросом суммы не должна сбрасывать более новый.
+    if (pending && pending.promptMessageId === ctx.callbackQuery?.message?.message_id) {
+      await this.redis.del(pendingKey);
+    }
+    await ctx.answerCallbackQuery({ text: 'Отменено' });
+    const text = ctx.callbackQuery?.message && 'text' in ctx.callbackQuery.message ? ctx.callbackQuery.message.text : undefined;
+    try {
+      await ctx.editMessageText(`${text ? `${text}\n\n` : ''}✖ Отменено`);
+    } catch (error) {
+      this.logger.debug(`Manager prompt edit skipped: ${(error as Error).message}`);
+    }
+  }
+
+  private async handleManagerAmount(
+    ctx: Context,
+    channel: Channel,
+    pendingKey: string,
+    pending: ManagerPurchasePending,
+    text: string,
+  ): Promise<void> {
+    const parsed = parseUsdAmount(text);
+    if ('error' in parsed) {
+      const reason =
+        parsed.error === 'too_large'
+          ? `Сумма больше $${formatUsd(MAX_MANAGER_PURCHASE_USD)} — проверьте и отправьте ещё раз.`
+          : parsed.error === 'too_small'
+            ? 'Сумма должна быть больше нуля.'
+            : 'Не понял сумму. Введите её цифрами в долларах, например 150 или 49.99.';
+      await ctx.reply(reason);
+      return;
+    }
+
+    // Забираем ожидание атомарно: если тот же апдейт пришёл дважды, покупку создаст только один.
+    if ((await this.redis.del(pendingKey)) === 0) return;
+
+    const client = await this.prisma.client.findFirst({ where: { id: pending.clientId, projectId: channel.projectId, deletedAt: null } });
+    if (!client) {
+      await ctx.reply('Клиент больше не найден в проекте — покупка не записана.');
+      return;
+    }
+
+    try {
+      // Ключ привязан к сообщению с суммой: повторная доставка того же апдейта от Telegram не
+      // создаст вторую покупку.
+      await this.purchasesService.create(channel.projectId, client.id, {
+        amount: parsed.amount,
+        currency: 'USD',
+        source: 'bot',
+        idempotencyKey: `tg-manager:${channel.id}:${ctx.chat!.id}:${ctx.message!.message_id}`,
+      });
+    } catch (error) {
+      this.logger.error(`Manager purchase failed for channel ${channel.id}, client ${client.id}: ${(error as Error).message}`);
+      await this.redis.set(pendingKey, JSON.stringify(pending), 'EX', MANAGER_PURCHASE_TTL_SECONDS);
+      await ctx.reply('Не удалось записать покупку. Отправьте сумму ещё раз.');
+      return;
+    }
+
+    const amountLabel = `$${formatUsd(parsed.amount)}`;
+    await this.clearManagerPromptButtons(ctx, pending, `✅ Записано: ${amountLabel}`);
+
+    const updated = await this.prisma.client.findUnique({
+      where: { id: client.id },
+      select: { purchasesCount: true, totalSpent: true },
+    });
+    const kind = client.purchasesCount === 0 ? 'первый депозит' : 'повторный депозит';
+    const totals = updated ? `\nВсего покупок: ${updated.purchasesCount} на $${formatUsd(Number(updated.totalSpent))}` : '';
+    await ctx.reply(`✅ Покупка ${amountLabel} записана (${kind})\n👤 ${clientDisplayName(client)}${totals}`);
+  }
+
+  private async readManagerPurchase(key: string): Promise<ManagerPurchasePending | null> {
+    const raw = await this.redis.get(key);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as ManagerPurchasePending;
+    } catch {
+      await this.redis.del(key);
+      return null;
+    }
+  }
+
+  // Убирает кнопку "Отмена" под запросом суммы и дописывает итог. Сообщение могло быть уже
+  // изменено или удалено — это не должно мешать основному действию.
+  // editMessageText без reply_markup заодно убирает клавиатуру.
+  private async clearManagerPromptButtons(ctx: Context, pending: ManagerPurchasePending, suffix: string): Promise<void> {
+    try {
+      await ctx.api.editMessageText(pending.chatId, pending.promptMessageId, `💰 Покупка для ${pending.clientName}\n${suffix}`);
+    } catch (error) {
+      this.logger.debug(`Manager prompt cleanup skipped: ${(error as Error).message}`);
+    }
   }
 
   private async handleMemberUpdate(ctx: Context, channel: Channel) {

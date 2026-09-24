@@ -13,8 +13,9 @@ import { NextRequest, NextResponse } from 'next/server';
 const STUDIO_PREFIX = '/dashboard/studio';
 
 // Общие для обоих дизайнов страницы — один и тот же файл на обоих доменах, у Studio нет
-// собственных /login и т.п., рерайтить их нельзя.
-const SHARED_PATHS = ['/login', '/register', '/invite'];
+// собственных /login и т.п., рерайтить их нельзя. /impersonate (запрос пользователя 2026-09-24)
+// — тоже топ-левел роут вне (dashboard)/dashboard, по той же причине.
+const SHARED_PATHS = ['/login', '/register', '/invite', '/impersonate'];
 
 function isSharedPath(pathname: string): boolean {
   return SHARED_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));

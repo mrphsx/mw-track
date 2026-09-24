@@ -7,6 +7,7 @@ import { ProjectsService } from '../projects/projects.service';
 import { LandingsService } from './landings.service';
 import { CreateLandingFromTemplateDto } from './dto/create-landing-from-template.dto';
 import { UploadCustomLandingDto } from './dto/upload-custom-landing.dto';
+import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 
@@ -45,5 +46,16 @@ export class ProjectLandingsController {
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
     return this.landingsService.createCustom(projectId, companyId, dto, file, user.userId);
+  }
+
+  @Post('external')
+  async createExternal(
+    @Param('projectId') projectId: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateExternalLandingDto,
+  ) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
+    return this.landingsService.createExternal(projectId, companyId, dto, user.userId);
   }
 }

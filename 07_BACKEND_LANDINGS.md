@@ -726,6 +726,62 @@ export class StorageService {
 }
 ```
 
+## Клоакинг (Cloaking) — расширяемая система (актуально на 2026-09-23)
+
+Этот раздел описывает РЕАЛЬНОЕ текущее состояние — остальной документ выше это в основном
+исходный спек-дамп кода, местами разошедшийся с реализацией по мере накопления фичей (см.
+CLAUDE.md за полной историей). Клоакинг эволюционировал в отдельную расширяемую подсистему
+(запрос пользователя 2026-09-23: "дальше клоакинг будет сильно расширяться") по тому же
+принципу, что `ChannelProvider` для типов каналов — один класс-обработчик на тип, без if/else
+в бизнес-логике.
+
+**Схема** (`Landing`, `prisma/schema.prisma`):
+- `cloakingEnabled: Boolean`, `cloakingCountries: String[]` — общие для всех типов (гео allow-list).
+- `cloakingType: CloakingType @default(REDIRECT)` — `REDIRECT` (текущее историческое поведение)
+  или `PRELANDING` (белая страница).
+- `cloakingRedirectUrl: String?` — используется REDIRECT напрямую, PRELANDING — как fallback.
+- `cloakingPrelandingBasePath: String?` — MinIO-префикс white page для PRELANDING (отдельный от
+  `customBasePath` основного контента, оба могут сосуществовать на одном лендинге).
+
+**Код** — `apps/api/src/modules/landings/cloaking/`:
+- `cloaking-handler.interface.ts` — `CloakingHandler.serveBlockedVisitor(landing, subPath, req, res)`.
+- `redirect-cloaking.handler.ts` — 302 на `cloakingRedirectUrl` (дефолт `https://en.wikipedia.org`).
+- `prelanding-cloaking.handler.ts` — отдаёт `index.html`/ассеты из MinIO (тот же паттерн, что
+  `LandingRendererService.serveCustomFile`, но БЕЗ инжекта трекинга — заблокированный визитор не
+  должен трекаться). Если `cloakingPrelandingBasePath` пуст — делегирует в `RedirectCloakingHandler`
+  (fail-safe, тип выбран, но white page ещё не загружена).
+- `cloaking.service.ts` — реестр `Record<CloakingType, CloakingHandler>` (как
+  `ChannelsService.providers`), метод `applyCloaking(landing, subPath, req, res): Promise<boolean>`.
+  Геолокация визитора (`cf-ipcountry`/geoip-lite) вынесена в общий util
+  `apps/api/src/common/geo-country.util.ts` (`resolveVisitorCountry`) — используется не только
+  здесь, но и независимо для `countryCode` в атрибуции Facebook Advanced Matching.
+
+`LandingRendererService.renderAndServe` вызывает только `cloakingService.applyCloaking(...)` —
+не знает о конкретных типах клоакинга. **Добавление нового типа в будущем = новый класс,
+реализующий `CloakingHandler`, + одна строка в реестре `CloakingService`, без правок
+`renderAndServe` или if/else где-либо ещё.**
+
+**Загрузка white page** — `LandingsService`:
+- `openLandingZip(file)` — общая структурная валидация ZIP (расширение/размер/zip-slip/
+  наличие index.html), вынесена из `processAndReviewZip` (основной CUSTOM-контент), переиспользуется
+  обоими путями.
+- `uploadCloakingPrelanding(id, companyId, file)` — в отличие от `processAndReviewZip`, при
+  провале `reviewLandingHtml(..., {requireRedirectPlaceholder:false})` (white page не имеет кнопки
+  перехода) **отклоняет архив целиком** — ничего не пишет в MinIO/БД, возвращает
+  `{accepted:false, checks}`. Явное требование пользователя: "сломаную не пропускаем" — строже,
+  чем поведение для основного лендинга (тот заливается даже проваленным, просто не публикуется).
+- `removeCloakingPrelanding(id, companyId)` — удаляет объект(ы) из MinIO, сбрасывает поле в null.
+- Роуты: `POST/DELETE /landings/:id/cloaking/prelanding` (`Permission.LANDINGS_EDIT`, тот же, что
+  у `:id/upload` — отдельный Permission не нужен). Оба эндпоинта отдают HTTP 200 всегда, успех/
+  отказ кодируются в теле `{accepted, checks}` — `HttpExceptionFilter` прокидывает наружу только
+  `message`, молча отбрасывая любые другие поля исключения.
+
+**Frontend**: `LandingBehaviorFields` (`apps/web/src/components/landing-behavior-fields.tsx`) —
+переключатель типа клоакинга внутри блока "Клоакинг по странам"; `CloakingPrelandingUpload`
+(`components/cloaking-prelanding-upload.tsx`) — инструкция (`ZipLandingInstructions
+variant="prelanding"`) + drag&drop (`ZipDropZone`, общий с `UploadZipLandingDialog`) +
+`ReviewChecklist`.
+
 ## Дополнительные npm зависимости для этого модуля
 
 ```bash

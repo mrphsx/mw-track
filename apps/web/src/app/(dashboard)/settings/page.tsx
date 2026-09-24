@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
@@ -9,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { NotificationSettings } from '@/components/notifications/notification-settings';
 
 interface Invoice {
   id: string;
@@ -30,6 +32,9 @@ const ROLE_LABELS: Record<string, string> = {
 
 export default function SettingsPage() {
   const { user, logout } = useAuthStore();
+  const [tab, setTab] = useState('profile');
+  // Только владелец и админы — см. NotificationsController (@Roles(OWNER, ADMIN)).
+  const canManageNotifications = user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
 
   const { data: invoices } = useQuery({
     queryKey: ['billing', 'invoices'],
@@ -37,14 +42,21 @@ export default function SettingsPage() {
   });
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className={`${tab === 'notifications' ? 'max-w-5xl' : 'max-w-2xl'} space-y-6`}>
       <h1 className="text-2xl font-bold">Настройки</h1>
 
-      <Tabs defaultValue="profile">
+      <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
         <TabsList>
           <TabsTrigger value="profile">Профиль</TabsTrigger>
           <TabsTrigger value="payments">История платежей</TabsTrigger>
+          {canManageNotifications && <TabsTrigger value="notifications">Оповещения</TabsTrigger>}
         </TabsList>
+
+        {canManageNotifications && (
+          <TabsContent value="notifications" className="mt-4">
+            <NotificationSettings />
+          </TabsContent>
+        )}
 
         <TabsContent value="profile" className="mt-4">
           <Card>

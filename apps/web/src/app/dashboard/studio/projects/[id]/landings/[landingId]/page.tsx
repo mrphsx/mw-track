@@ -5,18 +5,18 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { ArrowLeft, Eye, Globe, Link2, MessageCircle, MousePointerClick, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
+import { ArrowLeft, Eye, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
-import { STATUS_LABEL, TYPE_LABEL, DomainOption } from '@/lib/landings';
+import { STATUS_LABEL, TYPE_LABEL, DomainOption, previewLanding } from '@/lib/landings';
 import { StatsCard } from '@/components/shared/stats-card';
 import { ClientsTable, ClientRow } from '@/components/clients/clients-table';
 import {
   LandingBehaviorFields,
   LandingBehaviorState,
   EMPTY_LANDING_BEHAVIOR,
-  behaviorStateToPayload,
+  optionsOnlyPayload,
 } from '@/components/landing-behavior-fields';
 import { LandingContentCard } from '@/components/landing-content-card';
 import { GetLinkDialog } from '@/components/get-link-dialog';
@@ -56,13 +56,21 @@ interface TiktokHintTexts {
 interface LandingFull {
   id: string;
   autoRedirect: boolean;
+  leadOnClick: boolean;
+  leadOnAutoRedirect: boolean;
   cloakingEnabled: boolean;
   cloakingCountries: string[];
   cloakingRedirectUrl: string | null;
+  cloakingType: 'REDIRECT' | 'PRELANDING';
+  cloakingPrelandingBasePath: string | null;
   tiktokBrowserHint: boolean;
   tiktokHintTexts: TiktokHintTexts | null;
 }
 
+// Клоакинг переехал на отдельную страницу /landings/:id/cloaking (запрос пользователя
+// 2026-09-23, тот же принцип, что в classic-дереве — см. подробный комментарий там же и кнопку
+// "Клоакинг" в шапке StudioLandingStatsPage ниже). hideCloaking здесь всегда true; save шлёт
+// optionsOnlyPayload (узкий пейлоад без cloaking* полей).
 function LandingOptionsCard({ landingId }: { landingId: string }) {
   const queryClient = useQueryClient();
 
@@ -79,7 +87,11 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
     const hintTexts = landing.tiktokHintTexts || {};
     setState({
       autoRedirect: landing.autoRedirect,
+      // ?? — на случай лендинга, отданного до появления полей (старый кэш ответа)
+      leadOnClick: landing.leadOnClick ?? true,
+      leadOnAutoRedirect: landing.leadOnAutoRedirect ?? false,
       cloakingEnabled: landing.cloakingEnabled,
+      cloakingType: landing.cloakingType ?? 'REDIRECT',
       countriesText: landing.cloakingCountries.join(', '),
       redirectUrl: landing.cloakingRedirectUrl || '',
       tiktokBrowserHint: landing.tiktokBrowserHint,
@@ -95,7 +107,7 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      await api.patch(`/landings/${landingId}`, behaviorStateToPayload(state));
+      await api.patch(`/landings/${landingId}`, optionsOnlyPayload(state));
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['landing', landingId, 'full'] });
@@ -109,7 +121,12 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
   return (
     <div className={`${STUDIO_CARD} p-5 space-y-4`}>
       <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Опции лендинга</h2>
-      <LandingBehaviorFields idPrefix="opt" state={state} onChange={(patch) => setState((s) => ({ ...s, ...patch }))} />
+      <LandingBehaviorFields
+        idPrefix="opt"
+        state={state}
+        onChange={(patch) => setState((s) => ({ ...s, ...patch }))}
+        hideCloaking
+      />
       {error && <p className="text-sm text-red-500">{error}</p>}
       <StudioLinkButton variant="primary" onClick={() => save.mutate()} disabled={save.isPending}>
         {save.isPending ? 'Сохраняем...' : 'Сохранить'}
@@ -167,11 +184,7 @@ export default function StudioLandingStatsPage() {
   const [showDomainDialog, setShowDomainDialog] = useState(false);
   const [showAbTestDialog, setShowAbTestDialog] = useState(false);
 
-  const preview = async () => {
-    const res = await api.get(`/landings/${landingId}/preview`, { responseType: 'text' });
-    const blob = new Blob([res.data as string], { type: 'text/html' });
-    window.open(URL.createObjectURL(blob), '_blank');
-  };
+  const preview = () => previewLanding(landingId);
 
   if (!stats) return <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Загрузка...</p>;
 
@@ -221,7 +234,7 @@ export default function StudioLandingStatsPage() {
                   Опубликовать
                 </button>
               )}
-              {stats.attachment && (
+              {stats.attachment && stats.landing.type !== 'EXTERNAL' && (
                 <a
                   href={`https://${stats.attachment.domain}${stats.attachment.path === '/' ? '' : stats.attachment.path}`}
                   target="_blank"
@@ -242,9 +255,11 @@ export default function StudioLandingStatsPage() {
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <StudioLinkButton icon={Globe} onClick={() => setShowDomainDialog(true)}>
-              {stats.attachment ? 'Сменить домен' : 'Привязать домен'}
-            </StudioLinkButton>
+            {stats.landing.type !== 'EXTERNAL' && (
+              <StudioLinkButton icon={Globe} onClick={() => setShowDomainDialog(true)}>
+                {stats.attachment ? 'Сменить домен' : 'Привязать домен'}
+              </StudioLinkButton>
+            )}
             {stats.attachment && (
               <StudioLinkButton icon={Link2} onClick={() => setShowGetLink(true)}>
                 Получить ссылку
@@ -252,6 +267,11 @@ export default function StudioLandingStatsPage() {
             )}
             <StudioLinkButton icon={Eye} onClick={preview}>
               Предпросмотр
+            </StudioLinkButton>
+            {/* Клоакинг — отдельная страница (запрос пользователя 2026-09-23), не карточка/
+                вкладка: вариантов клоакинга будет всё больше. */}
+            <StudioLinkButton icon={Shield} href={`/projects/${projectId}/landings/${landingId}/cloaking`}>
+              Клоакинг
             </StudioLinkButton>
             <StudioLinkButton icon={SplitSquareHorizontal} onClick={() => setShowAbTestDialog(true)}>
               {stats.abTestGroup ? 'A/B/n-тест' : 'Запустить A/B/n-тест'}

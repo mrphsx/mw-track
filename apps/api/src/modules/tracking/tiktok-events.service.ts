@@ -14,6 +14,10 @@ export class TikTokEventsService implements PixelProvider {
     Subscribe: 'Subscribe',
     Purchase: 'CompletePayment',
     InitiateCheckout: 'InitiateCheckout',
+    // Стандартное событие TikTok для обращения в бизнес — одно из обязательных для кампаний на
+    // лиды. Раньше Dialogue уходил как есть и считался у TikTok пользовательским (2026-09-17,
+    // см. FACEBOOK_EVENT_NAMES в facebook-capi.service.ts).
+    Dialogue: 'Contact',
   };
 
   async sendEvent(event: TrackingEvent, pixel: TrackingPixel): Promise<PixelSendResult> {
@@ -68,7 +72,7 @@ export class TikTokEventsService implements PixelProvider {
       // и т.п. полей там, где ждёт их (они оказались бы на уровень глубже, внутри
       // несуществующего для этого эндпоинта поля data).
       const body: Record<string, unknown> = {
-        pixel_code: pixel.pixelId,
+        pixel_code: pixel.pixelId.trim(),
         event: ttEventName,
         event_id: event.eventId,
         timestamp: new Date(event.eventTime).toISOString(),
@@ -83,7 +87,7 @@ export class TikTokEventsService implements PixelProvider {
 
       const response = await fetch(`${this.baseUrl}/pixel/track/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Access-Token': pixel.accessToken },
+        headers: { 'Content-Type': 'application/json', 'Access-Token': pixel.accessToken.trim() },
         body: JSON.stringify(body),
       });
       const httpStatus = response.status;

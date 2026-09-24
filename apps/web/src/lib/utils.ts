@@ -50,3 +50,18 @@ export async function copyToClipboard(text: string): Promise<void> {
     document.body.removeChild(textarea);
   }
 }
+
+// Общий приём "скачать Blob как файл" (запрос пользователя 2026-09-08: "добавить возможность
+// скачивать таблицы статистики") — до этого был продублирован построчно в 4 местах (lookalike-
+// экспорт классической и Studio страниц клиентов), каждый раз заново: createObjectURL, временный
+// <a download>, click, revokeObjectURL. Вынесен сюда, а не оставлен дублироваться и дальше, раз
+// новых мест использования сразу становится больше двух (полный экспорт клиентов + статистика
+// проекта, тоже по 2 копии на дерево).
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}

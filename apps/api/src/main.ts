@@ -1,6 +1,7 @@
 import dns from 'dns';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import compression from 'compression';
 import helmet from 'helmet';
@@ -25,7 +26,18 @@ async function bootstrap() {
   // подпись должна проверяться против исходных байт запроса, а не против
   // JSON.stringify(распарсенного тела) — это два разных значения (порядок ключей,
   // числовая нормализация и т.п.), и проверка по re-serialized body была бы багом.
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  //
+  // bodyParser:false + ручной useBodyParser (запрос пользователя 2026-09-23: "вставить HTML-код
+  // white page прямо в поле") — дефолтный лимит body-parser'а у Nest/Express — 100kb, вставленный
+  // HTML легко его превышает. Простой app.use(json({limit:...})) ПОСЛЕ create() не сработал бы —
+  // Nest сам регистрирует json/urlencoded с дефолтным лимитом при bootstrap (если не отключить
+  // явно), и он бы сработал первым в цепочке middleware, до нашего. useBodyParser — официальный
+  // Nest-way поднять лимит, при этом сам корректно прокидывает appOptions.rawBody дальше (см.
+  // nest-application.js: useBodyParser читает this.appOptions.rawBody), так что HMAC-проверка
+  // не ломается.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true, bodyParser: false });
+  app.useBodyParser('json', { limit: '5mb' });
+  app.useBodyParser('urlencoded', { limit: '5mb', extended: true });
 
   // crossOriginResourcePolicy: 'cross-origin' — helmet-дефолт 'same-origin' блокировал
   // (ERR_BLOCKED_BY_RESPONSE.NotSameOrigin) картинки, которые API намеренно отдаёт на чужие

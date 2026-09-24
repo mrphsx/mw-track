@@ -14,6 +14,10 @@ import { CreateLandingFromTemplateDto } from './dto/create-landing-from-template
 import { UploadCustomLandingDto } from './dto/upload-custom-landing.dto';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
+import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
+import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
+import { fetchPublicHtml } from '../../common/safe-html-fetch.util';
+import { resolveParamMap } from '../tracking/link-params.const';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -227,6 +231,9 @@ export class LandingsService {
         cloakingEnabled: dto.cloakingEnabled,
         cloakingCountries: dto.cloakingCountries,
         cloakingRedirectUrl: dto.cloakingRedirectUrl || null,
+        cloakingType: dto.cloakingType,
+        leadOnClick: dto.leadOnClick,
+        leadOnAutoRedirect: dto.leadOnAutoRedirect,
         tiktokBrowserHint: dto.tiktokBrowserHint,
         tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
       },
@@ -546,6 +553,9 @@ export class LandingsService {
         // '' от клиента — явная очистка (см. UpdateLandingDto), иначе Prisma записала бы
         // пустую строку как значение вместо NULL.
         cloakingRedirectUrl: dto.cloakingRedirectUrl === '' ? null : dto.cloakingRedirectUrl,
+        cloakingType: dto.cloakingType,
+        leadOnClick: dto.leadOnClick,
+        leadOnAutoRedirect: dto.leadOnAutoRedirect,
         tiktokBrowserHint: dto.tiktokBrowserHint,
         tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
       },
@@ -554,23 +564,36 @@ export class LandingsService {
 
   // Создать новый CUSTOM-лендинг сразу из ZIP — отдельно от createFromTemplate,
   // чтобы в UI не нужен был промежуточный "создать пустой лендинг, потом загрузить в него ZIP".
-  async createCustom(projectId: string, companyId: string, dto: UploadCustomLandingDto, file: Express.Multer.File, createdById?: string): Promise<Landing> {
+  async createCustom(
+    projectId: string,
+    companyId: string,
+    dto: UploadCustomLandingDto,
+    file: Express.Multer.File,
+    createdById?: string,
+  ): Promise<{ landing: Landing; checks: LandingReviewCheck[] }> {
     const landing = await this.prisma.landing.create({
       data: { projectId, companyId, createdById, name: dto.name, type: 'CUSTOM', status: LandingStatus.DRAFT },
     });
-    const uploaded = await this.processZipUpload(landing, file);
-    // Автопубликация (запрос пользователя 2026-08-20) — см. полный комментарий в createFromTemplate.
-    return this.publish(uploaded.id, companyId);
+    return this.processAndReviewZip(landing, file, companyId);
   }
 
   // Перезалить ZIP в существующий лендинг (первая загрузка переводит его в CUSTOM,
   // повторная — заменяет файлы, например при TEMPLATE → CUSTOM миграции или правке вёрстки).
-  async uploadCustomLanding(id: string, companyId: string, file: Express.Multer.File): Promise<Landing> {
+  // Проходит через тот же review-гейт, что и первая загрузка (запрос пользователя 2026-09-07:
+  // "дать статус активен... потом уже закончить создание") — уже ПУБЛИКОВАННЫЙ лендинг может
+  // вернуться в DRAFT, если замененный архив не проходит проверку. Это осознанное поведение:
+  // до этой правки перезаливка вообще не трогала статус, даже если новый архив был битым.
+  async uploadCustomLanding(id: string, companyId: string, file: Express.Multer.File): Promise<{ landing: Landing; checks: LandingReviewCheck[] }> {
     const landing = await this.findOne(id, companyId);
-    return this.processZipUpload(landing, file);
+    return this.processAndReviewZip(landing, file, companyId);
   }
 
-  private async processZipUpload(landing: Landing, file: Express.Multer.File): Promise<Landing> {
+  // Общая структурная валидация ZIP (расширение/размер/читаемость/zip-slip/наличие index.html)
+  // — одинаково жёсткая (hard-fail) и для основного CUSTOM-контента, и для белой страницы
+  // клоакинга (запрос пользователя 2026-09-23) — вынесено, чтобы не дублировать. "Судьба"
+  // результата (заливать сразу и публиковать позже / отклонить целиком при провале review)
+  // остаётся разной, см. processAndReviewZip vs uploadCloakingPrelanding ниже.
+  private openLandingZip(file: Express.Multer.File): { zip: AdmZip; entryNames: Set<string>; indexHtml: string; rootPrefix: string } {
     if (!file) throw new BadRequestException('Файл не передан');
     if (!file.originalname.toLowerCase().endsWith('.zip') && file.mimetype !== 'application/zip') {
       throw new BadRequestException('Только ZIP-файлы');
@@ -578,8 +601,6 @@ export class LandingsService {
     if (file.size > MAX_ZIP_SIZE) {
       throw new BadRequestException('Максимальный размер ZIP — 50MB');
     }
-
-    const extractPath = path.join('/tmp', `landing-${landing.id}-${Date.now()}`);
 
     let zip: AdmZip;
     try {
@@ -590,31 +611,285 @@ export class LandingsService {
 
     // Защита от zip-slip помимо встроенной в adm-zip (>=0.5.2) — не доверяем единственному
     // слою защиты при работе с файлами, загруженными произвольным пользователем.
-    for (const entry of zip.getEntries()) {
+    const entries = zip.getEntries();
+    for (const entry of entries) {
       if (entry.entryName.includes('..') || path.isAbsolute(entry.entryName)) {
         throw new BadRequestException('Архив содержит недопустимые пути');
       }
     }
 
-    const hasIndex = zip.getEntries().some((e) => e.entryName.toLowerCase() === 'index.html');
-    if (!hasIndex) {
+    let rootPrefix = '';
+    let indexEntry = entries.find((e) => e.entryName.toLowerCase() === 'index.html');
+
+    // Частая ошибка при упаковке (запрос пользователя 2026-09-23) — зазипована сама папка
+    // сайта, а не её содержимое, поэтому index.html лежит на уровень глубже (my-site/index.html).
+    // Если index.html нет в истинном корне, но ВСЕ записи архива лежат под одной и той же
+    // единственной папкой верхнего уровня — считаем эту папку корнем и ищем index.html в ней.
+    // Не срабатывает, если рядом с папкой в архиве есть ещё что-то (тогда "единственной папки"
+    // уже нет) — намеренно консервативно, чтобы не гадать в неоднозначных случаях.
+    if (!indexEntry) {
+      const topLevelNames = new Set(entries.map((e) => e.entryName.split('/')[0]).filter(Boolean));
+      if (topLevelNames.size === 1) {
+        const [onlyTopLevel] = topLevelNames;
+        const candidatePrefix = `${onlyTopLevel}/`;
+        const nestedIndex = entries.find((e) => e.entryName.toLowerCase() === `${candidatePrefix}index.html`.toLowerCase());
+        if (nestedIndex) {
+          rootPrefix = candidatePrefix;
+          indexEntry = nestedIndex;
+        }
+      }
+    }
+
+    if (!indexEntry) {
       throw new BadRequestException('ZIP должен содержать index.html в корне архива');
     }
 
+    // Захватываем содержимое ДО извлечения на диск — нужно для review-проверок ниже (структура
+    // HTML, {{TG_REDIRECT_URL}}, битые относительные ссылки на файлы архива). Пути в entryNames
+    // отдаются УЖЕ без rootPrefix — реальный сайт живёт "как будто" в корне архива, ссылки в
+    // index.html (href="style.css") сравниваются именно с такими относительными путями.
+    const indexHtml = indexEntry.getData().toString('utf-8');
+    const entryNames = new Set(
+      entries
+        .filter((e) => e.entryName.startsWith(rootPrefix) && e.entryName !== rootPrefix)
+        .map((e) => e.entryName.slice(rootPrefix.length)),
+    );
+
+    return { zip, entryNames, indexHtml, rootPrefix };
+  }
+
+  private async processAndReviewZip(
+    landing: Landing,
+    file: Express.Multer.File,
+    companyId: string,
+  ): Promise<{ landing: Landing; checks: LandingReviewCheck[] }> {
+    const { zip, entryNames, indexHtml, rootPrefix } = this.openLandingZip(file);
+    const extractPath = path.join('/tmp', `landing-${landing.id}-${Date.now()}`);
+
+    let updatedLanding: Landing;
     try {
       zip.extractAllTo(extractPath, true);
 
       const basePath = `landings/${landing.id}`;
       await this.storage.removePrefix(basePath);
-      await this.storage.uploadDirectory(extractPath, basePath);
+      // rootPrefix непусто, если index.html был обнаружен не в истинном корне архива, а внутри
+      // единственной обёрточной папки (см. openLandingZip) — заливаем именно её содержимое.
+      await this.storage.uploadDirectory(path.join(extractPath, rootPrefix), basePath);
 
-      return this.prisma.landing.update({
+      updatedLanding = await this.prisma.landing.update({
         where: { id: landing.id },
         data: { type: 'CUSTOM', customBasePath: basePath, templateId: null, templateData: Prisma.JsonNull },
       });
     } finally {
       await fs.rm(extractPath, { recursive: true, force: true }).catch(() => {});
     }
+
+    const checks = reviewLandingHtml(indexHtml, entryNames);
+    if (checks.every((c) => c.passed)) {
+      // Автопубликация только после реальной проверки (запрос пользователя 2026-09-07) — см.
+      // полный комментарий у publish() ниже; до этой правки публикация была безусловной сразу
+      // после загрузки (запрос пользователя 2026-08-20).
+      updatedLanding = await this.publish(updatedLanding.id, companyId);
+    } else {
+      updatedLanding = await this.prisma.landing.update({
+        where: { id: updatedLanding.id },
+        data: { lastError: summarizeFailedChecks(checks) },
+      });
+    }
+
+    return { landing: updatedLanding, checks };
+  }
+
+  // Белая страница для клоакинга типа PRELANDING (запрос пользователя 2026-09-23) — в отличие
+  // от processAndReviewZip выше, ЗДЕСЬ провал review — это отказ целиком: ни MinIO, ни БД не
+  // трогаются, если хоть один чек не прошёл ("сломаную не пропускаем" — явное требование
+  // пользователя, строже, чем поведение для основного контента лендинга, который заливается
+  // даже проваленным и просто не публикуется). requireRedirectPlaceholder:false — white page
+  // клоакинга не имеет кнопки перехода в Telegram, это decoy-страница.
+  async uploadCloakingPrelanding(
+    id: string,
+    companyId: string,
+    file: Express.Multer.File,
+  ): Promise<{ accepted: boolean; checks: LandingReviewCheck[] }> {
+    const landing = await this.findOne(id, companyId);
+    const { zip, entryNames, indexHtml, rootPrefix } = this.openLandingZip(file);
+
+    const checks = reviewLandingHtml(indexHtml, entryNames, { requireRedirectPlaceholder: false });
+    if (!checks.every((c) => c.passed)) {
+      return { accepted: false, checks };
+    }
+
+    const extractPath = path.join('/tmp', `landing-cloak-prelanding-${landing.id}-${Date.now()}`);
+    try {
+      zip.extractAllTo(extractPath, true);
+      // Отдельный от landings/{id} (основной CUSTOM-контент) префикс — оба могут сосуществовать
+      // на одном лендинге (TEMPLATE/EXTERNAL-лендинг тоже может иметь клоакинг-предзагрузку).
+      const basePath = `landing-cloaking-prelanding/${landing.id}`;
+      await this.storage.removePrefix(basePath);
+      await this.storage.uploadDirectory(path.join(extractPath, rootPrefix), basePath);
+      await this.prisma.landing.update({ where: { id: landing.id }, data: { cloakingPrelandingBasePath: basePath } });
+    } finally {
+      await fs.rm(extractPath, { recursive: true, force: true }).catch(() => {});
+    }
+
+    return { accepted: true, checks };
+  }
+
+  async removeCloakingPrelanding(id: string, companyId: string): Promise<Landing> {
+    const landing = await this.findOne(id, companyId);
+    if (landing.cloakingPrelandingBasePath) {
+      await this.storage.removePrefix(landing.cloakingPrelandingBasePath);
+    }
+    return this.prisma.landing.update({ where: { id }, data: { cloakingPrelandingBasePath: null } });
+  }
+
+  // Альтернатива ZIP-загрузке (запрос пользователя 2026-09-23: "просто сразу код кидать в поле")
+  // — весь HTML одним блоком, без отдельных файлов-ассетов. entryNames пустой Set: ссылки на
+  // локальные файлы (href="style.css") у вставленного кода корректно провалят проверку —
+  // никаких других файлов не загружалось, у них и не может быть реального адреса. Тот же
+  // строгий гейт, что и у ZIP-варианта: провал проверки не пишет вообще ничего.
+  async uploadCloakingPrelandingHtml(id: string, companyId: string, html: string): Promise<{ accepted: boolean; checks: LandingReviewCheck[] }> {
+    const landing = await this.findOne(id, companyId);
+
+    const checks = reviewLandingHtml(html, new Set(), { requireRedirectPlaceholder: false });
+    if (!checks.every((c) => c.passed)) {
+      return { accepted: false, checks };
+    }
+
+    const basePath = `landing-cloaking-prelanding/${landing.id}`;
+    // removePrefix — на случай, если раньше сюда уже заливали ZIP с ассетами: вставленный код
+    // заменяет white page целиком, старые файлы не должны остаться висеть рядом с новым index.html.
+    await this.storage.removePrefix(basePath);
+    await this.storage.uploadBuffer(`${basePath}/index.html`, Buffer.from(html, 'utf-8'), 'text/html');
+    await this.prisma.landing.update({ where: { id: landing.id }, data: { cloakingPrelandingBasePath: basePath } });
+
+    return { accepted: true, checks };
+  }
+
+  // Лендинг клиента на ЕГО собственном сервере/домене (запрос пользователя 2026-09-07) — мы его
+  // никогда не рендерим (в отличие от TEMPLATE/CUSTOM, см. LandingRendererService.renderAndServe,
+  // ветка EXTERNAL там намеренно 404-ит), только принимаем трекинг-события с уже проставленным
+  // data-landing-id и проверяем подключение. Без автопубликации (в отличие от createCustom) —
+  // верификация отдельное явное действие клиента через verifyExternalLanding ниже.
+  async createExternal(projectId: string, companyId: string, dto: CreateExternalLandingDto, createdById?: string): Promise<Landing> {
+    return this.prisma.landing.create({
+      data: { projectId, companyId, createdById, name: dto.name, type: 'EXTERNAL', status: LandingStatus.DRAFT, externalUrl: dto.externalUrl },
+    });
+  }
+
+  // "Проверить подключение" — тот же принцип, что WebsiteProvider.initialize() уже применяет к
+  // ChannelType.WEBSITE (см. common/safe-html-fetch.util.ts, вынесенный оттуда же), но с
+  // дополнительной проверкой data-landing-id — здесь важно подтвердить, что на странице стоит
+  // сниппет ИМЕННО этого лендинга, а не просто какой-то сниппет проекта.
+  async verifyExternalLanding(id: string, companyId: string): Promise<{ landing: Landing; checks: LandingReviewCheck[] }> {
+    const landing = await this.findOne(id, companyId);
+    if (landing.type !== 'EXTERNAL' || !landing.externalUrl) {
+      throw new BadRequestException('Это не внешний лендинг или у него не указан адрес');
+    }
+
+    const project = await this.prisma.project.findUnique({ where: { id: landing.projectId }, include: { channel: true } });
+    if (!project) throw new NotFoundException('Проект не найден');
+
+    let html: string | null = null;
+    let fetchError: string | null = null;
+    try {
+      html = await fetchPublicHtml(landing.externalUrl, { userAgent: 'MWTRACK-LandingVerifier/1.0' });
+    } catch (error) {
+      fetchError = (error as Error).message;
+    }
+
+    const cdnUrl = process.env.CDN_URL || '';
+    const checks: LandingReviewCheck[] = [
+      {
+        id: 'page-reachable',
+        label: 'Страница доступна',
+        passed: html !== null,
+        detail: fetchError ?? undefined,
+      },
+      {
+        id: 'script-tag',
+        label: 'Скрипт трекинга установлен',
+        passed: !!html && !!cdnUrl && html.includes(`${cdnUrl}/track.js`),
+        detail: html && (!cdnUrl || !html.includes(`${cdnUrl}/track.js`)) ? 'На странице не найден тег track.js — проверьте, что вставили его целиком.' : undefined,
+      },
+      {
+        id: 'project-id',
+        label: 'Скрипт указывает на этот проект',
+        passed: !!html && html.includes(`data-project-id="${project.publicToken}"`),
+        detail: html && !html.includes(`data-project-id="${project.publicToken}"`) ? 'Тег на странице ссылается на другой проект — скопируйте актуальный сниппет.' : undefined,
+      },
+      {
+        id: 'landing-id',
+        label: 'Скрипт указывает на этот лендинг',
+        passed: !!html && html.includes(`data-landing-id="${landing.id}"`),
+        detail: html && !html.includes(`data-landing-id="${landing.id}"`) ? 'В теге нет data-landing-id этого лендинга — статистика не будет привязываться именно к нему.' : undefined,
+      },
+    ];
+
+    // Кнопка перехода имеет смысл только для Telegram-режима — у WEBSITE-канала нет /tg-redirect,
+    // у него собственный сценарий (переход сразу на сайт), поэтому эту проверку не применяем.
+    if (project.channel?.type === 'TELEGRAM') {
+      checks.push({
+        id: 'join-link',
+        label: 'Кнопка перехода в Telegram настроена',
+        passed: !!html && html.includes(`/track/${project.publicToken}/tg-redirect`),
+        detail: html && !html.includes(`/track/${project.publicToken}/tg-redirect`) ? 'На странице не найдена ссылка на переход в Telegram — проверьте href кнопки.' : undefined,
+      });
+      // Баг-репорт 2026-09-08: клики по кнопке реально уходили на сервер, но тихо отклонялись —
+      // без data-track="Lead" сервер не признаёт название события и отбрасывает его 400-й
+      // ошибкой, а SDK не логирует неудачные запросы, поэтому проблема была не видна ни на
+      // странице клиента, ни в самой СРМ до ручного разбора. См. hasTrackedJoinButton.
+      checks.push({
+        id: 'click-tracking',
+        label: 'Клик по кнопке трекается как Lead',
+        passed: !!html && hasTrackedJoinButton(html, project.publicToken),
+        detail:
+          html && !hasTrackedJoinButton(html, project.publicToken)
+            ? 'На кнопке перехода нет атрибута data-track="Lead" — клики по ней не будут засчитаны в воронке. Добавьте data-track="Lead" на тег <a> с этой ссылкой.'
+            : undefined,
+      });
+    }
+
+    let updatedLanding: Landing;
+    if (checks.every((c) => c.passed)) {
+      updatedLanding = await this.publish(id, companyId);
+    } else {
+      updatedLanding = await this.prisma.landing.update({
+        where: { id },
+        data: { lastError: summarizeFailedChecks(checks) },
+      });
+    }
+
+    return { landing: updatedLanding, checks };
+  }
+
+  // Готовый копируемый тег + ссылка кнопки для конкретного EXTERNAL-лендинга — тот же тег, что
+  // ProjectsService.getSnippet() выдаёт для проекта в целом, плюс data-landing-id (запрос
+  // пользователя 2026-09-07 — без него события с внешней страницы не привязывались бы именно к
+  // этому лендингу, только к проекту).
+  async getExternalLandingSnippet(id: string, companyId: string): Promise<{ scriptTag: string; joinButtonHref: string | null }> {
+    const landing = await this.findOne(id, companyId);
+    if (landing.type !== 'EXTERNAL') {
+      throw new BadRequestException('Это не внешний лендинг');
+    }
+
+    const project = await this.prisma.project.findUnique({ where: { id: landing.projectId }, include: { channel: true } });
+    if (!project) throw new NotFoundException('Проект не найден');
+
+    const apiUrl = `${process.env.API_URL}/api/v1`;
+    const paramMapAttr = JSON.stringify(resolveParamMap(project.linkParamMap)).replace(/"/g, '&quot;');
+    const scriptTag = `<!-- TrafficCRM Tracking -->
+<script src="${process.env.CDN_URL}/track.js"
+        data-project-id="${project.publicToken}"
+        data-api-url="${apiUrl}"
+        data-landing-id="${landing.id}"
+        data-param-map="${paramMapAttr}"
+        async>
+</script>`;
+
+    const joinButtonHref = project.channel?.type === 'TELEGRAM' ? `${apiUrl}/track/${project.publicToken}/tg-redirect` : null;
+
+    return { scriptTag, joinButtonHref };
   }
 
   async publish(id: string, companyId: string): Promise<Landing> {
@@ -632,12 +907,12 @@ export class LandingsService {
       if (project?.channel) {
         const inviteLink = await this.telegramProvider.createLandingInviteLink(project.channel, landing.name);
         if (inviteLink) {
-          return this.prisma.landing.update({ where: { id }, data: { status: LandingStatus.PUBLISHED, tgInviteLink: inviteLink } });
+          return this.prisma.landing.update({ where: { id }, data: { status: LandingStatus.PUBLISHED, tgInviteLink: inviteLink, lastError: null } });
         }
       }
     }
 
-    return this.prisma.landing.update({ where: { id }, data: { status: LandingStatus.PUBLISHED } });
+    return this.prisma.landing.update({ where: { id }, data: { status: LandingStatus.PUBLISHED, lastError: null } });
   }
 
   async unpublish(id: string, companyId: string): Promise<Landing> {
@@ -681,6 +956,12 @@ export class LandingsService {
       }
       if (landing.abTestGroupId) {
         throw new BadRequestException(`Лендинг «${landing.name}» уже участвует в другом тесте`);
+      }
+      // Внешние лендинги исключены из A/B/n-тестов (запрос пользователя 2026-09-07) — единая
+      // ссылка со случайным сплитом между чужими доменами потребовала бы отдельного
+      // редирект-механизма на нашей стороне, от которого пользователь явно отказался.
+      if (landing.type === 'EXTERNAL') {
+        throw new BadRequestException(`Лендинг «${landing.name}» — внешний, его нельзя добавить в A/B-тест`);
       }
     }
   }

@@ -80,4 +80,11 @@ export class AdminCompanyController {
   forceDeleteDomain(@Param('id') id: string, @Param('domainId') domainId: string, @CurrentUser() user: AuthUser) {
     return this.adminCompanyService.forceDeleteDomain(id, user.userId, domainId);
   }
+
+  // Вход в дашборд компании под сессией Owner'а, для дебага (запрос пользователя 2026-09-24) —
+  // @Roles(SUPER_ADMIN) уже на уровне класса, доп. проверка не нужна.
+  @Post('impersonate')
+  impersonate(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.adminCompanyService.impersonate(id, user.userId);
+  }
 }

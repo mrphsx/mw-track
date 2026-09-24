@@ -10,6 +10,7 @@ import { LandingsService } from '../landings/landings.service';
 import { LandingRendererService } from '../landings/landing-renderer.service';
 import { DomainsService } from '../domains/domains.service';
 import { TeamService } from '../team/team.service';
+import { AuthService } from '../auth/auth.service';
 import { runAsCompany } from './run-as-company.util';
 import { TopUpBalanceDto } from './dto/top-up-balance.dto';
 import { UpdateCompanyRestrictionsDto } from './dto/update-company-restrictions.dto';
@@ -29,6 +30,7 @@ export class AdminCompanyService {
     private rendererService: LandingRendererService,
     private domainsService: DomainsService,
     private teamService: TeamService,
+    private authService: AuthService,
   ) {}
 
   // ModuleRef, не constructor injection — подтверждено вживую (2026-07-20), что прямой импорт
@@ -242,5 +244,27 @@ export class AdminCompanyService {
         newValue: {},
       },
     });
+  }
+
+  // Импersonation — вход в дашборд компании под реальной сессией её Owner'а, для дебага
+  // (запрос пользователя 2026-09-24). В отличие от COMPANY_VIEWED выше (fire-and-forget),
+  // здесь audit-лог пишется СИНХРОННО и fail-closed: если запись в AdminActionLog не удалась,
+  // вся операция должна упасть, а не выдать доступ к чужой сессии без следа в аудите. Сам
+  // access-токен/redis-код готовит AuthService.startImpersonation — этот метод только
+  // проверяет права (через @Roles(SUPER_ADMIN) в контроллере) и логирует.
+  async impersonate(companyId: string, adminUserId: string) {
+    const { code, targetUserId, targetUserEmail } = await this.authService.startImpersonation(companyId);
+
+    await this.prisma.adminActionLog.create({
+      data: {
+        adminUserId,
+        companyId,
+        action: 'IMPERSONATION_STARTED',
+        previousValue: {},
+        newValue: { targetUserId, targetUserEmail, targetUserRole: 'OWNER' },
+      },
+    });
+
+    return { code };
   }
 }
