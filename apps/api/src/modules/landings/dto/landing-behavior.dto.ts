@@ -1,6 +1,5 @@
-import { IsArray, IsBoolean, IsEnum, IsOptional, IsString, IsUrl, Matches, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { CloakingType } from '@prisma/client';
 
 // Тексты попапа-подсказки (запрос пользователя 2026-08-27, "форма для замены текстов как у
 // конкурента", дефолт — английский, задаётся встроенным дефолтом в SDK, не здесь) — каждое поле
@@ -44,10 +43,13 @@ export class TiktokHintTextsDto {
   copiedText?: string;
 }
 
-// Авторедирект и клоакинг — общие для всех типов лендинга (TEMPLATE/CUSTOM/EXTERNAL) и для
-// создания, и для редактирования (запрос пользователя 2026-07-03: "внедрить и при создании,
+// Авторедирект и Lead-переключатели — общие для всех типов лендинга (TEMPLATE/CUSTOM/EXTERNAL) и
+// для создания, и для редактирования (запрос пользователя 2026-07-03: "внедрить и при создании,
 // а не только при редактировании"). Вынесено в отдельный класс, чтобы не дублировать
-// валидаторы между CreateLandingFromTemplateDto и UpdateLandingDto.
+// валидаторы между CreateLandingFromTemplateDto и UpdateLandingDto. Конкретные ПРАВИЛА клоакинга
+// сюда больше НЕ входят — с 2026-09-24 это отдельный движок (CloakingRule/CloakingCondition, см.
+// dto/cloaking-rule.dto.ts) со своими роутами; cloakingEnabled остаётся здесь как был — это
+// просто общий выключатель "проверять ли вообще правила ниже", а не конкретное правило.
 export class LandingBehaviorDto {
   @IsOptional()
   @IsBoolean()
@@ -68,29 +70,6 @@ export class LandingBehaviorDto {
   @IsOptional()
   @IsBoolean()
   cloakingEnabled?: boolean;
-
-  // ISO 3166-1 alpha-2, верхний регистр (RU, US, ...) — сверяется 1-в-1 с cf-ipcountry/
-  // geoip-lite в LandingRendererService, поэтому формат фиксирован на уровне валидации,
-  // а не приводится регистронезависимо в рантайме на каждый запрос лендинга.
-  @IsOptional()
-  @IsArray()
-  @Matches(/^[A-Z]{2}$/, { each: true, message: 'Код страны — 2 латинские буквы в верхнем регистре, например RU' })
-  cloakingCountries?: string[];
-
-  // Пустая строка — способ очистить ранее заданную ссылку (см. LandingsService.update),
-  // поэтому пропускает @IsUrl, а не отклоняется валидацией как невалидный URL.
-  @IsOptional()
-  @ValidateIf((o) => o.cloakingRedirectUrl !== '')
-  @IsUrl({ require_protocol: true })
-  cloakingRedirectUrl?: string;
-
-  // Тип клоакинга (запрос пользователя 2026-09-23) — REDIRECT (текущее поведение) или
-  // PRELANDING (белая страница, загружается отдельным multipart-эндпоинтом, см.
-  // LandingsController.uploadCloakingPrelanding). cloakingRedirectUrl выше остаётся общим —
-  // используется REDIRECT напрямую и PRELANDING как fallback, пока white page не готова.
-  @IsOptional()
-  @IsEnum(CloakingType)
-  cloakingType?: CloakingType;
 
   // Доп. инструкции для TikTok (запрос пользователя 2026-08-25) — см. Landing.tiktokBrowserHint
   // в schema.prisma для полного объяснения проблемы и подхода.

@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { Injectable, Logger } from '@nestjs/common';
-import { Landing } from '@prisma/client';
+import { CloakingRule, Landing } from '@prisma/client';
 import { Request, Response } from 'express';
 import { StorageService } from '../storage.service';
 import { CloakingHandler } from './cloaking-handler.interface';
@@ -10,7 +10,9 @@ import { RedirectCloakingHandler } from './redirect-cloaking.handler';
 // паттерн раздачи из MinIO, что и LandingRendererService.serveCustomFile для CUSTOM-лендинга,
 // но НАМЕРЕННО без injectTrackingScripts: заблокированный по гео посетитель не должен получать
 // никакого трекинга — тот же инвариант, что уже действовал для REDIRECT (см. комментарий в
-// LandingRendererService.renderAndServe).
+// LandingRendererService.renderAndServe). Белая страница ОДНА общая на лендинг
+// (Landing.cloakingPrelandingBasePath), не своя на каждое правило (запрос пользователя
+// 2026-09-24) — любое правило с action=PRELANDING отдаёт один и тот же файл.
 @Injectable()
 export class PrelandingCloakingHandler implements CloakingHandler {
   private readonly logger = new Logger(PrelandingCloakingHandler.name);
@@ -20,12 +22,11 @@ export class PrelandingCloakingHandler implements CloakingHandler {
     private readonly redirectHandler: RedirectCloakingHandler,
   ) {}
 
-  async serveBlockedVisitor(landing: Landing, subPath: string, req: Request, res: Response): Promise<void> {
-    // Тип выбран, но white page ещё не загружена (или удалена) — безопасный дефолт: тот же,
-    // что у REDIRECT, а не 404/500 наружу заблокированному посетителю. cloakingType и upload —
-    // два независимых запроса без гарантированного порядка, это не ошибочное состояние.
+  async serveBlockedVisitor(landing: Landing, rule: CloakingRule, subPath: string, req: Request, res: Response): Promise<void> {
+    // White page ещё не загружена (или удалена) — безопасный дефолт: тот же, что у REDIRECT
+    // (используя URL с самого правила), а не 404/500 наружу заблокированному посетителю.
     if (!landing.cloakingPrelandingBasePath) {
-      await this.redirectHandler.serveBlockedVisitor(landing, subPath, req, res);
+      await this.redirectHandler.serveBlockedVisitor(landing, rule, subPath, req, res);
       return;
     }
 

@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import AdmZip from 'adm-zip';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AbTestGroup, Landing, LandingStatus, Permission, Prisma, UserRole } from '@prisma/client';
+import { AbTestGroup, CloakingConditionField, Landing, LandingStatus, Permission, Prisma, UserRole } from '@prisma/client';
 import { Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql } from '../../common/timezone.util';
@@ -16,6 +16,7 @@ import { UpdateLandingDto } from './dto/update-landing.dto';
 import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
+import { CreateCloakingRuleDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
 import { fetchPublicHtml } from '../../common/safe-html-fetch.util';
 import { resolveParamMap } from '../tracking/link-params.const';
 
@@ -229,9 +230,6 @@ export class LandingsService {
         status: LandingStatus.DRAFT,
         autoRedirect: dto.autoRedirect,
         cloakingEnabled: dto.cloakingEnabled,
-        cloakingCountries: dto.cloakingCountries,
-        cloakingRedirectUrl: dto.cloakingRedirectUrl || null,
-        cloakingType: dto.cloakingType,
         leadOnClick: dto.leadOnClick,
         leadOnAutoRedirect: dto.leadOnAutoRedirect,
         tiktokBrowserHint: dto.tiktokBrowserHint,
@@ -549,11 +547,6 @@ export class LandingsService {
         templateData: { ...existingData, ...templateDataPatch } as Prisma.InputJsonValue,
         autoRedirect: dto.autoRedirect,
         cloakingEnabled: dto.cloakingEnabled,
-        cloakingCountries: dto.cloakingCountries,
-        // '' от клиента — явная очистка (см. UpdateLandingDto), иначе Prisma записала бы
-        // пустую строку как значение вместо NULL.
-        cloakingRedirectUrl: dto.cloakingRedirectUrl === '' ? null : dto.cloakingRedirectUrl,
-        cloakingType: dto.cloakingType,
         leadOnClick: dto.leadOnClick,
         leadOnAutoRedirect: dto.leadOnAutoRedirect,
         tiktokBrowserHint: dto.tiktokBrowserHint,
@@ -764,6 +757,107 @@ export class LandingsService {
     await this.prisma.landing.update({ where: { id: landing.id }, data: { cloakingPrelandingBasePath: basePath } });
 
     return { accepted: true, checks };
+  }
+
+  // Платный тир Keitaro-парности (запрос пользователя 2026-09-24) — evaluator для этих типов
+  // не реализован (см. CloakingConditionField в schema.prisma), фронтенд показывает их
+  // задизейбленными с подписью "скоро будет доступно". Проверка здесь — второй рубеж защиты
+  // (defense in depth) на случай прямого запроса к API в обход UI, не единственный.
+  private static readonly PAID_CLOAKING_FIELDS: CloakingConditionField[] = ['PROXY', 'ISP', 'MOBILE_OPERATOR', 'CONNECTION_TYPE'];
+
+  private assertNoPaidConditionFields(conditions?: { field: CloakingConditionField }[]): void {
+    const paidField = conditions?.find((c) => LandingsService.PAID_CLOAKING_FIELDS.includes(c.field));
+    if (paidField) {
+      throw new BadRequestException(`Тип условия "${paidField.field}" скоро будет доступен`);
+    }
+  }
+
+  // Движок правил клоакинга (запрос пользователя 2026-09-24, "довести до уровня Keitaro") — CRUD
+  // правил одного лендинга. Условия правила заменяются ЦЕЛИКОМ при каждом PATCH с переданным
+  // conditions (delete+recreate в одной транзакции) — условий на правило всегда немного,
+  // диффинг не даёт выгоды и только усложняет код.
+  async listCloakingRules(id: string, companyId: string) {
+    await this.findOne(id, companyId);
+    return this.prisma.cloakingRule.findMany({
+      where: { landingId: id },
+      orderBy: { position: 'asc' },
+      include: { conditions: true },
+    });
+  }
+
+  async createCloakingRule(id: string, companyId: string, dto: CreateCloakingRuleDto) {
+    const landing = await this.findOne(id, companyId);
+    this.assertNoPaidConditionFields(dto.conditions);
+
+    const last = await this.prisma.cloakingRule.findFirst({
+      where: { landingId: landing.id },
+      orderBy: { position: 'desc' },
+      select: { position: true },
+    });
+
+    return this.prisma.cloakingRule.create({
+      data: {
+        landingId: landing.id,
+        name: dto.name,
+        position: (last?.position ?? -1) + 1,
+        matchLogic: dto.matchLogic,
+        action: dto.action,
+        actionRedirectUrl: dto.actionRedirectUrl,
+        actionCustomHtml: dto.actionCustomHtml,
+        actionCustomText: dto.actionCustomText,
+        conditions: dto.conditions ? { create: dto.conditions.map((c) => ({ field: c.field, negate: c.negate, config: c.config as Prisma.InputJsonValue })) } : undefined,
+      },
+      include: { conditions: true },
+    });
+  }
+
+  private async assertRuleInLanding(landingId: string, companyId: string, ruleId: string): Promise<void> {
+    await this.findOne(landingId, companyId);
+    const rule = await this.prisma.cloakingRule.findFirst({ where: { id: ruleId, landingId } });
+    if (!rule) throw new NotFoundException('Правило клоакинга не найдено');
+  }
+
+  async updateCloakingRule(id: string, companyId: string, ruleId: string, dto: UpdateCloakingRuleDto) {
+    await this.assertRuleInLanding(id, companyId, ruleId);
+    this.assertNoPaidConditionFields(dto.conditions);
+
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.conditions) {
+        await tx.cloakingCondition.deleteMany({ where: { ruleId } });
+      }
+      return tx.cloakingRule.update({
+        where: { id: ruleId },
+        data: {
+          name: dto.name,
+          isEnabled: dto.isEnabled,
+          matchLogic: dto.matchLogic,
+          action: dto.action,
+          actionRedirectUrl: dto.actionRedirectUrl,
+          actionCustomHtml: dto.actionCustomHtml,
+          actionCustomText: dto.actionCustomText,
+          conditions: dto.conditions
+            ? { create: dto.conditions.map((c) => ({ field: c.field, negate: c.negate, config: c.config as Prisma.InputJsonValue })) }
+            : undefined,
+        },
+        include: { conditions: true },
+      });
+    });
+  }
+
+  async removeCloakingRule(id: string, companyId: string, ruleId: string): Promise<void> {
+    await this.assertRuleInLanding(id, companyId, ruleId);
+    await this.prisma.cloakingRule.delete({ where: { id: ruleId } });
+  }
+
+  async reorderCloakingRules(id: string, companyId: string, ruleIds: string[]): Promise<void> {
+    const landing = await this.findOne(id, companyId);
+    const existing = await this.prisma.cloakingRule.findMany({ where: { landingId: landing.id }, select: { id: true } });
+    const existingIds = new Set(existing.map((r) => r.id));
+    if (ruleIds.length !== existing.length || !ruleIds.every((rid) => existingIds.has(rid))) {
+      throw new BadRequestException('Список правил не совпадает с текущими правилами лендинга');
+    }
+
+    await this.prisma.$transaction(ruleIds.map((ruleId, index) => this.prisma.cloakingRule.update({ where: { id: ruleId }, data: { position: index } })));
   }
 
   // Лендинг клиента на ЕГО собственном сервере/домене (запрос пользователя 2026-09-07) — мы его

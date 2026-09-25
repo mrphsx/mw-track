@@ -11,6 +11,7 @@ import { LandingsService } from './landings.service';
 import { LandingRendererService } from './landing-renderer.service';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { UploadPrelandingHtmlDto } from './dto/upload-prelanding-html.dto';
+import { CreateCloakingRuleDto, ReorderCloakingRulesDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -164,6 +165,45 @@ export class LandingsController {
   ) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     return this.landingsService.uploadCloakingPrelandingHtml(id, companyId, dto.html);
+  }
+
+  // Движок правил клоакинга (запрос пользователя 2026-09-24) — CRUD правил одного лендинга,
+  // те же LANDINGS_VIEW/LANDINGS_EDIT права, что и у остальных роутов клоакинга выше. Порядок
+  // роутов: 'reorder' объявлен раньше ':ruleId', иначе Nest принял бы 'reorder' за id правила.
+  @Get(':id/cloaking/rules')
+  async listCloakingRules(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    return this.landingsService.listCloakingRules(id, companyId);
+  }
+
+  @Post(':id/cloaking/rules')
+  async createCloakingRule(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: CreateCloakingRuleDto) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.createCloakingRule(id, companyId, dto);
+  }
+
+  @Patch(':id/cloaking/rules/reorder')
+  async reorderCloakingRules(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: ReorderCloakingRulesDto) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.landingsService.reorderCloakingRules(id, companyId, dto.ruleIds);
+  }
+
+  @Patch(':id/cloaking/rules/:ruleId')
+  async updateCloakingRule(
+    @Param('id') id: string,
+    @Param('ruleId') ruleId: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateCloakingRuleDto,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.updateCloakingRule(id, companyId, ruleId, dto);
+  }
+
+  @Delete(':id/cloaking/rules/:ruleId')
+  async removeCloakingRule(@Param('id') id: string, @Param('ruleId') ruleId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.landingsService.removeCloakingRule(id, companyId, ruleId);
   }
 
   @Post(':id/verify-connection')

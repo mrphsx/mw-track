@@ -59,9 +59,6 @@ interface LandingFull {
   leadOnClick: boolean;
   leadOnAutoRedirect: boolean;
   cloakingEnabled: boolean;
-  cloakingCountries: string[];
-  cloakingRedirectUrl: string | null;
-  cloakingType: 'REDIRECT' | 'PRELANDING';
   cloakingPrelandingBasePath: string | null;
   tiktokBrowserHint: boolean;
   tiktokHintTexts: TiktokHintTexts | null;
@@ -90,10 +87,6 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
       // ?? — на случай лендинга, отданного до появления полей (старый кэш ответа)
       leadOnClick: landing.leadOnClick ?? true,
       leadOnAutoRedirect: landing.leadOnAutoRedirect ?? false,
-      cloakingEnabled: landing.cloakingEnabled,
-      cloakingType: landing.cloakingType ?? 'REDIRECT',
-      countriesText: landing.cloakingCountries.join(', '),
-      redirectUrl: landing.cloakingRedirectUrl || '',
       tiktokBrowserHint: landing.tiktokBrowserHint,
       tiktokHintTitle: hintTexts.title || '',
       tiktokHintSubtitle: hintTexts.subtitle || '',
@@ -121,12 +114,7 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
   return (
     <div className={`${STUDIO_CARD} p-5 space-y-4`}>
       <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Опции лендинга</h2>
-      <LandingBehaviorFields
-        idPrefix="opt"
-        state={state}
-        onChange={(patch) => setState((s) => ({ ...s, ...patch }))}
-        hideCloaking
-      />
+      <LandingBehaviorFields idPrefix="opt" state={state} onChange={(patch) => setState((s) => ({ ...s, ...patch }))} />
       {error && <p className="text-sm text-red-500">{error}</p>}
       <StudioLinkButton variant="primary" onClick={() => save.mutate()} disabled={save.isPending}>
         {save.isPending ? 'Сохраняем...' : 'Сохранить'}

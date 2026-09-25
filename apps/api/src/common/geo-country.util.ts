@@ -22,3 +22,31 @@ export function resolveVisitorCountry(req: Request): string | null {
   if (!ip) return null;
   return geoip.lookup(ip)?.country ?? null;
 }
+
+export interface VisitorGeo {
+  country: string | null;
+  region: string | null;
+  city: string | null;
+}
+
+// Для движка правил клоакинга (запрос пользователя 2026-09-24, REGION/CITY условия) — один
+// geoip-lite лукап на country+region+city вместо трёх отдельных, как если бы каждое условие
+// резолвило гео само по себе. Намеренно НЕ переиспользует resolveVisitorCountry выше (тот
+// остаётся нетронутым для своего единственного другого вызывающего —
+// LandingRendererService.injectTrackingScripts, Facebook Advanced Matching — трогать его
+// контракт ради этой функции рискованно) — здесь country резолвится по той же логике заново
+// (cf-ipcountry в приоритете, иначе geoip-lite), но region/city ТОЛЬКО из geoip-lite: у
+// Cloudflare нет аналога cf-ipcountry для города/региона.
+export function resolveVisitorGeo(req: Request): VisitorGeo {
+  const cfCountry = req.headers['cf-ipcountry'] as string | undefined;
+  const cfCountryResolved = cfCountry && cfCountry !== 'XX' && cfCountry !== 'T1' ? cfCountry.toUpperCase() : null;
+
+  const ip = getClientIp(req);
+  const lookup = ip ? geoip.lookup(ip) : null;
+
+  return {
+    country: cfCountryResolved ?? lookup?.country ?? null,
+    region: lookup?.region ?? null,
+    city: lookup?.city ?? null,
+  };
+}

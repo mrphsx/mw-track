@@ -1,24 +1,15 @@
 'use client';
 
-// Общие поля "поведения" лендинга — авторедирект и клоакинг по странам. Используется и на
+// Общие поля "поведения" лендинга — авторедирект и Lead-переключатели. Используется и на
 // странице статистики лендинга (редактирование через PATCH /landings/:id), и в обеих формах
 // создания (шаблон/ZIP) на /projects/[id]/landings — запрос пользователя 2026-07-03,
-// "внедрить и при создании, а не только при редактировании".
-import { Input } from '@/components/ui/input';
+// "внедрить и при создании, а не только при редактировании". Клоакинг с 2026-09-24 живёт
+// целиком на отдельной странице /cloaking (движок правил, см. components/cloaking/) — этот файл
+// его больше не касается вообще, ни здесь, ни в формах создания.
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { CloakingPrelandingUpload } from '@/components/cloaking-prelanding-upload';
-
-export type CloakingType = 'REDIRECT' | 'PRELANDING';
-
-// Подмножество полей клоакинга (запрос пользователя 2026-09-23: "вывести фильтрацию в
-// отдельную вкладку" — страница лендинга большая, а вариантов клоакинга будет всё больше).
-// Отдельный узкий тип, а не переиспользование LandingBehaviorState целиком, — чтобы вкладка
-// "Клоакинг" на странице редактирования могла сохранять СТРОГО эти 4 поля своим отдельным PATCH,
-// не имея возможности случайно затереть стейт вкладки "Опции" (и наоборот) устаревшей копией —
-// см. cloakingOnlyPayload/optionsOnlyPayload ниже.
-export type CloakingFieldsState = Pick<LandingBehaviorState, 'cloakingEnabled' | 'cloakingType' | 'countriesText' | 'redirectUrl'>;
 
 // Дефолты — те же строки, что встроены в apps/sdk/src/browser.ts (HINT_DEFAULTS). Дублируются
 // здесь как placeholder-подсказки в форме (запрос пользователя 2026-08-27: "оставьте поле
@@ -40,13 +31,6 @@ export interface LandingBehaviorState {
   // Landing.leadOnAutoRedirect в schema.prisma.
   leadOnClick: boolean;
   leadOnAutoRedirect: boolean;
-  cloakingEnabled: boolean;
-  // Тип клоакинга (запрос пользователя 2026-09-23) — REDIRECT (текущее поведение) или
-  // PRELANDING (белая страница, см. CloakingPrelandingUpload). redirectUrl ниже используется
-  // REDIRECT напрямую и PRELANDING как fallback, пока white page не загружена.
-  cloakingType: CloakingType;
-  countriesText: string;
-  redirectUrl: string;
   // Доп. инструкции для TikTok (запрос пользователя 2026-08-25) — см. Landing.tiktokBrowserHint
   // в schema.prisma для полного разбора проблемы.
   tiktokBrowserHint: boolean;
@@ -65,10 +49,6 @@ export const EMPTY_LANDING_BEHAVIOR: LandingBehaviorState = {
   autoRedirect: false,
   leadOnClick: true,
   leadOnAutoRedirect: false,
-  cloakingEnabled: false,
-  cloakingType: 'REDIRECT',
-  countriesText: '',
-  redirectUrl: '',
   tiktokBrowserHint: false,
   tiktokHintTitle: '',
   tiktokHintSubtitle: '',
@@ -80,24 +60,14 @@ export const EMPTY_LANDING_BEHAVIOR: LandingBehaviorState = {
 };
 
 // Тот же формат, что и LandingsService.update() ждёт от PATCH — используется и после
-// создания (см. страницу списка лендингов), и на странице редактирования.
+// создания (см. страницу списка лендингов), и на странице редактирования. Клоакинг сюда не
+// входит вообще — с 2026-09-24 это отдельный движок правил (components/cloaking/), сохраняется
+// только на странице /cloaking через свои собственные роуты, никогда через это PATCH.
 export function behaviorStateToPayload(state: LandingBehaviorState) {
-  const cloakingCountries = Array.from(
-    new Set(
-      state.countriesText
-        .split(/[,\s]+/)
-        .map((c) => c.trim().toUpperCase())
-        .filter(Boolean),
-    ),
-  );
   return {
     autoRedirect: state.autoRedirect,
     leadOnClick: state.leadOnClick,
     leadOnAutoRedirect: state.leadOnAutoRedirect,
-    cloakingEnabled: state.cloakingEnabled,
-    cloakingCountries,
-    cloakingRedirectUrl: state.redirectUrl,
-    cloakingType: state.cloakingType,
     tiktokBrowserHint: state.tiktokBrowserHint,
     tiktokHintTexts: {
       title: state.tiktokHintTitle,
@@ -109,21 +79,6 @@ export function behaviorStateToPayload(state: LandingBehaviorState) {
       copiedText: state.tiktokHintCopiedText,
     },
   };
-}
-
-// Узкие PATCH-пейлоады для раздельного сохранения вкладок "Опции"/"Клоакинг" (запрос
-// пользователя 2026-09-23) — каждый ЯВНО исключает поля другой вкладки, а не полагается на то,
-// что они "случайно совпадают" с текущим значением: если бы "Опции" отправляли behaviorStateToPayload
-// целиком, сохранение на этой вкладке молча откатило бы клоакинг к тому состоянию, что было в
-// момент открытия страницы, — даже если пользователь только что поменял его на соседней вкладке
-// и уже сохранил. Бэкенду (LandingsService.update) можно спокойно не передавать поле вовсе —
-// PATCH DTO все поля опциональны, непереданное поле не трогается.
-export function cloakingOnlyPayload(state: CloakingFieldsState) {
-  const { cloakingEnabled, cloakingCountries, cloakingRedirectUrl, cloakingType } = behaviorStateToPayload({
-    ...EMPTY_LANDING_BEHAVIOR,
-    ...state,
-  });
-  return { cloakingEnabled, cloakingCountries, cloakingRedirectUrl, cloakingType };
 }
 
 export function optionsOnlyPayload(state: LandingBehaviorState) {
@@ -144,7 +99,6 @@ export function isLandingBehaviorNonDefault(state: LandingBehaviorState): boolea
     state.autoRedirect ||
     !state.leadOnClick ||
     state.leadOnAutoRedirect ||
-    state.cloakingEnabled ||
     state.tiktokBrowserHint ||
     [
       state.tiktokHintTitle,
@@ -158,138 +112,14 @@ export function isLandingBehaviorNonDefault(state: LandingBehaviorState): boolea
   );
 }
 
-// Клоакинг вынесен в отдельный компонент (запрос пользователя 2026-09-23) — используется и
-// здесь inline (создание лендинга, где отдельной вкладки нет), и напрямую, без обёртки, на
-// вкладке "Клоакинг" страницы редактирования лендинга (см. page.tsx обоих деревьев).
-export function LandingCloakingFields({
-  idPrefix,
-  state,
-  onChange,
-  landingId,
-  cloakingPrelandingUploaded,
-}: {
-  idPrefix: string;
-  state: CloakingFieldsState;
-  onChange: (patch: Partial<CloakingFieldsState>) => void;
-  // Не задан в контексте создания нового лендинга (UploadZipLandingDialog) — там ещё нет
-  // landingId, чтобы реально загрузить white page, см. блок ниже: показываем только текстовую
-  // подсказку вместо загрузчика.
-  landingId?: string;
-  cloakingPrelandingUploaded?: boolean;
-}) {
-  // Три варианта в один переключатель (запрос пользователя 2026-09-23: "без карточки
-  // включения/выключения, сразу табы с круглым чекбоксом сверху: без фильтрации/редирект/
-  // предзагрузка") — раньше это были отдельные Switch (вкл/выкл) + Button-группа REDIRECT/
-  // PRELANDING внутри. cloakingEnabled=false сворачивается в отдельный видимый вариант "Без
-  // фильтрации", а не скрытое выключенное состояние.
-  const mode: 'NONE' | CloakingType = state.cloakingEnabled ? state.cloakingType : 'NONE';
-  const selectMode = (next: 'NONE' | CloakingType) => {
-    if (next === 'NONE') onChange({ cloakingEnabled: false });
-    else onChange({ cloakingEnabled: true, cloakingType: next });
-  };
-  const MODE_OPTIONS: { value: 'NONE' | CloakingType; label: string }[] = [
-    { value: 'NONE', label: 'Без фильтрации' },
-    { value: 'REDIRECT', label: 'Редирект' },
-    { value: 'PRELANDING', label: 'Предзагрузка' },
-  ];
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-6">
-        {MODE_OPTIONS.map((opt) => (
-          <label
-            key={opt.value}
-            htmlFor={`${idPrefix}-cloaking-mode-${opt.value}`}
-            className="flex items-center gap-2 text-sm font-medium cursor-pointer"
-          >
-            <input
-              type="radio"
-              id={`${idPrefix}-cloaking-mode-${opt.value}`}
-              name={`${idPrefix}-cloaking-mode`}
-              checked={mode === opt.value}
-              onChange={() => selectMode(opt.value)}
-              className="w-4 h-4 accent-primary cursor-pointer"
-            />
-            {opt.label}
-          </label>
-        ))}
-      </div>
-
-      {mode !== 'NONE' && (
-        <div className="space-y-3 border-l-2 border-border pl-4 ml-1">
-          <div className="space-y-1.5">
-            <Label htmlFor={`${idPrefix}-cloaking-countries`}>Разрешённые страны (коды ISO 3166-1, через запятую)</Label>
-            <Input
-              id={`${idPrefix}-cloaking-countries`}
-              placeholder="RU, UA, KZ"
-              value={state.countriesText}
-              onChange={(e) => onChange({ countriesText: e.target.value })}
-            />
-          </div>
-
-          {mode === 'REDIRECT' && (
-            <div className="space-y-1.5">
-              <Label htmlFor={`${idPrefix}-cloaking-url`}>Ссылка для остальных стран</Label>
-              <Input
-                id={`${idPrefix}-cloaking-url`}
-                placeholder="https://en.wikipedia.org"
-                value={state.redirectUrl}
-                onChange={(e) => onChange({ redirectUrl: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">Если оставить пустым — используется Wikipedia по умолчанию.</p>
-            </div>
-          )}
-
-          {mode === 'PRELANDING' && (
-            <div className="space-y-3">
-              {landingId ? (
-                <CloakingPrelandingUpload landingId={landingId} hasUploaded={!!cloakingPrelandingUploaded} />
-              ) : (
-                <p className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
-                  White page можно будет загрузить после создания лендинга, на странице его настроек.
-                </p>
-              )}
-              <div className="space-y-1.5">
-                <Label htmlFor={`${idPrefix}-cloaking-url`}>Резервная ссылка</Label>
-                <Input
-                  id={`${idPrefix}-cloaking-url`}
-                  placeholder="https://en.wikipedia.org"
-                  value={state.redirectUrl}
-                  onChange={(e) => onChange({ redirectUrl: e.target.value })}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Используется, пока white page не загружена или не прошла проверку. Если оставить пустым —
-                  используется Wikipedia по умолчанию.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function LandingBehaviorFields({
   idPrefix,
   state,
   onChange,
-  landingId,
-  cloakingPrelandingUploaded,
-  hideCloaking,
 }: {
   idPrefix: string;
   state: LandingBehaviorState;
   onChange: (patch: Partial<LandingBehaviorState>) => void;
-  // Не задан в контексте создания нового лендинга (UploadZipLandingDialog) — там ещё нет
-  // landingId, чтобы реально загрузить white page (запрос пользователя 2026-09-23), см. блок
-  // ниже: показываем только текстовую подсказку вместо загрузчика.
-  landingId?: string;
-  cloakingPrelandingUploaded?: boolean;
-  // true на странице редактирования лендинга (запрос пользователя 2026-09-23) — клоакинг там
-  // выведен в отдельную вкладку (см. LandingCloakingFields), эта копия формы его не рендерит,
-  // чтобы не дублировать и не давать сохранить дважды разными путями.
-  hideCloaking?: boolean;
 }) {
   return (
     <div className="space-y-4">
@@ -340,16 +170,6 @@ export function LandingBehaviorFields({
           />
         </div>
       </div>
-
-      {!hideCloaking && (
-        <LandingCloakingFields
-          idPrefix={idPrefix}
-          state={state}
-          onChange={onChange}
-          landingId={landingId}
-          cloakingPrelandingUploaded={cloakingPrelandingUploaded}
-        />
-      )}
 
       <div className="flex items-center justify-between gap-4">
         <div>
