@@ -167,6 +167,50 @@ export class LandingsController {
     return this.landingsService.uploadCloakingPrelandingHtml(id, companyId, dto.html);
   }
 
+  // Просмотр/скачивание уже загруженной белой страницы (запрос пользователя 2026-09-25) — те же
+  // 4 маршрута, что уже есть для основного контента лендинга (preview/preview-asset), просто
+  // указывают на cloakingPrelandingBasePath вместо customBasePath, плюс два новых для скачивания.
+  @Get(':id/cloaking/prelanding/preview')
+  @Header('Content-Type', 'text/html; charset=utf-8')
+  async previewCloakingPrelanding(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    return this.landingsService.renderCloakingPrelandingPreviewHtml(id, companyId);
+  }
+
+  @Get(':id/cloaking/prelanding/preview-asset/*')
+  async previewCloakingPrelandingAsset(
+    @Param('id') id: string,
+    @Param('0') subPath: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    await this.landingsService.streamCloakingPrelandingAsset(id, companyId, subPath, res);
+  }
+
+  @Get(':id/cloaking/prelanding/download-html')
+  async downloadCloakingPrelandingHtml(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    await this.landingsService.streamCloakingPrelandingHtmlDownload(id, companyId, res);
+  }
+
+  @Get(':id/cloaking/prelanding/download-zip')
+  async downloadCloakingPrelandingZip(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    await this.landingsService.streamCloakingPrelandingZipDownload(id, companyId, res);
+  }
+
   // Движок правил клоакинга (запрос пользователя 2026-09-24) — CRUD правил одного лендинга,
   // те же LANDINGS_VIEW/LANDINGS_EDIT права, что и у остальных роутов клоакинга выше. Порядок
   // роутов: 'reorder' объявлен раньше ':ruleId', иначе Nest принял бы 'reorder' за id правила.

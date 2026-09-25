@@ -2,7 +2,7 @@
 // проекта (/projects/[id]/landings), и на общей странице всех лендингов компании (/landings).
 
 import { api } from '@/lib/api';
-import { buildAutoPath } from '@/lib/utils';
+import { buildAutoPath, downloadBlob } from '@/lib/utils';
 import { resolveParamMap } from '@/lib/link-params';
 
 export type LandingType = 'TEMPLATE' | 'CUSTOM' | 'EXTERNAL';
@@ -401,8 +401,13 @@ function isRewritableRelativeRef(value: string): boolean {
 // подменяем на blob-URL уже готовых байтов. Для TEMPLATE-лендингов (нет собственных файлов,
 // только абсолютные CDN-ссылки) цикл ниже просто не находит ни одной подходящей ссылки — вызов
 // безопасен для любого типа лендинга без явной проверки type.
-export async function previewLanding(landingId: string): Promise<void> {
-  const res = await api.get(`/landings/${landingId}/preview`, { responseType: 'text' });
+// Общее ядро для previewLanding (ниже) и previewCloakingPrelanding (запрос пользователя
+// 2026-09-25: "посмотреть его сразу на сайте" для белой страницы клоакинга) — тот же приём
+// подмены относительных ссылок на blob-URL, отличаются только два серверных пути (сама HTML и
+// поштучные ассеты). previewUrlPath/assetUrlPath — уже готовые куски пути без landingId, чтобы
+// не тащить его в эту функцию отдельным параметром сверх того, что уже зашито в оба пути.
+async function previewHtmlWithRewrittenAssets(previewUrlPath: string, assetUrlPath: string): Promise<void> {
+  const res = await api.get(previewUrlPath, { responseType: 'text' });
   const html = res.data as string;
 
   const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -419,7 +424,7 @@ export async function previewLanding(landingId: string): Promise<void> {
     let promise = cache.get(value);
     if (!promise) {
       promise = api
-        .get(`/landings/${landingId}/preview-asset/${value}`, { responseType: 'blob' })
+        .get(`${assetUrlPath}/${value}`, { responseType: 'blob' })
         .then((assetRes) => URL.createObjectURL(assetRes.data as Blob))
         .catch(() => null); // Файл не нашёлся — оригинальная ссылка останется как есть.
       cache.set(value, promise);
@@ -445,6 +450,35 @@ export async function previewLanding(landingId: string): Promise<void> {
   window.open(previewUrl, '_blank');
   // Object URL-ы живут до explicit revoke или закрытия вкладки-владельца документа — не отзываем
   // сразу же после window.open, иначе только что открытая вкладка не успеет их использовать.
+}
+
+export async function previewLanding(landingId: string): Promise<void> {
+  await previewHtmlWithRewrittenAssets(`/landings/${landingId}/preview`, `/landings/${landingId}/preview-asset`);
+}
+
+// "Посмотреть на сайте" для белой страницы клоакинга (запрос пользователя 2026-09-25) — тот же
+// приём подмены относительных ссылок, просто указывает на cloakingPrelandingBasePath вместо
+// customBasePath (см. LandingsService.renderCloakingPrelandingPreviewHtml/
+// streamCloakingPrelandingAsset на бэкенде).
+export async function previewCloakingPrelanding(landingId: string): Promise<void> {
+  await previewHtmlWithRewrittenAssets(
+    `/landings/${landingId}/cloaking/prelanding/preview`,
+    `/landings/${landingId}/cloaking/prelanding/preview-asset`,
+  );
+}
+
+// Скачивание белой страницы клоакинга как один HTML-файл или как ZIP-архив (запрос пользователя
+// 2026-09-25) — доступны всегда, независимо от того, как страница была загружена (см. комментарий
+// у LandingsService.assertPrelandingUploaded на бэкенде). Через авторизованный api-клиент + blob,
+// а не голая <a href> — эндпоинт требует Bearer-токен, который есть только в axios-интерсепторе.
+export async function downloadCloakingPrelandingHtml(landingId: string): Promise<void> {
+  const res = await api.get(`/landings/${landingId}/cloaking/prelanding/download-html`, { responseType: 'blob' });
+  downloadBlob(res.data as Blob, 'prelanding.html');
+}
+
+export async function downloadCloakingPrelandingZip(landingId: string): Promise<void> {
+  const res = await api.get(`/landings/${landingId}/cloaking/prelanding/download-zip`, { responseType: 'blob' });
+  downloadBlob(res.data as Blob, 'prelanding.zip');
 }
 
 // Привязывает лендинг к домену через upsert-путь эндпоинт (POST /domains/:id/paths) — путь

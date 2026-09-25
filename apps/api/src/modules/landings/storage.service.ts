@@ -67,9 +67,11 @@ export class StorageService implements OnModuleInit {
     return Buffer.concat(chunks);
   }
 
-  // Подчищает все объекты под префиксом — нужно перед ре-загрузкой ZIP, иначе старые файлы,
-  // отсутствующие в новом архиве, остались бы висеть в бакете и могли отдаваться по старым путям.
-  async removePrefix(prefix: string): Promise<void> {
+  // Список полных ключей объектов под префиксом — вынесено из removePrefix (запрос пользователя
+  // 2026-09-25: "скачать zip" для белой страницы клоакинга) — теперь используется и там, и в
+  // LandingsService.streamCloakingPrelandingZipDownload для сборки архива из уже загруженных
+  // объектов "в обратную сторону" (при загрузке ZIP распаковывается В MinIO, здесь — наоборот).
+  async listPrefix(prefix: string): Promise<string[]> {
     const objectNames: string[] = [];
     const stream = this.client.listObjectsV2(this.bucket, `${prefix}/`, true);
     await new Promise<void>((resolve, reject) => {
@@ -77,6 +79,13 @@ export class StorageService implements OnModuleInit {
       stream.on('end', resolve);
       stream.on('error', reject);
     });
+    return objectNames;
+  }
+
+  // Подчищает все объекты под префиксом — нужно перед ре-загрузкой ZIP, иначе старые файлы,
+  // отсутствующие в новом архиве, остались бы висеть в бакете и могли отдаваться по старым путям.
+  async removePrefix(prefix: string): Promise<void> {
+    const objectNames = await this.listPrefix(prefix);
     if (objectNames.length > 0) await this.client.removeObjects(this.bucket, objectNames);
   }
 

@@ -736,6 +736,71 @@ export class LandingsService {
     return this.prisma.landing.update({ where: { id }, data: { cloakingPrelandingBasePath: null } });
   }
 
+  // Просмотр/скачивание уже загруженной белой страницы (запрос пользователя 2026-09-25: "добавь
+  // возможность скачать zip... скачать html файл или посмотреть его сразу на сайте") — доступны
+  // ВСЕГДА, независимо от того, как страница была загружена (ZIP-архивом или вставленным HTML-
+  // кодом, см. uploadCloakingPrelanding/uploadCloakingPrelandingHtml выше): оба способа кладут
+  // результат под один и тот же cloakingPrelandingBasePath, поэтому "посмотреть"/"скачать HTML"
+  // одинаково работают в обоих случаях, а "скачать ZIP" просто архивирует что там реально лежит —
+  // один файл (был вставлен HTML) или несколько (был загружен ZIP с ассетами), различать способ
+  // загрузки отдельным полем не нужно.
+  private async assertPrelandingUploaded(id: string, companyId: string): Promise<Landing> {
+    const landing = await this.findOne(id, companyId);
+    if (!landing.cloakingPrelandingBasePath) throw new NotFoundException('Белая страница ещё не загружена');
+    return landing;
+  }
+
+  async renderCloakingPrelandingPreviewHtml(id: string, companyId: string): Promise<string> {
+    const landing = await this.assertPrelandingUploaded(id, companyId);
+    const buffer = await this.storage.getObjectBuffer(`${landing.cloakingPrelandingBasePath}/index.html`);
+    return buffer.toString('utf-8');
+  }
+
+  async streamCloakingPrelandingAsset(id: string, companyId: string, subPath: string, res: Response): Promise<void> {
+    const landing = await this.findOne(id, companyId);
+    if (!landing.cloakingPrelandingBasePath) {
+      res.status(404).send('Not found');
+      return;
+    }
+    const key = `${landing.cloakingPrelandingBasePath}/${subPath}`;
+    try {
+      const stream = await this.storage.getObjectStream(key);
+      res.type(path.extname(key) || '.bin');
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(404).send('Not found');
+      });
+      stream.pipe(res);
+    } catch {
+      res.status(404).send('Not found');
+    }
+  }
+
+  async streamCloakingPrelandingHtmlDownload(id: string, companyId: string, res: Response): Promise<void> {
+    const landing = await this.assertPrelandingUploaded(id, companyId);
+    const buffer = await this.storage.getObjectBuffer(`${landing.cloakingPrelandingBasePath}/index.html`);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="prelanding.html"');
+    res.send(buffer);
+  }
+
+  async streamCloakingPrelandingZipDownload(id: string, companyId: string, res: Response): Promise<void> {
+    const landing = await this.assertPrelandingUploaded(id, companyId);
+    const basePath = landing.cloakingPrelandingBasePath as string;
+    const keys = await this.storage.listPrefix(basePath);
+
+    const zip = new AdmZip();
+    for (const key of keys) {
+      const relative = key.slice(basePath.length + 1);
+      if (!relative) continue;
+      const buffer = await this.storage.getObjectBuffer(key);
+      zip.addFile(relative, buffer);
+    }
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="prelanding.zip"');
+    res.send(zip.toBuffer());
+  }
+
   // Альтернатива ZIP-загрузке (запрос пользователя 2026-09-23: "просто сразу код кидать в поле")
   // — весь HTML одним блоком, без отдельных файлов-ассетов. entryNames пустой Set: ссылки на
   // локальные файлы (href="style.css") у вставленного кода корректно провалят проверку —

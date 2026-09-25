@@ -16,9 +16,14 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { Trash2 } from 'lucide-react';
+import { Download, Eye, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { LandingReviewCheck } from '@/lib/landings';
+import {
+  LandingReviewCheck,
+  downloadCloakingPrelandingHtml,
+  downloadCloakingPrelandingZip,
+  previewCloakingPrelanding,
+} from '@/lib/landings';
 import { ZipDropZone } from '@/components/zip-drop-zone';
 import { ZipLandingInstructions } from '@/components/zip-landing-instructions';
 import { ReviewChecklist } from '@/components/review-checklist';
@@ -99,13 +104,37 @@ export function CloakingPrelandingUpload({ landingId, hasUploaded }: { landingId
   });
 
   if (hasUploaded) {
+    // Просмотр/скачивание (запрос пользователя 2026-09-25: "добавь возможность скачать zip...
+    // скачать html файл или посмотреть его сразу на сайте") — доступны всегда независимо от
+    // того, как страница была загружена (ZIP или вставленный код), см. комментарий у
+    // LandingsService.assertPrelandingUploaded на бэкенде: оба способа загрузки кладут результат
+    // под один и тот же путь, различать их отдельным полем не нужно.
+    const runAction = (action: () => Promise<void>) => () => {
+      setError('');
+      action().catch((err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось выполнить действие'));
+    };
+
     return (
-      <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
-        <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">White page загружена ✓</p>
-        <Button type="button" variant="outline" size="sm" onClick={() => remove.mutate()} disabled={remove.isPending}>
-          <Trash2 className="w-3.5 h-3.5 mr-1.5" />
-          {remove.isPending ? 'Удаляем...' : 'Удалить'}
-        </Button>
+      <div className="space-y-2 rounded-md border border-border p-3">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400">White page загружена ✓</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => remove.mutate()} disabled={remove.isPending}>
+            <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+            {remove.isPending ? 'Удаляем...' : 'Удалить'}
+          </Button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={runAction(() => previewCloakingPrelanding(landingId))}>
+            <Eye className="w-3.5 h-3.5 mr-1.5" /> Посмотреть на сайте
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={runAction(() => downloadCloakingPrelandingHtml(landingId))}>
+            <Download className="w-3.5 h-3.5 mr-1.5" /> Скачать HTML
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={runAction(() => downloadCloakingPrelandingZip(landingId))}>
+            <Download className="w-3.5 h-3.5 mr-1.5" /> Скачать ZIP
+          </Button>
+        </div>
+        {error && <p className="text-sm text-red-500">{error}</p>}
       </div>
     );
   }
