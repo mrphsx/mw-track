@@ -216,11 +216,16 @@ export default function StudioBillingPage() {
         </div>
       )}
 
-      {/* Баг-репорт пользователя 2026-09-25: "текст выходит за границы, не помещается" — 5
-          колонок форсировались уже с lg (1024px), а с учётом сайдбара на реальном мониторе
-          там остаётся слишком мало места на карточку; xl добавлен как промежуточная ступень
-          (3 колонки), 5 — только на действительно широком экране. */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
+      {/* Баг-репорт пользователя 2026-09-25 (round 2): "карточки обрубают текст, лучше переноси
+          на другой ряд тариф" — grid-cols вынуждало ровно N равных колонок на каждой ширине,
+          из-за чего промежуточные ширины сжимали карточку уже её текста и truncate его резал.
+          Заменено на flex-wrap + justify-center: каждая карточка получает фиксированную (не
+          резиновую) ширину под нужное число карточек в ряду через calc() с учётом gap-6
+          (1.5rem) — при переполнении ряда лишние карточки сами переносятся на следующий ряд
+          целиком (а не обрезают текст), и justify-center центрирует неполный последний ряд с
+          тем же зазором gap, что и между остальными карточками — 1 (<md) → 2+2+1 (md-xl) →
+          3+2 (xl-2xl) → 5 (>=2xl), точный порядок из запроса пользователя. */}
+      <div className="flex flex-wrap justify-center gap-6">
         {PURCHASABLE.map((plan) => {
           const config = plans?.[plan];
           const presentation = PLAN_PRESENTATION[plan];
@@ -233,10 +238,11 @@ export default function StudioBillingPage() {
             // свободное место, кнопка всегда прижата к низу независимо от числа строк текста.
             <div
               key={plan}
-              // min-w-0 на самой карточке — грид-ячейка по умолчанию не сжимается своего
-              // контента (тот же min-width:auto, что и у flex), из-за чего колонка могла
-              // раздуться и вытолкнуть соседние карточки вместо переноса текста внутри своей.
-              className={`relative rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-md hover:shadow-xl transition-shadow p-8 flex flex-col gap-5 min-w-0 ${
+              // min-w-0 на самой карточке — flex-элемент по умолчанию не сжимается уже своего
+              // контента (тот же min-width:auto), из-за чего при переполнении он бы вытолкнул
+              // соседей вместо переноса на новую строку. basis-full/md/xl/2xl — фиксированная
+              // ширина под 1/2/3/5 карточек в ряду соответственно (см. комментарий у контейнера).
+              className={`relative rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-md hover:shadow-xl transition-shadow p-8 flex flex-col gap-5 min-w-0 basis-full md:basis-[calc((100%-1.5rem)/2)] xl:basis-[calc((100%-3rem)/3)] 2xl:basis-[calc((100%-6rem)/5)] ${
                 presentation.recommended ? `ring-2 ${presentation.ring}` : isCurrent ? 'ring-2 ring-[#1F4E9C] dark:ring-[#7BA9EE]' : ''
               }`}
             >
@@ -255,9 +261,13 @@ export default function StudioBillingPage() {
                 <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${presentation.accentBgSoft}`}>
                   <Icon className={`w-7 h-7 ${presentation.accentText}`} />
                 </div>
+                {/* truncate убран (баг-репорт "текст обрубается") — теперь ширина карточки
+                    фиксирована под конкретное число в ряду (см. выше), а не резиновая, так что
+                    достаточно места и переносить текст незачем, но на случай длинного названия
+                    break-words не даст ему вылезти за карточку. */}
                 <div className="min-w-0">
-                  <h3 className="text-xl font-bold text-[#131A24] dark:text-[#E9EDF3] truncate">{presentation.label}</h3>
-                  <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] truncate">{presentation.tagline}</p>
+                  <h3 className="text-xl font-bold text-[#131A24] dark:text-[#E9EDF3] break-words">{presentation.label}</h3>
+                  <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] break-words">{presentation.tagline}</p>
                 </div>
               </div>
 
