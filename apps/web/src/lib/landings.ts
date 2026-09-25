@@ -82,6 +82,10 @@ export interface LandingItem {
   // Landing, считается в LandingRendererService.renderAndServe независимо от того, включён ли
   // клоакинг, см. apps/api/src/modules/landings/bot-heuristic.util.ts.
   botVisitsCount: number;
+  // Из них реально отфильтровано (тот же запрос, тем же днём) — только те боты, которых поймало
+  // сработавшее правило клоакинга и отправило на white-page/404/другой вариант вместо реального
+  // лендинга. Считается в CloakingService.applyCloaking.
+  botsFilteredCount: number;
   // A/B/n-тестирование (Фаза 3.2) — abTestGroupId общий для всех участников одной группы,
   // abTestWeight — % трафика этого конкретного лендинга внутри группы, см. AbTestGroupDialog.
   abTestGroupId: string | null;

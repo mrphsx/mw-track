@@ -73,6 +73,12 @@ export function LandingsTableHeader({ showProject, selectable }: { showProject: 
       <TableHead className="text-right" title="Визиты, похожие на бота (пустой User-Agent, известный краулер или IP дата-центра) — эвристика, не платная база ботов">
         Ботов
       </TableHead>
+      <TableHead
+        className="text-right"
+        title="Из них реально отфильтровано сработавшим правилом клоакинга (white-page/404/другой вариант) — 0, если фильтрация выключена или ни одно правило бота не задевает"
+      >
+        Отфильтровано
+      </TableHead>
       <TableHead>Фильтрация</TableHead>
       <TableHead>Авторедирект</TableHead>
       <TableHead className="w-10" />
@@ -166,6 +172,9 @@ export function LandingRow({
       <TableCell className="text-right whitespace-nowrap">{landing._count.clients}</TableCell>
       <TableCell className="text-right whitespace-nowrap text-muted-foreground" title="Визиты, похожие на бота">
         {landing.botVisitsCount}
+      </TableCell>
+      <TableCell className="text-right whitespace-nowrap text-muted-foreground" title="Реально отфильтровано (заблокировано клоакингом)">
+        {landing.botsFilteredCount}
       </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         <FilteringPill landing={landing} />

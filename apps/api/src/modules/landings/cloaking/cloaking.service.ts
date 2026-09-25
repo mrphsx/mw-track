@@ -31,6 +31,7 @@ import {
 import { ParameterConditionEvaluator } from './conditions/parameter.evaluator';
 import { DateBetweenConditionEvaluator, TimetableConditionEvaluator } from './conditions/time.evaluators';
 import { LimitClicksConditionEvaluator, UniquenessConditionEvaluator } from './conditions/stateful.evaluators';
+import { isLikelyBotRequest } from '../bot-heuristic.util';
 
 // Движок правил клоакинга (запрос пользователя 2026-09-24, "довести до уровня Keitaro") —
 // заменяет собой прежнюю однострочную проверку "страна из allow-list". Лендинг может иметь
@@ -140,6 +141,17 @@ export class CloakingService {
       if (rule.action === 'ALLOW') return false;
       const handler = this.actionHandlers[rule.action];
       if (!handler) return false; // defensive — не должно случиться, action всегда из известного enum
+
+      // Счётчик отфильтрованных ботов (запрос пользователя 2026-09-25: "боты которых мы словили
+      // и отправили на white-page/404/другой вариант клоакинга") — считается для ЛЮБОГО реально
+      // сработавшего правила (не только с условием BOT — правило по стране/IP/чему угодно тоже
+      // могло случайно отсечь бота), если сам визит похож на бота по общей эвристике. Fire-and-
+      // forget — чистая статистика, не должна задерживать реальную отдачу альтернативного
+      // контента заблокированному посетителю.
+      if (isLikelyBotRequest(req)) {
+        this.prisma.landing.update({ where: { id: landing.id }, data: { botsFilteredCount: { increment: 1 } } }).catch(() => {});
+      }
+
       await handler.serveBlockedVisitor(landing, rule, subPath, req, res);
       return true;
     }
