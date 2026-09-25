@@ -216,7 +216,11 @@ export default function StudioBillingPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
+      {/* Баг-репорт пользователя 2026-09-25: "текст выходит за границы, не помещается" — 5
+          колонок форсировались уже с lg (1024px), а с учётом сайдбара на реальном мониторе
+          там остаётся слишком мало места на карточку; xl добавлен как промежуточная ступень
+          (3 колонки), 5 — только на действительно широком экране. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
         {PURCHASABLE.map((plan) => {
           const config = plans?.[plan];
           const presentation = PLAN_PRESENTATION[plan];
@@ -229,7 +233,10 @@ export default function StudioBillingPage() {
             // свободное место, кнопка всегда прижата к низу независимо от числа строк текста.
             <div
               key={plan}
-              className={`relative rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-md hover:shadow-xl transition-shadow p-8 flex flex-col gap-5 ${
+              // min-w-0 на самой карточке — грид-ячейка по умолчанию не сжимается своего
+              // контента (тот же min-width:auto, что и у flex), из-за чего колонка могла
+              // раздуться и вытолкнуть соседние карточки вместо переноса текста внутри своей.
+              className={`relative rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-md hover:shadow-xl transition-shadow p-8 flex flex-col gap-5 min-w-0 ${
                 presentation.recommended ? `ring-2 ${presentation.ring}` : isCurrent ? 'ring-2 ring-[#1F4E9C] dark:ring-[#7BA9EE]' : ''
               }`}
             >
@@ -241,17 +248,20 @@ export default function StudioBillingPage() {
                 </div>
               )}
 
-              <div className="flex items-center gap-4">
+              {/* min-w-0 на текстовом блоке — без него flex-ребёнок не сжимается уже своего
+                  контента и тянет карточку/текст за границы на промежуточных ширинах (тот же
+                  класс бага, что и в feedback_flex_truncate_nesting). */}
+              <div className="flex items-center gap-4 min-w-0">
                 <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${presentation.accentBgSoft}`}>
                   <Icon className={`w-7 h-7 ${presentation.accentText}`} />
                 </div>
-                <div>
-                  <h3 className="text-xl font-bold text-[#131A24] dark:text-[#E9EDF3]">{presentation.label}</h3>
-                  <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">{presentation.tagline}</p>
+                <div className="min-w-0">
+                  <h3 className="text-xl font-bold text-[#131A24] dark:text-[#E9EDF3] truncate">{presentation.label}</h3>
+                  <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] truncate">{presentation.tagline}</p>
                 </div>
               </div>
 
-              <div className="flex items-baseline gap-1.5">
+              <div className="flex items-baseline gap-1.5 flex-wrap">
                 <span className="text-4xl font-extrabold text-[#131A24] dark:text-[#E9EDF3]">${config?.priceUsdt}</span>
                 <span className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">/ мес</span>
               </div>
@@ -345,9 +355,13 @@ export default function StudioBillingPage() {
 
 function FeatureRow({ icon: Icon, accentText, children }: { icon: typeof CheckCircle2; accentText: string; children: React.ReactNode }) {
   return (
-    <li className="flex items-center gap-2 text-sm text-[#131A24] dark:text-[#E9EDF3]">
-      <Icon className={`w-4 h-4 shrink-0 ${accentText}`} />
-      {children}
+    // items-start (не center) + min-w-0 на тексте — баг-репорт пользователя 2026-09-25: длинные
+    // строки ("Полный доступ к фильтрации (клоакингу)", "500,000 клиентов") на узкой карточке
+    // должны переноситься на вторую строку, а не вылезать за границу — flex-ребёнок без min-w-0
+    // не сжимается своего непрерывного контента, см. feedback_flex_truncate_nesting.
+    <li className="flex items-start gap-2 text-sm text-[#131A24] dark:text-[#E9EDF3]">
+      <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${accentText}`} />
+      <span className="min-w-0">{children}</span>
     </li>
   );
 }

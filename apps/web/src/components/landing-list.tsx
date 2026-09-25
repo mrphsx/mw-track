@@ -189,7 +189,11 @@ export function LandingRow({
           >
             <MoreHorizontal className="w-4 h-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          {/* Баг-репорт пользователя 2026-09-25: "окно с опциями маленькое, текст не помещается" —
+              по умолчанию ширина меню равна w-(--anchor-width) (ширине кнопки-триггера — тут это
+              крошечная иконка ⋮), а не ширине самих пунктов; тот же класс бага, что уже чинился
+              у SelectContent несколько раз в этом проекте. */}
+          <DropdownMenuContent align="end" className="w-auto min-w-56">
             <DropdownMenuItem onClick={onPreview}>
               <Eye className="w-4 h-4 mr-2" /> Предпросмотр
             </DropdownMenuItem>
