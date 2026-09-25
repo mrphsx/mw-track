@@ -7,12 +7,12 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ScrollText } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Switch } from '@/components/ui/switch';
 import { CloakingPrelandingUpload } from '@/components/cloaking-prelanding-upload';
 import { CloakingRulesSection } from '@/components/cloaking/cloaking-rules-section';
-import { STUDIO_CARD } from '../../../../../ui';
+import { STUDIO_CARD, StudioLinkButton } from '../../../../../ui';
 
 interface LandingFull {
   id: string;
@@ -39,14 +39,19 @@ export default function StudioLandingCloakingPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <Link
-          href={`/projects/${projectId}/landings/${landingId}`}
-          className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:underline inline-flex items-center gap-1 mb-2"
-        >
-          <ArrowLeft className="w-3.5 h-3.5" /> {landing.name}
-        </Link>
-        <h1 className="text-2xl font-bold text-[#131A24] dark:text-[#E9EDF3]">Клоакинг</h1>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <Link
+            href={`/projects/${projectId}/landings/${landingId}`}
+            className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:underline inline-flex items-center gap-1 mb-2"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" /> {landing.name}
+          </Link>
+          <h1 className="text-2xl font-bold text-[#131A24] dark:text-[#E9EDF3]">Клоакинг</h1>
+        </div>
+        <StudioLinkButton href={`/projects/${projectId}/landings/${landingId}/cloaking/logs`} icon={ScrollText}>
+          Логи фильтрации
+        </StudioLinkButton>
       </div>
 
       <div className={`${STUDIO_CARD} p-5 space-y-4`}>

@@ -871,6 +871,7 @@ model Landing {
   // и apps/api/src/modules/landings/cloaking/. 44 реальных production-лендинга уже используют
   // cloakingEnabled=true на момент этой миграции — их поведение не должно измениться ни на шаг.
   cloakingRules CloakingRule[]
+  cloakingLogs  CloakingLog[]
 
   @@index([companyId, projectId])
 }
@@ -902,6 +903,7 @@ model CloakingRule {
   actionCustomText  String?
 
   conditions CloakingCondition[]
+  logs       CloakingLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -926,6 +928,46 @@ model CloakingCondition {
   createdAt DateTime @default(now())
 
   @@index([ruleId])
+}
+
+// Журнал заблокированных клоакингом заходов (запрос пользователя 2026-09-25: "сохранять логи
+// фильтрации... кто по какому условию и когда был отфильтрован", осознанно ТОЛЬКО заблокированные
+// визиты — логировать вообще все заходы (пропущенные тоже) на нагруженных лендингах дало бы на
+// порядок больше строк ради вопроса, на который заблокированные и так отвечают полностью; можно
+// расширить позже, если понадобится). Пишется fire-and-forget из CloakingService.applyCloaking
+// в момент, когда правило уже точно сработало — та же необлокирующая дисциплина, что и у
+// botsFilteredCount рядом. companyId денормализован с Landing (у Landing он уже прямая колонка,
+// не через project) — читать/фильтровать по компании без джойна и на будущее, если понадобится
+// сводный журнал по всем лендингам компании, как у payment-details-log. ruleId — мягкая ссылка
+// (onDelete: SetNull, не Cascade) — при удалении/переименовании правила лог не должен пропадать
+// или обнуляться целиком, только терять кликабельную ссылку на уже несуществующее правило;
+// ruleName — снепшот названия на момент блокировки ради этого же. matchedConditions — JSON-
+// снимок (field/negate/config) только тех условий, что реально совпали после negate — не все
+// условия правила, а именно те, что стали причиной блокировки (для AND это все условия правила,
+// для OR может быть подмножество). requestSnapshot — JSON, а не десяток отдельных колонок (тот
+// же принцип, что CloakingCondition.config/PersonalBroadcast.filter) — ip/userAgent/referrer/
+// acceptLanguage/geo{country,region,city}/ua{browser,os,device}/query/path. Без deletedAt —
+// это чистый лог, не подлежащая восстановлению сущность (тот же прецедент, что
+// PaymentDetailsLog/NotificationAlertState) — ретеншен через CloakingLogsCron, не через soft
+// delete.
+model CloakingLog {
+  id        String  @id @default(cuid())
+  landingId String
+  landing   Landing @relation(fields: [landingId], references: [id], onDelete: Cascade)
+  companyId String
+
+  ruleId   String?
+  rule     CloakingRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  ruleName String?
+
+  action            CloakingActionType
+  matchedConditions Json
+  requestSnapshot   Json
+
+  createdAt DateTime @default(now())
+
+  @@index([landingId, createdAt])
+  @@index([companyId, createdAt])
 }
 
 enum CloakingRuleMatchLogic {

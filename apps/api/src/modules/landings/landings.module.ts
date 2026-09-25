@@ -6,6 +6,7 @@ import { ProjectLandingsController } from './project-landings.controller';
 import { AbTestGroupsController } from './ab-test-groups.controller';
 import { InternalController } from './internal.controller';
 import { LandingsService } from './landings.service';
+import { LandingsCron } from './landings.cron';
 import { LandingRendererService } from './landing-renderer.service';
 import { NginxService } from './nginx.service';
 import { StorageService } from './storage.service';
@@ -45,6 +46,7 @@ import { LimitClicksConditionEvaluator, UniquenessConditionEvaluator } from './c
   controllers: [LandingsController, ProjectLandingsController, AbTestGroupsController, InternalController],
   providers: [
     LandingsService,
+    LandingsCron,
     LandingRendererService,
     NginxService,
     StorageService,

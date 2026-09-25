@@ -17,6 +17,7 @@ import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './d
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
 import { CreateCloakingRuleDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
+import { CloakingLogsQueryDto } from './dto/cloaking-logs-query.dto';
 import { fetchPublicHtml } from '../../common/safe-html-fetch.util';
 import { resolveParamMap } from '../tracking/link-params.const';
 
@@ -940,6 +941,49 @@ export class LandingsService {
     }
 
     await this.prisma.$transaction(ruleIds.map((ruleId, index) => this.prisma.cloakingRule.update({ where: { id: ruleId }, data: { position: index } })));
+  }
+
+  // Журнал заблокированных клоакингом заходов (запрос пользователя 2026-09-25) — записи пишет
+  // CloakingService.applyCloaking, читает этот метод. Компания уже проверена через findOne (тот
+  // же способ, что и listCloakingRules — CloakingLog не в modelsWithCompany, поэтому scoping
+  // ручной через landingId, а не через компанию напрямую). Фильтр по field ищет по JSONB-массиву
+  // matchedConditions через EXISTS, а не Prisma.findMany — Prisma не умеет фильтровать "хотя бы
+  // один элемент массива объектов, где поле X равно Y" без сырого SQL.
+  async listCloakingLogs(id: string, companyId: string, query: CloakingLogsQueryDto) {
+    const landing = await this.findOne(id, companyId);
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 25, 100);
+    const offset = (page - 1) * limit;
+
+    const conditions: Prisma.Sql[] = [Prisma.sql`"landingId" = ${landing.id}`];
+    if (query.ruleId) conditions.push(Prisma.sql`"ruleId" = ${query.ruleId}`);
+    if (query.from) conditions.push(Prisma.sql`"createdAt" >= ${new Date(`${query.from}T00:00:00.000Z`)}`);
+    if (query.to) {
+      const upperBound = new Date(`${query.to}T00:00:00.000Z`);
+      upperBound.setUTCDate(upperBound.getUTCDate() + 1);
+      conditions.push(Prisma.sql`"createdAt" < ${upperBound}`);
+    }
+    if (query.field) {
+      conditions.push(
+        Prisma.sql`EXISTS (SELECT 1 FROM jsonb_array_elements("matchedConditions") elem WHERE elem->>'field' = ${query.field})`,
+      );
+    }
+    const whereSql = Prisma.join(conditions, ' AND ');
+
+    const [rows, totalRows] = await Promise.all([
+      this.prisma.$queryRaw<
+        { id: string; ruleId: string | null; ruleName: string | null; action: string; matchedConditions: unknown; requestSnapshot: unknown; createdAt: Date }[]
+      >`
+        SELECT id, "ruleId", "ruleName", action, "matchedConditions", "requestSnapshot", "createdAt"
+        FROM "CloakingLog"
+        WHERE ${whereSql}
+        ORDER BY "createdAt" DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `,
+      this.prisma.$queryRaw<{ count: bigint }[]>`SELECT COUNT(*)::bigint AS count FROM "CloakingLog" WHERE ${whereSql}`,
+    ]);
+
+    return { rows, total: Number(totalRows[0]?.count ?? 0), page, limit };
   }
 
   // Лендинг клиента на ЕГО собственном сервере/домене (запрос пользователя 2026-09-07) — мы его

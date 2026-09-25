@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { CloakingActionType, CloakingCondition, CloakingConditionField, CloakingRuleMatchLogic, Landing } from '@prisma/client';
+import { CloakingActionType, CloakingCondition, CloakingConditionField, CloakingRuleMatchLogic, Landing, Prisma } from '@prisma/client';
 import { Request, Response } from 'express';
 import UAParser from 'ua-parser-js';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -11,6 +11,7 @@ import { NotFoundCloakingHandler } from './not-found-cloaking.handler';
 import { BlankCloakingHandler } from './blank-cloaking.handler';
 import { CustomHtmlCloakingHandler } from './custom-html-cloaking.handler';
 import { CustomTextCloakingHandler } from './custom-text-cloaking.handler';
+import { getClientIp } from '../../../common/client-ip.util';
 import { CloakingConditionEvaluator, CloakingEvalContext } from './conditions/condition-evaluator.interface';
 import { CountryConditionEvaluator, RegionConditionEvaluator, CityConditionEvaluator } from './conditions/geo.evaluators';
 import { IpConditionEvaluator, BotConditionEvaluator } from './conditions/network.evaluators';
@@ -136,7 +137,8 @@ export class CloakingService {
     };
 
     for (const rule of rules) {
-      if (!(await this.ruleMatches(rule.matchLogic, rule.conditions, ctx))) continue;
+      const { matched, matchedConditions } = await this.ruleMatches(rule.matchLogic, rule.conditions, ctx);
+      if (!matched) continue;
 
       if (rule.action === 'ALLOW') return false;
       const handler = this.actionHandlers[rule.action];
@@ -152,6 +154,12 @@ export class CloakingService {
         this.prisma.landing.update({ where: { id: landing.id }, data: { botsFilteredCount: { increment: 1 } } }).catch(() => {});
       }
 
+      // Журнал заблокированных заходов (запрос пользователя 2026-09-25: "сохранять логи
+      // фильтрации... кто по какому условию и когда") — та же fire-and-forget дисциплина, что и
+      // у счётчика ботов выше: реальному заблокированному посетителю нельзя задерживать отдачу
+      // альтернативного контента ради записи лога.
+      this.logBlockedVisit(landing, rule, matchedConditions, ctx, req).catch(() => {});
+
       await handler.serveBlockedVisitor(landing, rule, subPath, req, res);
       return true;
     }
@@ -159,10 +167,16 @@ export class CloakingService {
     return false;
   }
 
-  private async ruleMatches(matchLogic: CloakingRuleMatchLogic, conditions: CloakingCondition[], ctx: CloakingEvalContext): Promise<boolean> {
+  private async ruleMatches(
+    matchLogic: CloakingRuleMatchLogic,
+    conditions: CloakingCondition[],
+    ctx: CloakingEvalContext,
+  ): Promise<{ matched: boolean; matchedConditions: CloakingCondition[] }> {
     // Пустой список условий — правило-catch-all, совпадает всегда (самое нижнее правило без
-    // условий — обычный способ задать дефолтное действие для "всех остальных").
-    if (conditions.length === 0) return true;
+    // условий — обычный способ задать дефолтное действие для "всех остальных"). Логу в этом
+    // случае нечего показать в "по какому условию" — matchedConditions пуст, ruleName/action
+    // самого правила уже достаточно объясняют, что произошло.
+    if (conditions.length === 0) return { matched: true, matchedConditions: [] };
 
     // LIMIT_CLICKS обязан инкрементироваться при КАЖДОЙ реальной оценке правила, даже если OR
     // уже нашёл true раньше по списку, поэтому оцениваем ВСЕ условия правила (без short-circuit
@@ -175,6 +189,48 @@ export class CloakingService {
       results.push(condition.negate ? !raw : raw);
     }
 
-    return matchLogic === 'OR' ? results.some(Boolean) : results.every(Boolean);
+    const matched = matchLogic === 'OR' ? results.some(Boolean) : results.every(Boolean);
+    // Условия, реально ставшие причиной срабатывания (true уже после negate) — для AND это
+    // фактически все условия правила, для OR может быть подмножество; именно они попадают в
+    // CloakingLog.matchedConditions, а не полный список условий правила.
+    const matchedConditions = conditions.filter((_, i) => results[i]);
+    return { matched, matchedConditions };
+  }
+
+  private logBlockedVisit(
+    landing: Landing,
+    rule: { id: string; name: string | null; action: CloakingActionType },
+    matchedConditions: CloakingCondition[],
+    ctx: CloakingEvalContext,
+    req: Request,
+  ) {
+    const ua = ctx.ua;
+    return this.prisma.cloakingLog.create({
+      data: {
+        landingId: landing.id,
+        companyId: landing.companyId,
+        ruleId: rule.id,
+        ruleName: rule.name,
+        action: rule.action,
+        matchedConditions: matchedConditions.map((c) => ({ field: c.field, negate: c.negate, config: c.config as object })),
+        requestSnapshot: {
+          ip: getClientIp(req) || null,
+          userAgent: (req.headers['user-agent'] as string) || null,
+          referrer: (req.headers['referer'] as string) || null,
+          acceptLanguage: (req.headers['accept-language'] as string) || null,
+          geo: ctx.geo,
+          ua: {
+            browser: ua.browser.name ?? null,
+            browserVersion: ua.browser.version ?? null,
+            os: ua.os.name ?? null,
+            osVersion: ua.os.version ?? null,
+            deviceType: ua.device.type ?? null,
+            deviceModel: ua.device.model ?? null,
+          },
+          query: req.query as object,
+          path: req.originalUrl,
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
   }
 }

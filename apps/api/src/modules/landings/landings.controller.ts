@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Patch, Post, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Patch, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { Permission } from '@prisma/client';
@@ -12,6 +12,7 @@ import { LandingRendererService } from './landing-renderer.service';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { UploadPrelandingHtmlDto } from './dto/upload-prelanding-html.dto';
 import { CreateCloakingRuleDto, ReorderCloakingRulesDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
+import { CloakingLogsQueryDto } from './dto/cloaking-logs-query.dto';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -248,6 +249,14 @@ export class LandingsController {
   async removeCloakingRule(@Param('id') id: string, @Param('ruleId') ruleId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
     await this.landingsService.removeCloakingRule(id, companyId, ruleId);
+  }
+
+  // Журнал заблокированных заходов (запрос пользователя 2026-09-25) — LANDINGS_VIEW, как и
+  // остальные read-роуты клоакинга.
+  @Get(':id/cloaking/logs')
+  async listCloakingLogs(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query() query: CloakingLogsQueryDto) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    return this.landingsService.listCloakingLogs(id, companyId, query);
   }
 
   @Post(':id/verify-connection')
