@@ -198,17 +198,30 @@ export default function BillingPage() {
               <CardHeader>
                 <CardTitle>{plan}</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
+              {/* flex flex-col flex-1 + <ul> тоже flex-1 (баг-репорт пользователя 2026-09-25:
+                  "кнопка сейчас на разных высотах карточек") — Card уже flex flex-col и
+                  растягивается на всю высоту строки грида (align-items:stretch по умолчанию),
+                  список берёт на себя всё свободное место, кнопка всегда прижата к низу. */}
+              <CardContent className="flex flex-col flex-1 space-y-3">
                 <div className="text-2xl font-bold">${config?.priceUsdt}/мес</div>
-                <ul className="text-sm text-muted-foreground space-y-1">
+                <ul className="text-sm text-muted-foreground space-y-1 flex-1">
                   <li>{config?.maxProjects} проектов</li>
                   <li>{config?.maxClients.toLocaleString()} клиентов</li>
                   <li>{config?.maxPushesPerDay.toLocaleString()} рассылок/день</li>
+                  {/* Запрос пользователя 2026-09-25: "подметь во всех карточках что становится
+                      доступен полный доступ к клоакингу" — TRIAL (не в этом списке — PURCHASABLE
+                      не включает TRIAL) ограничен только условием "Страна", любой платный тариф
+                      снимает это ограничение целиком, см. TRIAL_ALLOWED_CLOAKING_FIELDS. */}
+                  <li>Полный доступ к фильтрации (клоакингу)</li>
                 </ul>
                 <Button
                   className="w-full"
                   variant={usage?.plan === plan ? 'outline' : 'default'}
-                  disabled={selectPlan.isPending}
+                  // Баг-репорт пользователя 2026-09-25: "при нажатии на одну кнопку сразу все
+                  // кнопки визуально прожимаются" — isPending была общей на все 5 карточек сразу
+                  // (одна мутация на всю страницу), теперь скоуплено на конкретный план через
+                  // .variables, тот же приём, что уже применялся для publish/unpublish и т.п.
+                  disabled={selectPlan.isPending && selectPlan.variables === plan}
                   onClick={() => selectPlan.mutate(plan)}
                 >
                   {usage?.plan === plan ? 'Продлить сейчас' : 'Выбрать'}

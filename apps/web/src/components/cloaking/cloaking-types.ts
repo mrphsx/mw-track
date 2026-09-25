@@ -32,8 +32,14 @@ export type CloakingActionType = 'ALLOW' | 'REDIRECT' | 'PRELANDING' | 'NOT_FOUN
 export type CloakingRuleMatchLogic = 'AND' | 'OR';
 
 // Платный тир Keitaro-парности (запрос пользователя 2026-09-24) — evaluator не реализован,
-// видны в UI задизейбленными. Бэкенд тоже отклоняет их (LandingsService.assertNoPaidConditionFields).
+// видны в UI задизейбленными. Бэкенд тоже отклоняет их (LandingsService.assertCloakingConditionsAllowed).
 export const PAID_CLOAKING_FIELDS: CloakingConditionField[] = ['PROXY', 'ISP', 'MOBILE_OPERATOR', 'CONNECTION_TYPE'];
+
+// На тарифе TRIAL доступно только условие "Страна" (запрос пользователя 2026-09-25: "запрет на
+// все опции клоакинга кроме страны... остальные опции сделай отключенными") — полный доступ
+// открывается со Starter, см. значок в CloakingConditionRow. Бэкенд — тот же файл, что и выше
+// (LandingsService.assertCloakingConditionsAllowed) — второй рубеж защиты, не единственный.
+export const TRIAL_ALLOWED_CLOAKING_FIELDS: CloakingConditionField[] = ['COUNTRY'];
 
 export const CLOAKING_FIELD_LABELS: Record<CloakingConditionField, string> = {
   COUNTRY: 'Страна',

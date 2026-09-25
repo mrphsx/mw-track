@@ -223,9 +223,13 @@ export default function StudioBillingPage() {
           const Icon = presentation.icon;
           const isCurrent = usage?.plan === plan;
           return (
+            // flex flex-col + <ul> ниже flex-1 (баг-репорт пользователя 2026-09-25: "кнопка
+            // сейчас на разных высотах карточек") — карточки в гриде уже растянуты на высоту
+            // самой высокой строки (align-items:stretch по умолчанию), список фич забирает всё
+            // свободное место, кнопка всегда прижата к низу независимо от числа строк текста.
             <div
               key={plan}
-              className={`relative rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-md hover:shadow-xl transition-shadow p-8 space-y-5 ${
+              className={`relative rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-md hover:shadow-xl transition-shadow p-8 flex flex-col gap-5 ${
                 presentation.recommended ? `ring-2 ${presentation.ring}` : isCurrent ? 'ring-2 ring-[#1F4E9C] dark:ring-[#7BA9EE]' : ''
               }`}
             >
@@ -252,7 +256,7 @@ export default function StudioBillingPage() {
                 <span className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">/ мес</span>
               </div>
 
-              <ul className="space-y-2.5">
+              <ul className="space-y-2.5 flex-1">
                 <FeatureRow icon={CheckCircle2} accentText={presentation.accentText}>
                   {config?.maxProjects} {config && config.maxProjects === 1 ? 'проект' : 'проектов'}
                 </FeatureRow>
@@ -262,11 +266,21 @@ export default function StudioBillingPage() {
                 <FeatureRow icon={CheckCircle2} accentText={presentation.accentText}>
                   {config?.maxPushesPerDay.toLocaleString()} рассылок в день
                 </FeatureRow>
+                {/* Запрос пользователя 2026-09-25: "подметь во всех карточках что становится
+                    доступен полный доступ к клоакингу" — TRIAL (не в PURCHASABLE, сюда не
+                    попадает) ограничен только условием "Страна", любой платный тариф снимает
+                    это ограничение целиком, см. TRIAL_ALLOWED_CLOAKING_FIELDS. */}
+                <FeatureRow icon={CheckCircle2} accentText={presentation.accentText}>
+                  Полный доступ к фильтрации (клоакингу)
+                </FeatureRow>
               </ul>
 
               <StudioLinkButton
                 variant={isCurrent ? 'secondary' : 'primary'}
-                disabled={selectPlan.isPending}
+                // Баг-репорт пользователя 2026-09-25: "при нажатии на одну кнопку сразу все
+                // кнопки визуально прожимаются" — isPending была общей на все 5 карточек сразу,
+                // теперь скоуплено на конкретный план через .variables.
+                disabled={selectPlan.isPending && selectPlan.variables === plan}
                 onClick={() => selectPlan.mutate(plan)}
               >
                 {isCurrent ? 'Продлить сейчас' : 'Выбрать план'}

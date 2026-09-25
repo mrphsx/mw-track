@@ -830,10 +830,27 @@ export class LandingsService {
   // (defense in depth) на случай прямого запроса к API в обход UI, не единственный.
   private static readonly PAID_CLOAKING_FIELDS: CloakingConditionField[] = ['PROXY', 'ISP', 'MOBILE_OPERATOR', 'CONNECTION_TYPE'];
 
-  private assertNoPaidConditionFields(conditions?: { field: CloakingConditionField }[]): void {
-    const paidField = conditions?.find((c) => LandingsService.PAID_CLOAKING_FIELDS.includes(c.field));
+  // На TRIAL клоакинг доступен только по условию "Страна" (запрос пользователя 2026-09-25: "запрет
+  // на все опции клоакинга кроме страны... остальные опции сделай отключенными" — полный доступ
+  // ко всем условиям открывается со Starter). Фронтенд задизейблит остальные пункты в Select с
+  // тем же значком, что и у тарифа Starter на странице подписки — эта проверка здесь такой же
+  // второй рубеж защиты, как и у PAID_CLOAKING_FIELDS выше.
+  private static readonly TRIAL_ALLOWED_CLOAKING_FIELDS: CloakingConditionField[] = ['COUNTRY'];
+
+  private async assertCloakingConditionsAllowed(companyId: string, conditions?: { field: CloakingConditionField }[]): Promise<void> {
+    if (!conditions?.length) return;
+
+    const paidField = conditions.find((c) => LandingsService.PAID_CLOAKING_FIELDS.includes(c.field));
     if (paidField) {
       throw new BadRequestException(`Тип условия "${paidField.field}" скоро будет доступен`);
+    }
+
+    const company = await this.prisma.company.findUnique({ where: { id: companyId }, select: { plan: true } });
+    if (company?.plan === 'TRIAL') {
+      const lockedField = conditions.find((c) => !LandingsService.TRIAL_ALLOWED_CLOAKING_FIELDS.includes(c.field));
+      if (lockedField) {
+        throw new BadRequestException(`Тип условия "${lockedField.field}" доступен начиная с тарифа Starter`);
+      }
     }
   }
 
@@ -852,7 +869,7 @@ export class LandingsService {
 
   async createCloakingRule(id: string, companyId: string, dto: CreateCloakingRuleDto) {
     const landing = await this.findOne(id, companyId);
-    this.assertNoPaidConditionFields(dto.conditions);
+    await this.assertCloakingConditionsAllowed(companyId, dto.conditions);
 
     const last = await this.prisma.cloakingRule.findFirst({
       where: { landingId: landing.id },
@@ -884,7 +901,7 @@ export class LandingsService {
 
   async updateCloakingRule(id: string, companyId: string, ruleId: string, dto: UpdateCloakingRuleDto) {
     await this.assertRuleInLanding(id, companyId, ruleId);
-    this.assertNoPaidConditionFields(dto.conditions);
+    await this.assertCloakingConditionsAllowed(companyId, dto.conditions);
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.conditions) {

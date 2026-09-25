@@ -1,10 +1,18 @@
 'use client';
 
-import { X } from 'lucide-react';
+import { Rocket, X } from 'lucide-react';
+import { useAuthStore } from '@/store/auth.store';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { CLOAKING_FIELD_LABELS, CloakingConditionField, CloakingConditionState, PAID_CLOAKING_FIELDS, emptyConfigForField } from './cloaking-types';
+import {
+  CLOAKING_FIELD_LABELS,
+  CloakingConditionField,
+  CloakingConditionState,
+  PAID_CLOAKING_FIELDS,
+  TRIAL_ALLOWED_CLOAKING_FIELDS,
+  emptyConfigForField,
+} from './cloaking-types';
 import { ConditionConfigEditor } from './condition-config-editor';
 
 const FIELD_ORDER: CloakingConditionField[] = [
@@ -23,6 +31,14 @@ export function CloakingConditionRow({
   onChange: (next: CloakingConditionState) => void;
   onRemove: () => void;
 }) {
+  // На TRIAL доступна только "Страна" (запрос пользователя 2026-09-25) — остальные условия
+  // задизейблены с тем же значком, что у тарифа Starter на странице подписки (Rocket), которым
+  // они и открываются. Platform-owned/paid-tier поля (PAID_CLOAKING_FIELDS) — отдельная причина
+  // блокировки ("Скоро", ещё не реализовано вообще, для любого тарифа), приоритет отдаётся ей,
+  // если оба условия почему-то совпали.
+  const plan = useAuthStore((s) => s.user?.company?.plan);
+  const isTrial = plan === 'TRIAL';
+
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
       <div className="flex items-center gap-2">
@@ -39,11 +55,20 @@ export function CloakingConditionRow({
           <SelectContent className="w-max min-w-(--anchor-width) max-w-[26rem]">
             {FIELD_ORDER.map((field) => {
               const isPaid = PAID_CLOAKING_FIELDS.includes(field);
+              const isTrialLocked = !isPaid && isTrial && !TRIAL_ALLOWED_CLOAKING_FIELDS.includes(field);
               return (
-                <SelectItem key={field} value={field} disabled={isPaid}>
+                <SelectItem key={field} value={field} disabled={isPaid || isTrialLocked}>
                   <span className="flex items-center gap-1.5">
                     {CLOAKING_FIELD_LABELS[field]}
                     {isPaid && <span className="text-[10px] rounded bg-muted px-1 py-0.5 text-muted-foreground">Скоро</span>}
+                    {isTrialLocked && (
+                      <span
+                        className="inline-flex items-center gap-0.5 text-[10px] rounded bg-muted px-1 py-0.5 text-muted-foreground"
+                        title="Доступно с тарифа Starter"
+                      >
+                        <Rocket className="w-2.5 h-2.5" /> Starter
+                      </span>
+                    )}
                   </span>
                 </SelectItem>
               );

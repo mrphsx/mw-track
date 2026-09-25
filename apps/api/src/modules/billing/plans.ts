@@ -18,9 +18,10 @@ export interface PlanConfig {
 // на КАЖДЫЙ доступный проект тарифа × maxProjects этого тарифа = итоговый дневной лимит.
 // ENTERPRISE — исключение из формулы (тоже подтверждено явно): плоские 999, не масштабируется
 // по числу проектов, т.к. это премиум/индивидуальный тариф, а не расчётный шаг лестницы.
-// TRIAL: 1 × 2/день = 2; STARTER: 5 × 2 = 10; GROWTH: 10 × 5 = 50; ENTERPRISE: 999 (плоский
-// sentinel). SCALE и новые PRO/ULTIMATE ниже больше НЕ следуют этой формуле — их дневные лимиты
-// заданы явно пользователем 2026-09-25, не выведены расчётом.
+// TRIAL: 1 × 2/день = 2 (историческое значение, см. правку ниже); STARTER: 5 × 2 = 10;
+// GROWTH: 10 × 5 = 50; ENTERPRISE: 999 (плоский sentinel). SCALE и новые PRO/ULTIMATE ниже
+// больше НЕ следуют этой формуле — их дневные лимиты заданы явно пользователем 2026-09-25, не
+// выведены расчётом.
 //
 // Обновлено 2026-09-25 (запрос пользователя "поменять условия подписки на тарифы"):
 // - SCALE: было {price:399, maxProjects:20, maxClients:100000, maxPushesPerDay:240} →
@@ -32,8 +33,13 @@ export interface PlanConfig {
 // Названия PRO/ULTIMATE выбраны как продолжение существующей лестницы STARTER→GROWTH→SCALE —
 // не были явно заданы пользователем, легко переименовать при необходимости (потребует ещё одной
 // ALTER TYPE ... RENAME VALUE миграции, см. прецедент в 20260704140000_team_roles).
+//
+// TRIAL ужесточён тем же днём (запрос пользователя, отдельный от смены платных тарифов выше):
+// maxClients 1000→100, maxPushesPerDay 2→1 (maxProjects остался 1). Плюс — не в этом файле,
+// а в LandingsService.assertCloakingConditionsAllowed/CloakingConditionRow.tsx — на TRIAL из
+// клоакинга доступно только условие "Страна", остальные открываются со Starter.
 export const PLANS: Record<SubscriptionPlan, PlanConfig> = {
-  TRIAL: { priceUsdt: 0, durationDays: 14, maxProjects: 1, maxClients: 1000, maxPushesPerDay: 2 },
+  TRIAL: { priceUsdt: 0, durationDays: 14, maxProjects: 1, maxClients: 100, maxPushesPerDay: 1 },
   STARTER: { priceUsdt: 49, durationDays: 30, maxProjects: 5, maxClients: 5000, maxPushesPerDay: 10 },
   GROWTH: { priceUsdt: 149, durationDays: 30, maxProjects: 10, maxClients: 25000, maxPushesPerDay: 50 },
   SCALE: { priceUsdt: 299, durationDays: 30, maxProjects: 25, maxClients: 50000, maxPushesPerDay: 100 },
