@@ -449,7 +449,10 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                 }}
               >
                 <SelectTrigger className="flex-1 min-w-[160px]">
-                  <SelectValue placeholder="Проект" />
+                  {/* Без children-функции Base UI показывает сырое id проекта вместо названия —
+                      тот же повторяющийся баг, что уже чинился в проекте несколько раз (см.
+                      get-link-dialog.tsx). */}
+                  <SelectValue placeholder="Проект">{(v: string) => (v ? (projects?.find((p) => p.id === v)?.name ?? v) : 'Проект')}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {projects?.map((p) => (
@@ -469,7 +472,7 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                 disabled={!projectId}
               >
                 <SelectTrigger className="flex-1 min-w-[160px]">
-                  <SelectValue placeholder="Лендинг" />
+                  <SelectValue placeholder="Лендинг">{(v: string) => (v ? (landings?.find((l) => l.id === v)?.name ?? v) : 'Лендинг')}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {landings?.map((l) => (

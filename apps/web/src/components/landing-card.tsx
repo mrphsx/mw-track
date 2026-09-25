@@ -49,7 +49,11 @@ export function DomainSelect({
   return (
     <Select value={value} onValueChange={(v) => v && onChange(v)}>
       <SelectTrigger id={id}>
-        <SelectValue />
+        {/* Без children-функции Base UI показывает сырое value (id домена или NO_DOMAIN), а не
+            имя домена — тот же повторяющийся баг, что уже чинился в проекте несколько раз (см.
+            get-link-dialog.tsx). Используется в 4 местах (создание лендинга, загрузка ZIP,
+            смена домена у лендинга, домен A/B-группы) — фикс здесь чинит их все разом. */}
+        <SelectValue>{(v: string) => (v === NO_DOMAIN ? 'Без домена' : (domains?.find((d) => d.id === v)?.domain ?? v))}</SelectValue>
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={NO_DOMAIN}>Без домена</SelectItem>
