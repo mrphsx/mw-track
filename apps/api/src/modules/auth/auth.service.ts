@@ -196,6 +196,7 @@ export class AuthService {
   async startImpersonation(companyId: string): Promise<{ code: string; targetUserId: string; targetUserEmail: string }> {
     const owner = await this.prisma.user.findFirst({
       where: { companyId, role: 'OWNER', deletedAt: null, isActive: true },
+      include: { company: true },
     });
     if (!owner) {
       throw new BadRequestException('У компании нет активного владельца — некого впустить');
