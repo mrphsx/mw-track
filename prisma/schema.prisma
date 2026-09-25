@@ -1955,6 +1955,11 @@ enum SubscriptionPlan {
   STARTER
   GROWTH
   SCALE
+  // PRO/ULTIMATE добавлены 2026-09-25 (запрос пользователя "поменять условия подписки") —
+  // между SCALE и ENTERPRISE: ENTERPRISE не масштабируется по этой лестнице (индивидуальный,
+  // не самообслуживаемый тариф, priceUsdt:0, не в PURCHASABLE_PLANS), см. billing/plans.ts.
+  PRO
+  ULTIMATE
   ENTERPRISE
 }
 

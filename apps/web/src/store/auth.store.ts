@@ -40,7 +40,7 @@ export interface Company {
   id: string;
   name: string;
   slug: string;
-  plan: 'TRIAL' | 'STARTER' | 'GROWTH' | 'SCALE' | 'ENTERPRISE';
+  plan: 'TRIAL' | 'STARTER' | 'GROWTH' | 'SCALE' | 'PRO' | 'ULTIMATE' | 'ENTERPRISE';
   planExpiresAt: string | null;
   balance: string;
   maxProjects: number;

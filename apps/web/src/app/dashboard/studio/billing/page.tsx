@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { CheckCircle2, Crown, History, Rocket, TrendingUp, Wallet } from 'lucide-react';
+import { CheckCircle2, Crown, Gem, History, Rocket, Trophy, TrendingUp, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -72,7 +72,7 @@ const TRANSACTION_LABEL: Record<BalanceTransaction['type'], string> = {
 // контрастная тройка цветов — витрина продаж имеет право выглядеть иначе, чем рабочий
 // интерфейс. GROWTH отмечен как рекомендуемый (средний тариф — самый частый реальный выбор).
 const PLAN_PRESENTATION: Record<
-  'STARTER' | 'GROWTH' | 'SCALE',
+  'STARTER' | 'GROWTH' | 'SCALE' | 'PRO' | 'ULTIMATE',
   {
     icon: typeof Rocket;
     label: string;
@@ -112,8 +112,28 @@ const PLAN_PRESENTATION: Record<
     accentBgSoft: 'bg-[#D97706]/10 dark:bg-[#FBBF24]/10',
     ring: 'ring-[#D97706] dark:ring-[#FBBF24]',
   },
+  // PRO/ULTIMATE добавлены 2026-09-25 (запрос пользователя "поменять условия подписки") —
+  // продолжение той же насыщенной витринной палитры, два новых непересекающихся акцентных цвета.
+  PRO: {
+    icon: Gem,
+    label: 'Pro',
+    tagline: 'Для крупных команд',
+    accentText: 'text-[#059669] dark:text-[#34D399]',
+    accentBg: 'bg-[#059669] dark:bg-[#34D399]',
+    accentBgSoft: 'bg-[#059669]/10 dark:bg-[#34D399]/10',
+    ring: 'ring-[#059669] dark:ring-[#34D399]',
+  },
+  ULTIMATE: {
+    icon: Trophy,
+    label: 'Ultimate',
+    tagline: 'Максимальные лимиты',
+    accentText: 'text-[#E11D48] dark:text-[#FB7185]',
+    accentBg: 'bg-[#E11D48] dark:bg-[#FB7185]',
+    accentBgSoft: 'bg-[#E11D48]/10 dark:bg-[#FB7185]/10',
+    ring: 'ring-[#E11D48] dark:ring-[#FB7185]',
+  },
 };
-const PURCHASABLE: Array<'STARTER' | 'GROWTH' | 'SCALE'> = ['STARTER', 'GROWTH', 'SCALE'];
+const PURCHASABLE: Array<'STARTER' | 'GROWTH' | 'SCALE' | 'PRO' | 'ULTIMATE'> = ['STARTER', 'GROWTH', 'SCALE', 'PRO', 'ULTIMATE'];
 
 // Studio-версия страницы подписки. Полный редизайн 2026-07-30 (запрос пользователя): карточки
 // планов стали крупнее/ярче (см. PLAN_PRESENTATION выше); пополнение переехало из инлайн-формы
@@ -196,7 +216,7 @@ export default function StudioBillingPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
         {PURCHASABLE.map((plan) => {
           const config = plans?.[plan];
           const presentation = PLAN_PRESENTATION[plan];
@@ -240,7 +260,7 @@ export default function StudioBillingPage() {
                   {config?.maxClients.toLocaleString()} клиентов
                 </FeatureRow>
                 <FeatureRow icon={CheckCircle2} accentText={presentation.accentText}>
-                  {config?.maxPushesPerDay} рассылок в день
+                  {config?.maxPushesPerDay.toLocaleString()} рассылок в день
                 </FeatureRow>
               </ul>
 
@@ -325,7 +345,7 @@ function UsageBar({ label, current, max }: { label: string; current: number; max
       <div className="flex justify-between text-sm">
         <span className="text-[#5F6B7A] dark:text-[#92A0AF]">{label}</span>
         <span className="text-[#131A24] dark:text-[#E9EDF3] font-mono tabular-nums">
-          {current} / {max}
+          {current.toLocaleString()} / {max.toLocaleString()}
         </span>
       </div>
       <Progress value={pct} />

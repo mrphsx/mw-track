@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { StatsCard } from '@/components/shared/stats-card';
 
-const PLANS = ['TRIAL', 'STARTER', 'GROWTH', 'SCALE', 'ENTERPRISE'] as const;
+const PLANS = ['TRIAL', 'STARTER', 'GROWTH', 'SCALE', 'PRO', 'ULTIMATE', 'ENTERPRISE'] as const;
 type Plan = (typeof PLANS)[number];
 
 interface CompanyRow {

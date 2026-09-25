@@ -60,7 +60,7 @@ interface BalanceTransaction {
   createdAt: string;
 }
 
-const PURCHASABLE: Array<'STARTER' | 'GROWTH' | 'SCALE'> = ['STARTER', 'GROWTH', 'SCALE'];
+const PURCHASABLE: Array<'STARTER' | 'GROWTH' | 'SCALE' | 'PRO' | 'ULTIMATE'> = ['STARTER', 'GROWTH', 'SCALE', 'PRO', 'ULTIMATE'];
 const TOPUP_PRESETS = [50, 100, 200];
 
 // ADMIN_CREDIT — ручное начисление супер-админом через отдельную панель (Фаза 4.3C,
@@ -190,7 +190,7 @@ export default function BillingPage() {
         </Card>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {PURCHASABLE.map((plan) => {
           const config = plans?.[plan];
           return (
@@ -203,7 +203,7 @@ export default function BillingPage() {
                 <ul className="text-sm text-muted-foreground space-y-1">
                   <li>{config?.maxProjects} проектов</li>
                   <li>{config?.maxClients.toLocaleString()} клиентов</li>
-                  <li>{config?.maxPushesPerDay} рассылок/день</li>
+                  <li>{config?.maxPushesPerDay.toLocaleString()} рассылок/день</li>
                 </ul>
                 <Button
                   className="w-full"
@@ -304,7 +304,7 @@ function UsageBar({ label, current, max }: { label: string; current: number; max
       <div className="flex justify-between text-sm">
         <span className="text-muted-foreground">{label}</span>
         <span>
-          {current} / {max}
+          {current.toLocaleString()} / {max.toLocaleString()}
         </span>
       </div>
       <Progress value={pct} />
