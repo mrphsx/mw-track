@@ -22,40 +22,24 @@ import {
 import {
   AbTestDialogTarget,
   AbTestGroupDialog,
-  LandingCard,
   LandingDomainDialog,
 } from '@/components/landing-card';
+import { LandingRow, LandingsTableHeader } from '@/components/landing-list';
+import { Table, TableBody, TableHeader } from '@/components/ui/table';
 import { GetLinkDialog, GetLinkLanding } from '@/components/get-link-dialog';
 import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dialog';
 import { CreateExternalLandingDialog } from '@/components/create-external-landing-dialog';
 import { UploadZipLandingDialog, UploadZipLandingTarget } from '@/components/upload-zip-landing-dialog';
 import { STUDIO_CARD, StudioLinkButton } from '../../../ui';
 
-// Цветная точка рядом с названием вместо текстового Badge статуса (запрос пользователя
-// 2026-07-30: "подметь по цвету карточки активен лэндинг или в драфте и убери надпись"; после
-// 2 промежуточных заходов — border-l-4, затем целиковая ring-рамка — пользователь вернул точку,
-// только крупнее исходной (w-3 h-3 внутри LandingCard, было w-2 h-2)). sage/зелёный для
-// PUBLISHED (тот же "активно = зелёный" принцип, что уже закреплён для StatusPill на странице
-// проекта), slate для DRAFT (нейтральный, "ещё не запущено"), plum для ARCHIVED (третий реальный
-// статус LandingStatus). Литеральные строки, не собранные через template-интерполяцию — см.
-// Tailwind JIT gotcha в предыдущей правке этого файла.
-// DRAFT — красный, не серый (запрос пользователя 2026-08-20) — см. полный комментарий в
-// company-wide версии этой же страницы (dashboard/studio/landings/page.tsx).
-const STATUS_DOT_CLASS: Record<string, string> = {
-  PUBLISHED: 'bg-[#1F7A6C] dark:bg-[#6FCBBA]',
-  DRAFT: 'bg-red-500 dark:bg-red-400',
-  ARCHIVED: 'bg-[#6B3E63] dark:bg-[#D19BC4]',
-};
-
 // Studio-версия страницы лендингов (запрос пользователя 2026-07-30: "сделай страницу Лендинги...
 // учти всё что мы правили для дизайна studio") — beta, доступна пока только через переход с
-// Studio-страницы проекта. В отличие от Сценариев, здесь НЕ форкнута карточка лендинга
-// (LandingCard) и все диалоги (загрузка ZIP/домен/A/B-группа/ссылка/шаблон) — тот же принцип,
-// что уже применялся в этой сессии для ClientDetailDrawer/DailyCharts на странице проекта:
-// сложные функциональные виджеты переиспользуются как есть, Studio-оформление получает только
-// внешняя оболочка (шапка, кнопки, список A/B-тестов). LandingCard — общий компонент, которым
-// пользуется и компанейская /landings-страница; форк ради этой одной beta-страницы означал бы
-// дублировать 580 строк логики предпросмотра/публикации/меню без реальной необходимости.
+// Studio-страницы проекта. Диалоги (загрузка ZIP/домен/A/B-группа/ссылка/шаблон) переиспользуются
+// как есть из components/landing-card.tsx — тот же принцип, что и раньше.
+//
+// Список вместо сетки карточек (запрос пользователя 2026-09-25: "сделай список, а не карточку,
+// чтобы было более компактно для работы" — только Studio, classic-дерево не трогаем по прямой
+// просьбе пользователя) — см. полный комментарий в components/landing-list.tsx.
 export default function StudioLandingsPage() {
   const { id: projectId } = useParams<{ id: string }>();
   const router = useRouter();
@@ -316,41 +300,41 @@ export default function StudioLandingsPage() {
         <div className={`${STUDIO_CARD} p-8 text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]`}>Лендингов пока нет.</div>
       )}
 
-      {/* Сама сетка карточек — общий LandingCard без форка, см. комментарий в шапке файла. */}
+      {/* Список вместо сетки карточек — общий LandingRow, см. комментарий в шапке файла. */}
       {viewMode === 'landings' && !!landings?.length && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {landings.map((l) => (
-            <LandingCard
-              key={l.id}
-              landing={l}
-              domains={domains}
-              showProject={false}
-              onPreview={() => preview(l.id)}
-              onManageDomain={() => setDomainDialogLanding(l)}
-              onGetLink={() => setGetLinkLanding(l)}
-              onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
-              onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
-              onPublish={() => publish.mutate(l.id)}
-              onUnpublish={() => unpublish.mutate(l.id)}
-              onDelete={() => remove.mutate(l.id)}
-              // Скоуп ожидания на конкретную карточку через .variables (баг-репорт пользователя
-              // 2026-07-30: "кнопки всех лэндингов переходят в ожидание") — тот же фикс применён
-              // и в двух других потребителях LandingCard (классическая страница проекта и
-              // компанейская /landings), баг был identичный во всех трёх местах.
-              isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
-              isDeletePending={remove.isPending && remove.variables === l.id}
-              canDelete={hasPermission(user, projectId, 'LANDINGS_DELETE')}
-              hideStatusBadge
-              hideChannelDetails
-              statusDotClassName={STATUS_DOT_CLASS[l.status]}
-              selectable={compareMode}
-              selected={selectedIds.has(l.id)}
-              onToggleSelect={() => toggleSelected(l.id)}
-              abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
-              statsHrefOverride={`/projects/${projectId}/landings/${l.id}`}
-              containerClassName={STUDIO_CARD}
-            />
-          ))}
+        <div className={`${STUDIO_CARD} overflow-hidden`}>
+          <Table>
+            <TableHeader>
+              <LandingsTableHeader showProject={false} selectable={compareMode} />
+            </TableHeader>
+            <TableBody>
+              {landings.map((l) => (
+                <LandingRow
+                  key={l.id}
+                  landing={l}
+                  showProject={false}
+                  onPreview={() => preview(l.id)}
+                  onManageDomain={() => setDomainDialogLanding(l)}
+                  onGetLink={() => setGetLinkLanding(l)}
+                  onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
+                  onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
+                  onPublish={() => publish.mutate(l.id)}
+                  onUnpublish={() => unpublish.mutate(l.id)}
+                  onDelete={() => remove.mutate(l.id)}
+                  // Скоуп ожидания на конкретную строку через .variables (баг-репорт пользователя
+                  // 2026-07-30: "кнопки всех лэндингов переходят в ожидание") — тот же фикс, что и
+                  // раньше был на карточках, перенесён без изменений на строки таблицы.
+                  isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+                  isDeletePending={remove.isPending && remove.variables === l.id}
+                  canDelete={hasPermission(user, projectId, 'LANDINGS_DELETE')}
+                  selectable={compareMode}
+                  selected={selectedIds.has(l.id)}
+                  onToggleSelect={() => toggleSelected(l.id)}
+                  abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
+                />
+              ))}
+            </TableBody>
+          </Table>
         </div>
       )}
 

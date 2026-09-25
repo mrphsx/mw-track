@@ -17,7 +17,9 @@ import {
   groupAutoLabel,
   previewLanding,
 } from '@/lib/landings';
-import { AbTestDialogTarget, AbTestGroupDialog, LandingCard, LandingDomainDialog } from '@/components/landing-card';
+import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog } from '@/components/landing-card';
+import { LandingRow, LandingsTableHeader } from '@/components/landing-list';
+import { Table, TableBody, TableHeader } from '@/components/ui/table';
 import { GetLinkDialog, GetLinkLanding } from '@/components/get-link-dialog';
 import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dialog';
 import { UploadZipLandingDialog, UploadZipLandingTarget } from '@/components/upload-zip-landing-dialog';
@@ -26,23 +28,13 @@ import { useAuthStore } from '@/store/auth.store';
 import { hasAnyPermission, hasPermission } from '@/lib/permissions';
 import { STUDIO_CARD, StudioLinkButton } from '../ui';
 
-// Цветная точка вместо текстового Badge статуса — тот же STATUS_DOT_CLASS/приём, что и на
-// per-project Studio-странице лендингов (2026-07-30, после 3 заходов на оформление статуса).
-// DRAFT — красный, не серый (запрос пользователя 2026-08-20: "не активный лэндинг подмечай не
-// серым кружком а красным") — раньше был нейтральным "ещё не запущено", теперь однозначно
-// сигналит "требует внимания", тем более что с того же дня новые лендинги публикуются
-// автоматически (см. LandingsService.createFromTemplate/createCustom) — DRAFT теперь либо
-// осознанно снятая с публикации, либо ещё не доделанная страница, а не обычное промежуточное
-// состояние "только что создали".
-const STATUS_DOT_CLASS: Record<string, string> = {
-  PUBLISHED: 'bg-[#1F7A6C] dark:bg-[#6FCBBA]',
-  DRAFT: 'bg-red-500 dark:bg-red-400',
-  ARCHIVED: 'bg-[#6B3E63] dark:bg-[#D19BC4]',
-};
-
 // Studio-версия компанейской страницы "Все лендинги" — логика 1:1 с классической
 // (apps/web/.../(dashboard)/landings/page.tsx). Переключатель "лендинги / группы" (запрос
 // пользователя 2026-08-20) — см. полный комментарий в classic-версии.
+//
+// Список вместо сетки карточек (запрос пользователя 2026-09-25: "сделай список, а не карточку,
+// чтобы было более компактно для работы" — только для Studio, classic-дерево пользователь просил
+// не трогать: "уже не используют") — см. полный комментарий в components/landing-list.tsx.
 export default function StudioAllLandingsPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -271,34 +263,36 @@ export default function StudioAllLandingsPage() {
       )}
 
       {viewMode === 'landings' && !!landings?.length && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {landings.map((l) => (
-            <LandingCard
-              key={l.id}
-              landing={l}
-              domains={domains}
-              showProject
-              onPreview={() => preview(l.id)}
-              onManageDomain={() => setDomainDialogLanding(l)}
-              onGetLink={() => setGetLinkLanding(l)}
-              onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
-              onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
-              onManageAbTest={() =>
-                setAbTestTarget({ projectId: l.project.id, groupId: l.abTestGroupId, preselectedIds: l.abTestGroupId ? [] : [l.id] })
-              }
-              onPublish={() => publish.mutate(l.id)}
-              onUnpublish={() => unpublish.mutate(l.id)}
-              onDelete={() => remove.mutate(l.id)}
-              isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
-              isDeletePending={remove.isPending && remove.variables === l.id}
-              canDelete={hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
-              hideStatusBadge
-              hideChannelDetails
-              statusDotClassName={STATUS_DOT_CLASS[l.status]}
-              abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
-              containerClassName={STUDIO_CARD}
-            />
-          ))}
+        <div className={`${STUDIO_CARD} overflow-hidden`}>
+          <Table>
+            <TableHeader>
+              <LandingsTableHeader showProject />
+            </TableHeader>
+            <TableBody>
+              {landings.map((l) => (
+                <LandingRow
+                  key={l.id}
+                  landing={l}
+                  showProject
+                  onPreview={() => preview(l.id)}
+                  onManageDomain={() => setDomainDialogLanding(l)}
+                  onGetLink={() => setGetLinkLanding(l)}
+                  onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
+                  onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
+                  onManageAbTest={() =>
+                    setAbTestTarget({ projectId: l.project.id, groupId: l.abTestGroupId, preselectedIds: l.abTestGroupId ? [] : [l.id] })
+                  }
+                  onPublish={() => publish.mutate(l.id)}
+                  onUnpublish={() => unpublish.mutate(l.id)}
+                  onDelete={() => remove.mutate(l.id)}
+                  isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+                  isDeletePending={remove.isPending && remove.variables === l.id}
+                  canDelete={hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
+                  abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
+                />
+              ))}
+            </TableBody>
+          </Table>
         </div>
       )}
 
