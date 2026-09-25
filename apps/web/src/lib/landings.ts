@@ -78,6 +78,10 @@ export interface LandingItem {
   // Точная атрибуция (Client.landingId) — сейчас работает только для каналов в режиме
   // "Приватный канал (заявка)", см. TelegramProvider.handleJoinRequest.
   _count: { clients: number };
+  // Счётчик визитов, похожих на бота (запрос пользователя 2026-09-25) — денормализован на
+  // Landing, считается в LandingRendererService.renderAndServe независимо от того, включён ли
+  // клоакинг, см. apps/api/src/modules/landings/bot-heuristic.util.ts.
+  botVisitsCount: number;
   // A/B/n-тестирование (Фаза 3.2) — abTestGroupId общий для всех участников одной группы,
   // abTestWeight — % трафика этого конкретного лендинга внутри группы, см. AbTestGroupDialog.
   abTestGroupId: string | null;

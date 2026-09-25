@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { CloakingCondition } from '@prisma/client';
 import { getClientIp } from '../../../../common/client-ip.util';
-import { HOSTING_IP_RANGES } from '../hosting-ip-ranges';
+import { isLikelyBotRequest } from '../../bot-heuristic.util';
 import { CloakingConditionEvaluator, CloakingEvalContext } from './condition-evaluator.interface';
 import { ipMatchesAnyRange } from './ip-range.util';
 
@@ -18,17 +18,14 @@ export class IpConditionEvaluator implements CloakingConditionEvaluator {
 }
 
 // config: {} — эвристика без настроек: пустой User-Agent ИЛИ IP из известного датацентрового
-// диапазона (см. HOSTING_IP_RANGES). Заведомо слабее платной базы ботов Keitaro — реальный
-// пользователь на VPN/корпоративной сети тоже может попасть под неё, это осознанный компромисс
-// бесплатного тира, явно описанный в подсказке UI рядом с этим условием.
+// диапазона (см. HOSTING_IP_RANGES, через общую isLikelyBotRequest — та же функция считает
+// Landing.botVisitsCount в LandingRendererService, см. bot-heuristic.util.ts). Заведомо слабее
+// платной базы ботов Keitaro — реальный пользователь на VPN/корпоративной сети тоже может попасть
+// под неё, это осознанный компромисс бесплатного тира, явно описанный в подсказке UI рядом с
+// этим условием.
 @Injectable()
 export class BotConditionEvaluator implements CloakingConditionEvaluator {
   evaluate(_condition: CloakingCondition, ctx: CloakingEvalContext): boolean {
-    const userAgent = ctx.req.headers['user-agent'];
-    if (!userAgent || !String(userAgent).trim()) return true;
-
-    const ip = getClientIp(ctx.req);
-    if (!ip) return false;
-    return ipMatchesAnyRange(ip, HOSTING_IP_RANGES);
+    return isLikelyBotRequest(ctx.req);
   }
 }

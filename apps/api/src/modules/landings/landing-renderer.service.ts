@@ -16,6 +16,7 @@ import { isBotUserAgent } from '../../common/bot-user-agent.util';
 import { getClientIp } from '../../common/client-ip.util';
 import { resolveVisitorCountry } from '../../common/geo-country.util';
 import { CloakingService } from './cloaking/cloaking.service';
+import { isLikelyBotRequest } from './bot-heuristic.util';
 
 // Хэш содержимого track.js (см. apps/sdk/scripts/publish-cdn.js — перезаписывается на каждом
 // SDK-паблише, попадает в dist через nest-cli.json assets). Добавляется в URL скрипта как
@@ -229,6 +230,20 @@ export class LandingRendererService {
     if (!landing || landing.status !== 'PUBLISHED' || landing.deletedAt) {
       res.status(404).send('<h1>Page not found</h1>');
       return;
+    }
+
+    // Счётчик "похожих на бота" визитов (запрос пользователя 2026-09-25: "в кейтаро показывает
+    // сколько ботов пришло") — считается на КАЖДОМ реальном заходе на страницу лендинга,
+    // независимо от того, включён ли клоакинг вообще (та же логика, что у Keitaro: это отдельная
+    // статистика по визиту, а не побочный эффект фильтрации) — поэтому стоит здесь, а не внутри
+    // CloakingService. Только для самого HTML-документа (subPath пуст или 'index.html' у CUSTOM),
+    // не на каждый CSS/JS/картинку CUSTOM-лендинга — иначе один и тот же визит скрейпера считался
+    // бы много раз. Fire-and-forget (не await) — это чистая статистика, не должна ни на миллисекунду
+    // задерживать отдачу реального лендинга ни человеку, ни боту.
+    if (!subPath || subPath === 'index.html') {
+      if (isLikelyBotRequest(req)) {
+        this.prisma.landing.update({ where: { id: landing.id }, data: { botVisitsCount: { increment: 1 } } }).catch(() => {});
+      }
     }
 
     // Клоакинг — до любого рендера контента: посетитель не из разрешённой страны никогда

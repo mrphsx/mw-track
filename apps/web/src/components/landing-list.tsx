@@ -70,6 +70,9 @@ export function LandingsTableHeader({ showProject, selectable }: { showProject: 
       <TableHead>Лендинг{showProject && ' / Проект'}</TableHead>
       <TableHead>Тип / Шаблон</TableHead>
       <TableHead className="text-right">Клиенты</TableHead>
+      <TableHead className="text-right" title="Визиты, похожие на бота (пустой User-Agent, известный краулер или IP дата-центра) — эвристика, не платная база ботов">
+        Ботов
+      </TableHead>
       <TableHead>Фильтрация</TableHead>
       <TableHead>Авторедирект</TableHead>
       <TableHead className="w-10" />
@@ -161,6 +164,9 @@ export function LandingRow({
         </div>
       </TableCell>
       <TableCell className="text-right whitespace-nowrap">{landing._count.clients}</TableCell>
+      <TableCell className="text-right whitespace-nowrap text-muted-foreground" title="Визиты, похожие на бота">
+        {landing.botVisitsCount}
+      </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         <FilteringPill landing={landing} />
       </TableCell>
