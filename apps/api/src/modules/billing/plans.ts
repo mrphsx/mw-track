@@ -29,7 +29,8 @@ export interface PlanConfig {
 //   заметно меньшим лимитом клиентов/рассылок, но чуть большим числом проектов.
 // - PRO — новый тариф между SCALE и ULTIMATE, $599, 50 проектов, 120000 клиентов, 250 рассылок/день.
 // - ULTIMATE — новый топовый самообслуживаемый тариф (ENTERPRISE по-прежнему отдельно, только по
-//   индивидуальным условиям), $1199, 200 проектов, 500000 клиентов, 1 000 000 рассылок/день.
+//   индивидуальным условиям), $1199, 200 проектов, 500000 клиентов, 1000 рассылок/день (изначально
+//   было озвучено "1 млн", тем же днём пользователь поправил на 1000 — не опечатка с моей стороны).
 // Названия PRO/ULTIMATE выбраны как продолжение существующей лестницы STARTER→GROWTH→SCALE —
 // не были явно заданы пользователем, легко переименовать при необходимости (потребует ещё одной
 // ALTER TYPE ... RENAME VALUE миграции, см. прецедент в 20260704140000_team_roles).
@@ -44,7 +45,7 @@ export const PLANS: Record<SubscriptionPlan, PlanConfig> = {
   GROWTH: { priceUsdt: 149, durationDays: 30, maxProjects: 10, maxClients: 25000, maxPushesPerDay: 50 },
   SCALE: { priceUsdt: 299, durationDays: 30, maxProjects: 25, maxClients: 50000, maxPushesPerDay: 100 },
   PRO: { priceUsdt: 599, durationDays: 30, maxProjects: 50, maxClients: 120000, maxPushesPerDay: 250 },
-  ULTIMATE: { priceUsdt: 1199, durationDays: 30, maxProjects: 200, maxClients: 500000, maxPushesPerDay: 1000000 },
+  ULTIMATE: { priceUsdt: 1199, durationDays: 30, maxProjects: 200, maxClients: 500000, maxPushesPerDay: 1000 },
   ENTERPRISE: { priceUsdt: 0, durationDays: 30, maxProjects: 50, maxClients: 999999, maxPushesPerDay: 999 },
 };
 
