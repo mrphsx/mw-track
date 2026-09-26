@@ -443,6 +443,12 @@ export function PixelsTab({
                   )}
                 </div>
               </div>
+              {/* ID пикселя мелким серым текстом (запрос пользователя 2026-09-26) — показывается
+                  только когда задан кастомный label: без label сам pixel.pixelId уже виден как
+                  название строки выше, повторять его прямо под собой было бы избыточно. */}
+              {pixel.label && (
+                <p className={`text-xs ${MUTED} mt-0.5`}>ID: {pixel.pixelId}</p>
+              )}
               {/* Автор (запрос пользователя 2026-08-03) */}
               {pixel.createdBy && (
                 <p className={`text-xs ${MUTED} mt-0.5`}>
