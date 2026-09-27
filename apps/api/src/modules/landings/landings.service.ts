@@ -51,7 +51,20 @@ export interface TemplateInfo {
   // tg-invite-light "поставь недоступно, светлую пришлю позже"). Отсутствие поля = доступен,
   // как и у всех шаблонов до этого — не нужно проставлять true везде.
   available?: boolean;
+  // Ограничение видимости по компании (запрос пользователя 2026-09-27: "сделай их доступными
+  // пока только для команды isabella") — отсутствие поля = виден всем компаниям, как и раньше.
+  // Отфильтровывается в getTemplates() ДО отправки на фронтенд (не просто скрывается в UI) —
+  // компания, которой шаблон не разрешён, вообще не видит его в GET /landings/templates и не
+  // может получить его превью; assertTemplateAllowed ниже — второй рубеж защиты на создание.
+  restrictedToCompanyIds?: string[];
 }
+
+// ID компании ISABELA — единственная, кому пока доступен первый реальный шаблон из подборки
+// идей вовлечённости (артефакт "Концепты лендингов", 2026-09-25/27: "давай сделаем пока что
+// первый, мне понравилась идея"). Не выносится в env/DB — это временное, штучное ограничение
+// на один конкретный шаблон, а не общая инфраструктура; если позже понадобится открыть другим
+// компаниям или сделать общий механизм фичефлагов на шаблоны — тогда и переносить.
+const ISABELA_COMPANY_ID = 'cmrtqcclx0028qwjefprbjdnv';
 
 // Проект и канал — 1:1 с 2026-07-02 (см. Project.channel в schema.prisma), дизамбигуация
 // "какой канал считается ведущим" из нескольких больше не нужна — просто select одного
@@ -98,7 +111,22 @@ export class LandingsService {
     private projectsService: ProjectsService,
   ) {}
 
-  async getTemplates(): Promise<TemplateInfo[]> {
+  async getTemplates(companyId: string): Promise<TemplateInfo[]> {
+    return this.allTemplates().filter((t) => !t.restrictedToCompanyIds || t.restrictedToCompanyIds.includes(companyId));
+  }
+
+  // Второй рубеж защиты (тот же принцип, что PAID_CLOAKING_FIELDS/TRIAL_ALLOWED_CLOAKING_FIELDS
+  // у клоакинга) — на случай прямого запроса к API в обход UI, минуя список из getTemplates().
+  // Публичный — используется и здесь (создание лендинга), и LandingsController.templatePreview
+  // (тот дёргает LandingRendererService напрямую, минуя остальные методы этого сервиса).
+  assertTemplateAllowed(templateId: string, companyId: string): void {
+    const template = this.allTemplates().find((t) => t.id === templateId);
+    if (template?.restrictedToCompanyIds && !template.restrictedToCompanyIds.includes(companyId)) {
+      throw new NotFoundException('Шаблон не найден');
+    }
+  }
+
+  private allTemplates(): TemplateInfo[] {
     return [
       {
         id: 'minimal',
@@ -172,6 +200,22 @@ export class LandingsService {
         previewUrl: `${process.env.CDN_URL}/templates/age-gate-invite/preview.jpg`,
         customizableFields: ['POPUP1_TITLE', 'POPUP1_TEXT', 'POPUP1_YES_TEXT', 'POPUP1_NO_TEXT', 'POPUP2_TITLE', 'POPUP2_TEXT', 'POPUP2_BUTTON_TEXT'],
       },
+      // Первый из шести концептов вовлечённости, показанных пользователю в качестве примеров
+      // 2026-09-25 (артефакт "Концепты лендингов", не связан с продуктом) — превращён в реальный
+      // шаблон 2026-09-27 по запросу ("сделай пока что первый, мне понравилась идея"), временно
+      // доступен только компании ISABELA (restrictedToCompanyIds). Обычная карточка канала (та же
+      // структура, что tg-invite-dark — аватар/название/подписчики/описание/кнопка), плюс новый
+      // блок "дефицита времени" сверху: таймер стартует от COUNTDOWN_MINUTES при КАЖДОМ заходе
+      // (не от общего для всех дедлайна — так честнее и не ломается для посетителя, зашедшего
+      // после "истечения" общего таймера), прогресс-бар и текст об ограниченных местах.
+      {
+        id: 'countdown-urgency',
+        name: 'Обратный отсчёт',
+        description: 'Карточка канала с таймером "доступ закроется через..." и текстом об ограниченном числе мест — таймер стартует заново при каждом заходе',
+        previewUrl: `${process.env.CDN_URL}/templates/countdown-urgency/preview.jpg`,
+        customizableFields: ['LOCK_TEXT', 'SPOTS_TEXT', 'COUNTDOWN_MINUTES', 'JOIN_BUTTON_TEXT'],
+        restrictedToCompanyIds: [ISABELA_COMPANY_ID],
+      },
     ];
   }
 
@@ -181,6 +225,8 @@ export class LandingsService {
   // createdById — запрос пользователя 2026-08-03, тот же паттерн, что уже есть у
   // Purchase.registeredBy (кто выполнил действие, опционально).
   async createFromTemplate(projectId: string, companyId: string, dto: CreateLandingFromTemplateDto, createdById?: string): Promise<Landing> {
+    this.assertTemplateAllowed(dto.templateId, companyId);
+
     // "Изначально стоит как в канале" (запрос пользователя 2026-07-04) — если пользователь не
     // указал число подписчиков вручную, подставляем реальное текущее число участников канала
     // (Channel.tgChannelMembersCount, подтягивается в TelegramProvider.fetchAndSaveMetadata).
@@ -225,6 +271,11 @@ export class LandingsService {
           POPUP2_TITLE: dto.popup2Title || '¡Suscríbete a nuestro canal!',
           POPUP2_TEXT: dto.popup2Text || '',
           POPUP2_BUTTON_TEXT: dto.popup2ButtonText || 'Unirse al canal',
+          // countdown-urgency (запрос пользователя 2026-09-27) — дефолты совпадают с тем, что
+          // было в исходном макете-концепте (артефакт "Концепты лендингов").
+          LOCK_TEXT: dto.lockText || '🔒 Доступ закроется через',
+          SPOTS_TEXT: dto.spotsText || '🔥 Осталось 14 мест из 50',
+          COUNTDOWN_MINUTES: dto.countdownMinutes || '167',
         },
         metaTitle: dto.metaTitle,
         metaDescription: dto.metaDescription,
@@ -538,6 +589,9 @@ export class LandingsService {
     if (dto.popup2Title !== undefined) templateDataPatch.POPUP2_TITLE = dto.popup2Title;
     if (dto.popup2Text !== undefined) templateDataPatch.POPUP2_TEXT = dto.popup2Text;
     if (dto.popup2ButtonText !== undefined) templateDataPatch.POPUP2_BUTTON_TEXT = dto.popup2ButtonText;
+    if (dto.lockText !== undefined) templateDataPatch.LOCK_TEXT = dto.lockText;
+    if (dto.spotsText !== undefined) templateDataPatch.SPOTS_TEXT = dto.spotsText;
+    if (dto.countdownMinutes !== undefined) templateDataPatch.COUNTDOWN_MINUTES = dto.countdownMinutes;
 
     return this.prisma.landing.update({
       where: { id },

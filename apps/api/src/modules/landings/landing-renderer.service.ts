@@ -421,6 +421,11 @@ export class LandingRendererService {
       POPUP2_TITLE: '¡Suscríbete a nuestro canal!',
       POPUP2_TEXT: '',
       POPUP2_BUTTON_TEXT: 'Unirse al canal',
+      // countdown-urgency (запрос пользователя 2026-09-27) — тот же баг-класс, что и у
+      // POPUP*-ключей выше: без фолбэков галерея показала бы пустой таймер/тексты.
+      LOCK_TEXT: '🔒 Доступ закроется через',
+      SPOTS_TEXT: '🔥 Осталось 14 мест из 50',
+      COUNTDOWN_MINUTES: '167',
     };
 
     html = this.processConditionals(html, vars);

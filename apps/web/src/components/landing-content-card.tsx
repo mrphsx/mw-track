@@ -31,6 +31,10 @@ import {
 // 2026-08-18) — набор редактируемых полей для него совсем другой, см. AGE_GATE_TEMPLATE_ID
 // ниже (тот же id, что и в create-landing-dialog.tsx).
 const AGE_GATE_TEMPLATE_ID = 'age-gate-invite';
+// countdown-urgency (запрос пользователя 2026-09-27) — обычная карточка канала, как у всех
+// остальных шаблонов (не своя ветка вместо неё, как у age-gate выше), плюс 3 доп. поля таймера
+// дефицита показываются внутри той же !isAgeGate-ветки.
+const COUNTDOWN_TEMPLATE_ID = 'countdown-urgency';
 
 interface LandingContentFull {
   id: string;
@@ -49,6 +53,9 @@ interface LandingContentFull {
     POPUP2_TITLE?: string;
     POPUP2_TEXT?: string;
     POPUP2_BUTTON_TEXT?: string;
+    LOCK_TEXT?: string;
+    SPOTS_TEXT?: string;
+    COUNTDOWN_MINUTES?: string;
   } | null;
 }
 
@@ -97,6 +104,9 @@ export function LandingContentCard({
   const [popup2Title, setPopup2Title] = useState('');
   const [popup2Text, setPopup2Text] = useState('');
   const [popup2ButtonText, setPopup2ButtonText] = useState('');
+  const [lockText, setLockText] = useState('');
+  const [spotsText, setSpotsText] = useState('');
+  const [countdownMinutes, setCountdownMinutes] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -116,9 +126,13 @@ export function LandingContentCard({
     setPopup2Title(d.POPUP2_TITLE || '');
     setPopup2Text(d.POPUP2_TEXT || '');
     setPopup2ButtonText(d.POPUP2_BUTTON_TEXT || '');
+    setLockText(d.LOCK_TEXT || '');
+    setSpotsText(d.SPOTS_TEXT || '');
+    setCountdownMinutes(d.COUNTDOWN_MINUTES || '');
   }, [landing]);
 
   const isAgeGate = landing?.templateId === AGE_GATE_TEMPLATE_ID;
+  const isCountdown = landing?.templateId === COUNTDOWN_TEMPLATE_ID;
 
   const save = useMutation({
     mutationFn: () =>
@@ -131,6 +145,7 @@ export function LandingContentCard({
         ...(isAgeGate
           ? { popup1Title, popup1Text, popup1YesText, popup1NoText, popup2Title, popup2Text, popup2ButtonText }
           : {}),
+        ...(isCountdown ? { lockText, spotsText, countdownMinutes } : {}),
       }),
     onSuccess: () => {
       invalidate();
@@ -387,6 +402,33 @@ export function LandingContentCard({
           />
         )}
       </div>
+
+      {isCountdown && (
+        <>
+          <p className={`text-xs ${muted} pt-2 border-t`}>
+            Таймер дефицита — стартует заново при каждом заходе на страницу, не от общего для всех
+            дедлайна.
+          </p>
+          <div className="space-y-1.5">
+            <Label htmlFor="content-lock-text">Текст над таймером</Label>
+            <Input id="content-lock-text" value={lockText} onChange={(e) => setLockText(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="content-countdown-minutes">Длительность таймера (минут)</Label>
+            <Input
+              id="content-countdown-minutes"
+              inputMode="numeric"
+              value={countdownMinutes}
+              onChange={(e) => setCountdownMinutes(e.target.value.replace(/\D/g, '').slice(0, 4))}
+              className="max-w-32"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="content-spots-text">Текст об ограниченных местах</Label>
+            <Input id="content-spots-text" value={spotsText} onChange={(e) => setSpotsText(e.target.value)} />
+          </div>
+        </>
+      )}
       </>
       )}
 

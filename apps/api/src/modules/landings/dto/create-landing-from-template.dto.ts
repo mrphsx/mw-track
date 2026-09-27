@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
 import { LandingBehaviorDto } from './landing-behavior.dto';
 
 // Баг-репорт пользователя 2026-07-15: "при выборе telegram тёмный или светлый пишет ошибка
@@ -6,7 +6,10 @@ import { LandingBehaviorDto } from './landing-behavior.dto';
 // обновлялся при добавлении новых шаблонов (telegram-light/dark 2026-07-04, tg-invite-dark/
 // light 2026-07-14/15), из-за чего @IsIn молча резал ЛЮБОЙ templateId не из первых трёх.
 // Держать в синхроне с LandingsService.getTemplates() при добавлении новых шаблонов.
-const TEMPLATE_IDS = ['minimal', 'gradient', 'dark', 'telegram-light', 'telegram-dark', 'tg-invite-dark', 'tg-invite-light', 'age-gate-invite'];
+const TEMPLATE_IDS = [
+  'minimal', 'gradient', 'dark', 'telegram-light', 'telegram-dark', 'tg-invite-dark', 'tg-invite-light',
+  'age-gate-invite', 'countdown-urgency',
+];
 
 export class CreateLandingFromTemplateDto extends LandingBehaviorDto {
   @IsString()
@@ -39,6 +42,14 @@ export class CreateLandingFromTemplateDto extends LandingBehaviorDto {
   @IsOptional() @IsString() popup2Title?: string;
   @IsOptional() @IsString() popup2Text?: string;
   @IsOptional() @IsString() popup2ButtonText?: string;
+
+  // countdown-urgency (запрос пользователя 2026-09-27) — LOCK_TEXT/SPOTS_TEXT свободный текст,
+  // как и остальные текстовые поля выше; countdownMinutes идёт напрямую в inline-скрипт таймера
+  // на странице (var totalMinutes = {{COUNTDOWN_MINUTES}};), поэтому только цифры — не строка
+  // произвольного формата, как у остальных customizableFields.
+  @IsOptional() @IsString() lockText?: string;
+  @IsOptional() @IsString() spotsText?: string;
+  @IsOptional() @Matches(/^\d{1,4}$/, { message: 'countdownMinutes должно быть числом от 1 до 4 цифр' }) countdownMinutes?: string;
 
   @IsOptional() @IsString() metaTitle?: string;
   @IsOptional() @IsString() metaDescription?: string;

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+  <title>{{META_TITLE}}</title>
+  <meta name="description" content="{{META_DESCRIPTION}}">
+  <style>
+    /* Первый из шести концептов вовлечённости, показанных пользователю 2026-09-25 (артефакт
+       "Концепты лендингов", chat.html "1. countdown" — сама механика/цвета/анимация оттуда,
+       перенесены как есть), превращён в реальный шаблон 2026-09-27 ("сделай пока что первый, мне
+       понравилась идея"). Карточка канала — та же структура, что tg-invite-dark (avatar/title/
+       subscribers/description/button, {{PRIMARY_COLOR}}/{{JOIN_BUTTON_TEXT}} customizableFields),
+       плюс новый блок "дефицита времени" между описанием и кнопкой. Таймер стартует заново при
+       КАЖДОМ заходе на страницу (не от одного дедлайна на всех посетителей) — см. script внизу.
+    */
+    html, body { margin: 0; padding: 0; box-sizing: border-box; }
+    h1, p { margin: 0; }
+    *, *::before, *::after { box-sizing: inherit; }
+    a { text-decoration: none; color: inherit; display: inline-block; }
+    body {
+      font-family: "Roboto", -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #E8EAF0;
+      background: radial-gradient(ellipse at 50% -10%, #1a2030 0%, #0b0e14 55%);
+      min-height: 100vh;
+    }
+    .main { padding: 40px 16px; }
+    .channel {
+      margin: 16px auto;
+      padding: 32px 16px;
+      max-width: 400px;
+      background: #12161F;
+      border: 1px solid #262C3C;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+    .channel__img-link { border-radius: 50%; overflow: hidden; display: block; }
+    .channel__img { width: 108px; height: 108px; object-fit: cover; display: block; }
+    .avatar-placeholder {
+      width: 108px; height: 108px; border-radius: 54px;
+      background: {{PRIMARY_COLOR}};
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 44px; font-weight: bold;
+    }
+    .channel__title { font-size: 24px; line-height: 30px; font-weight: 700; margin: 16px 0 6px; }
+    .channel__subscribers { font-size: 14px; line-height: 18px; color: #8A93A6; margin-bottom: 10px; }
+    .channel__description { word-break: break-word; font-size: 15px; line-height: 23px; color: #C4CAD6; margin-bottom: 20px; }
+
+    /* --- блок дефицита времени --- */
+    .urgency {
+      width: 100%;
+      background: #1A2030;
+      border: 1px solid #FFB02040;
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 20px;
+      text-align: left;
+    }
+    .urgency__lock {
+      color: #8A93A6;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .urgency__digits {
+      font-family: "Roboto Mono", monospace;
+      font-variant-numeric: tabular-nums;
+      font-size: 34px;
+      font-weight: 500;
+      color: #E8EAF0;
+      margin-bottom: 10px;
+    }
+    .urgency__bar-track { height: 5px; background: #262C3C; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+    .urgency__bar-fill { height: 100%; background: #FFB020; width: 68%; transition: width 1s linear; }
+    .urgency__spots { font-size: 13px; color: #C4CAD6; }
+
+    .channel__link {
+      background-color: {{PRIMARY_COLOR}};
+      background-image: linear-gradient(270deg, rgba(255,255,255,0) 48.44%, rgba(255,255,255,.25) 75.52%, rgba(255,255,255,0) 100%);
+      background-size: 500px 100%;
+      background-repeat: no-repeat;
+      background-position: -500px 0;
+      animation: bg-move 3s linear infinite;
+      color: #14100A;
+      font-size: 14px; line-height: 17px; font-weight: 700;
+      border-radius: 22px;
+      padding: 13px 24px;
+      text-transform: uppercase;
+      width: 100%;
+    }
+    @keyframes bg-move {
+      0% { background-position: -500px 0; }
+      25% { background-position: 500px 0; }
+      100% { background-position: 500px 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="main">
+    <div class="channel">
+      {{#if CHANNEL_AVATAR}}
+      <a class="channel__img-link" href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">
+        <img class="channel__img" src="{{CHANNEL_AVATAR}}" width="108" height="108" alt="{{CHANNEL_TITLE}}">
+      </a>
+      {{else}}
+      <a class="channel__img-link" href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">
+        <div class="avatar-placeholder">{{CHANNEL_INITIAL}}</div>
+      </a>
+      {{/if}}
+
+      <h1 class="channel__title">{{CHANNEL_TITLE}}</h1>
+
+      {{#if SUBSCRIBERS_COUNT}}
+      <span class="channel__subscribers">{{SUBSCRIBERS_COUNT}} {{SUBSCRIBERS_LABEL}}</span>
+      {{/if}}
+
+      <div class="channel__description">{{CHANNEL_DESCRIPTION}}</div>
+
+      <div class="urgency">
+        <div class="urgency__lock">{{LOCK_TEXT}}</div>
+        <div class="urgency__digits" id="cd">00:00:00</div>
+        <div class="urgency__bar-track"><div class="urgency__bar-fill" id="cdbar"></div></div>
+        <div class="urgency__spots">{{SPOTS_TEXT}}</div>
+      </div>
+
+      <a class="channel__link" href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">
+        {{JOIN_BUTTON_TEXT}}
+      </a>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      // Стартует заново при КАЖДОМ заходе на страницу — не единый дедлайн на всех посетителей
+      // (тот, кто зайдёт позже, не должен увидеть "00:00:00" с самого начала).
+      var totalMinutes = {{COUNTDOWN_MINUTES}};
+      var total = Math.max(1, totalMinutes) * 60;
+      var startTotal = total;
+      var el = document.getElementById('cd');
+      var bar = document.getElementById('cdbar');
+      function render() {
+        var h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+        el.textContent = [h, m, s].map(function (v) { return String(v).padStart(2, '0'); }).join(':');
+        bar.style.width = (total / startTotal * 68) + '%';
+      }
+      render();
+      var timer = setInterval(function () {
+        if (total <= 0) { clearInterval(timer); return; }
+        total--;
+        render();
+      }, 1000);
+    })();
+  </script>
+
+  <!-- TRACKING_PLACEHOLDER -->
+</body>
+</html>

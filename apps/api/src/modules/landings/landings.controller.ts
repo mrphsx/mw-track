@@ -40,16 +40,19 @@ export class LandingsController {
   }
 
   @Get('templates')
-  getTemplates() {
-    return this.landingsService.getTemplates();
+  getTemplates(@Company() companyId: string) {
+    return this.landingsService.getTemplates(companyId);
   }
 
   // Мини-превью шаблона со статичными демо-данными для галереи в диалоге создания лендинга
   // (запрос пользователя 2026-07-15) — должен идти раньше ':id' ниже, иначе Nest принял бы
-  // 'templates' за id лендинга.
+  // 'templates' за id лендинга. assertTemplateAllowed — компания без доступа к
+  // restrictedToCompanyIds-шаблону не может получить его превью, даже зная templateId напрямую
+  // (тот же рубеж, что и на создание).
   @Get('templates/:id/preview')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  templatePreview(@Param('id') id: string) {
+  templatePreview(@Param('id') id: string, @Company() companyId: string) {
+    this.landingsService.assertTemplateAllowed(id, companyId);
     return this.rendererService.renderTemplateGalleryPreview(id);
   }
 

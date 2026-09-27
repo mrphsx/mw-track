@@ -47,6 +47,9 @@ interface ProjectOption {
 // Единственный шаблон с двумя попапами вместо карточки канала (запрос пользователя
 // 2026-08-18) — набор полей формы для него совсем другой (см. AGE_GATE_TEMPLATE_ID ниже).
 const AGE_GATE_TEMPLATE_ID = 'age-gate-invite';
+// countdown-urgency (запрос пользователя 2026-09-27) — обычная карточка канала (та же ветка
+// формы, что и у всех остальных non-age-gate шаблонов), плюс 3 доп. поля таймера ниже.
+const COUNTDOWN_TEMPLATE_ID = 'countdown-urgency';
 
 interface ProjectChannelInfo {
   channel: { tgChannelTitle: string | null; tgBotFirstName: string | null } | null;
@@ -96,6 +99,11 @@ export function CreateLandingFromTemplateDialog({
   const [popup2Title, setPopup2Title] = useState('¡Suscríbete a nuestro canal!');
   const [popup2Text, setPopup2Text] = useState('');
   const [popup2ButtonText, setPopup2ButtonText] = useState('Unirse al canal');
+  // countdown-urgency (запрос пользователя 2026-09-27) — дефолты совпадают с
+  // LandingsService.createFromTemplate.
+  const [lockText, setLockText] = useState('🔒 Доступ закроется через');
+  const [spotsText, setSpotsText] = useState('🔥 Осталось 14 мест из 50');
+  const [countdownMinutes, setCountdownMinutes] = useState('167');
   const [templateDomainId, setTemplateDomainId] = useState(NO_DOMAIN);
   const [templateBehavior, setTemplateBehavior] =
     useState<LandingBehaviorState>(EMPTY_LANDING_BEHAVIOR);
@@ -133,6 +141,9 @@ export function CreateLandingFromTemplateDialog({
     setPopup2Title('¡Suscríbete a nuestro canal!');
     setPopup2Text('');
     setPopup2ButtonText('Unirse al canal');
+    setLockText('🔒 Доступ закроется через');
+    setSpotsText('🔥 Осталось 14 мест из 50');
+    setCountdownMinutes('167');
     setTemplateDomainId(NO_DOMAIN);
     setTemplateBehavior(EMPTY_LANDING_BEHAVIOR);
     setError('');
@@ -159,6 +170,7 @@ export function CreateLandingFromTemplateDialog({
                 popup2ButtonText,
               }
             : {}),
+          ...(templateId === COUNTDOWN_TEMPLATE_ID ? { lockText, spotsText, countdownMinutes } : {}),
           ...behaviorStateToPayload(templateBehavior),
         })
       ).data as { id: string },
@@ -322,6 +334,31 @@ export function CreateLandingFromTemplateDialog({
                   />
                 )}
               </div>
+              {templateId === COUNTDOWN_TEMPLATE_ID && (
+                <div className="space-y-3 border rounded-lg p-3">
+                  <p className="text-xs text-muted-foreground">
+                    Таймер дефицита — стартует заново при каждом заходе на страницу, не от общего для всех дедлайна.
+                  </p>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="landing-lock-text">Текст над таймером</Label>
+                    <Input id="landing-lock-text" value={lockText} onChange={(e) => setLockText(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="landing-countdown-minutes">Длительность таймера (минут)</Label>
+                    <Input
+                      id="landing-countdown-minutes"
+                      inputMode="numeric"
+                      value={countdownMinutes}
+                      onChange={(e) => setCountdownMinutes(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      className="max-w-32"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="landing-spots-text">Текст об ограниченных местах</Label>
+                    <Input id="landing-spots-text" value={spotsText} onChange={(e) => setSpotsText(e.target.value)} />
+                  </div>
+                </div>
+              )}
             </>
           )}
           <div className="space-y-1.5">
