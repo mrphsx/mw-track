@@ -376,6 +376,7 @@ export function CreateLandingFromTemplateDialog({
               idPrefix="new-template"
               state={templateBehavior}
               onChange={(patch) => setTemplateBehavior((s) => ({ ...s, ...patch }))}
+              templateId={templateId}
             />
           </div>
 

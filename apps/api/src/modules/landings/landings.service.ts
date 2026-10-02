@@ -15,6 +15,7 @@ import { UploadCustomLandingDto } from './dto/upload-custom-landing.dto';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
+import { AGE_GATE_TEMPLATE_ID } from './extra-popup.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
 import { CreateCloakingRuleDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
 import { CloakingLogsQueryDto } from './dto/cloaking-logs-query.dto';
@@ -226,6 +227,7 @@ export class LandingsService {
   // Purchase.registeredBy (кто выполнил действие, опционально).
   async createFromTemplate(projectId: string, companyId: string, dto: CreateLandingFromTemplateDto, createdById?: string): Promise<Landing> {
     this.assertTemplateAllowed(dto.templateId, companyId);
+    this.assertExtraPopupAllowed(dto.templateId, dto.extraPopupEnabled);
 
     // "Изначально стоит как в канале" (запрос пользователя 2026-07-04) — если пользователь не
     // указал число подписчиков вручную, подставляем реальное текущее число участников канала
@@ -286,6 +288,8 @@ export class LandingsService {
         leadOnAutoRedirect: dto.leadOnAutoRedirect,
         tiktokBrowserHint: dto.tiktokBrowserHint,
         tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
+        extraPopupEnabled: dto.extraPopupEnabled,
+        extraPopupConfig: dto.extraPopupConfig === undefined ? undefined : (dto.extraPopupConfig as Prisma.InputJsonValue | null),
       },
     });
     // Автопубликация (запрос пользователя 2026-08-20: "при создании лэндинга он автоматом
@@ -569,6 +573,7 @@ export class LandingsService {
 
   async update(id: string, companyId: string, dto: UpdateLandingDto): Promise<Landing> {
     const landing = await this.findOne(id, companyId);
+    this.assertExtraPopupAllowed(landing.templateId, dto.extraPopupEnabled);
 
     const existingData = (landing.templateData as Record<string, string>) || {};
     const templateDataPatch: Record<string, string> = {};
@@ -606,8 +611,20 @@ export class LandingsService {
         leadOnAutoRedirect: dto.leadOnAutoRedirect,
         tiktokBrowserHint: dto.tiktokBrowserHint,
         tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
+        extraPopupEnabled: dto.extraPopupEnabled,
+        extraPopupConfig: dto.extraPopupConfig === undefined ? undefined : (dto.extraPopupConfig as Prisma.InputJsonValue | null),
       },
     });
+  }
+
+  // Дополнительный попап (запрос клиентов 2026-10-02) доступен любому лендингу, КРОМЕ шаблона
+  // age-gate-invite: у него такой попап уже встроен в собственный template.html, и второй поверх
+  // него был бы дублем того же вопроса. Отказ, а не молчаливое игнорирование: иначе переключатель
+  // в UI выглядел бы включённым, а на странице ничего бы не менялось.
+  private assertExtraPopupAllowed(templateId: string | null | undefined, extraPopupEnabled?: boolean): void {
+    if (extraPopupEnabled && templateId === AGE_GATE_TEMPLATE_ID) {
+      throw new BadRequestException('У шаблона «Проверка возраста + приглашение» такой попап уже есть — дополнительный здесь не нужен');
+    }
   }
 
   // Создать новый CUSTOM-лендинг сразу из ZIP — отдельно от createFromTemplate,
@@ -1236,6 +1253,8 @@ export class LandingsService {
         leadOnAutoRedirect: original.leadOnAutoRedirect,
         tiktokBrowserHint: original.tiktokBrowserHint,
         tiktokHintTexts: original.tiktokHintTexts === null ? Prisma.JsonNull : (original.tiktokHintTexts as Prisma.InputJsonValue),
+        extraPopupEnabled: original.extraPopupEnabled,
+        extraPopupConfig: original.extraPopupConfig === null ? Prisma.JsonNull : (original.extraPopupConfig as Prisma.InputJsonValue),
         status: LandingStatus.DRAFT,
       },
     });

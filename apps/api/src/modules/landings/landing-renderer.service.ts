@@ -11,6 +11,7 @@ import { StorageService } from './storage.service';
 import { matchDomainPath } from '../domains/domain-path.util';
 import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-link.util';
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
+import { AGE_GATE_TEMPLATE_ID, renderExtraPopupHtml, resolveExtraPopup } from './extra-popup.util';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { isBotUserAgent } from '../../common/bot-user-agent.util';
 import { getClientIp } from '../../common/client-ip.util';
@@ -754,7 +755,14 @@ export class LandingRendererService {
     // track.js читает этот атрибут и вместо немедленного редиректа кладёт функцию в
     // window.tcrm.triggerAutoRedirect — сам template.html вызывает её в JS-обработчике клика
     // "Да"/POPUP1_YES_TEXT, ровно в момент открытия попапа 2 (см. apps/sdk/src/browser.ts).
-    const deferAutoRedirect = landing.templateId === 'age-gate-invite';
+    // Дополнительный попап (запрос клиентов 2026-10-02) — пока он висит поверх лендинга,
+    // авторедирект и подсказка TikTok должны ждать ровно так же, как на age-gate-invite: иначе
+    // посетителя унесло бы в Telegram, не дав ответить на вопрос. Сам попап (см. ниже) вызывает
+    // window.tcrm.triggerAutoRedirect() при нажатии кнопки "следующий шаг" — тем же вызовом, что
+    // и template.html у age-gate-invite.
+    const extraPopupActive = landing.extraPopupEnabled && landing.templateId !== AGE_GATE_TEMPLATE_ID;
+
+    const deferAutoRedirect = landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive;
 
     // Карта параметров (§ выше) прокидывается браузерному SDK тем же способом, что и
     // data-landing-id — иначе track.js не будет знать, под каким кастомным именем искать
@@ -836,6 +844,15 @@ ttq.page();}(window,document,'ttq');
       html = html.replace('<!-- TRACKING_PLACEHOLDER -->', trackingScripts);
     } else {
       html = trackingScripts + html;
+    }
+
+    // Разметка дополнительного попапа — в КОНЕЦ body, а не в head: оверлей перекрывает лендинг
+    // собственным z-index, а его скрипт обращается к уже существующему в DOM элементу, без
+    // ожидания DOMContentLoaded. Конечный ресурс для кнопки "FINAL" — та же готовая ссылка, что
+    // подставляется в {{TG_REDIRECT_URL}} (Telegram-переход или адрес сайта для ChannelType.WEBSITE).
+    if (extraPopupActive) {
+      const popupHtml = renderExtraPopupHtml(resolveExtraPopup(landing.extraPopupConfig), telegramJoinUrl || websiteDestination || '');
+      html = html.includes('</body>') ? html.replace('</body>', `${popupHtml}\n</body>`) : html + popupHtml;
     }
 
     return html;

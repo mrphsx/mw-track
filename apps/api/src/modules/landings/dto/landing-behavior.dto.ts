@@ -1,5 +1,6 @@
-import { IsBoolean, IsOptional, IsString, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { EXTRA_POPUP_ACTIONS, MAX_EXTRA_POPUP_BUTTONS } from '../extra-popup.util';
 
 // Тексты попапа-подсказки (запрос пользователя 2026-08-27, "форма для замены текстов как у
 // конкурента", дефолт — английский, задаётся встроенным дефолтом в SDK, не здесь) — каждое поле
@@ -41,6 +42,41 @@ export class TiktokHintTextsDto {
   @IsString()
   @MaxLength(300)
   copiedText?: string;
+}
+
+// Кнопка дополнительного попапа (запрос клиентов 2026-10-02) — текст и что делает нажатие:
+// NEXT_STEP (следующий шаг — закрыть попап и показать сам лендинг), FINAL (сразу на конечный
+// ресурс), NONE (ничего). Полный разбор — в extra-popup.util.ts.
+export class ExtraPopupButtonDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(60)
+  text: string;
+
+  @IsIn(EXTRA_POPUP_ACTIONS)
+  action: string;
+}
+
+export class ExtraPopupConfigDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  text?: string;
+
+  // Минимум одна кнопка: попап без кнопок — ловушка, из которой посетителю не выйти. Максимум
+  // MAX_EXTRA_POPUP_BUTTONS — столько ещё читаемо помещается в ряд на телефоне.
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(MAX_EXTRA_POPUP_BUTTONS)
+  @ValidateNested({ each: true })
+  @Type(() => ExtraPopupButtonDto)
+  buttons?: ExtraPopupButtonDto[];
 }
 
 // Авторедирект и Lead-переключатели — общие для всех типов лендинга (TEMPLATE/CUSTOM/EXTERNAL) и
@@ -85,4 +121,17 @@ export class LandingBehaviorDto {
   @ValidateNested()
   @Type(() => TiktokHintTextsDto)
   tiktokHintTexts?: TiktokHintTextsDto | null;
+
+  // Дополнительный попап (запрос клиентов 2026-10-02) — см. Landing.extraPopupEnabled в
+  // schema.prisma. null у конфига — явный сброс всех текстов и кнопок на дефолт, как у
+  // tiktokHintTexts выше.
+  @IsOptional()
+  @IsBoolean()
+  extraPopupEnabled?: boolean;
+
+  @IsOptional()
+  @ValidateIf((o) => o.extraPopupConfig !== null)
+  @ValidateNested()
+  @Type(() => ExtraPopupConfigDto)
+  extraPopupConfig?: ExtraPopupConfigDto | null;
 }

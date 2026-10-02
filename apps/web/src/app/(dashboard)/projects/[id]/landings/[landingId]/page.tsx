@@ -19,6 +19,8 @@ import {
   LandingBehaviorFields,
   LandingBehaviorState,
   EMPTY_LANDING_BEHAVIOR,
+  DEFAULT_EXTRA_POPUP_BUTTONS,
+  ExtraPopupButtonState,
   optionsOnlyPayload,
 } from '@/components/landing-behavior-fields';
 import { LandingContentCard } from '@/components/landing-content-card';
@@ -61,6 +63,11 @@ interface LandingFull {
   cloakingPrelandingBasePath: string | null;
   tiktokBrowserHint: boolean;
   tiktokHintTexts: TiktokHintTexts | null;
+  // Дополнительный попап (запрос клиентов 2026-10-02) — templateId нужен, чтобы скрыть настройку
+  // у шаблона «Проверка возраста + приглашение», где такой попап уже встроен.
+  templateId: string | null;
+  extraPopupEnabled: boolean;
+  extraPopupConfig: { title?: string; text?: string; buttons?: ExtraPopupButtonState[] } | null;
 }
 
 // Опции лендинга (запрос пользователя 2026-07-03): авторедирект в Telegram без клика по
@@ -98,6 +105,10 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
       tiktokHintOpenButtonText: hintTexts.openButtonText || '',
       tiktokHintCopyButtonText: hintTexts.copyButtonText || '',
       tiktokHintCopiedText: hintTexts.copiedText || '',
+      extraPopupEnabled: landing.extraPopupEnabled ?? false,
+      extraPopupTitle: landing.extraPopupConfig?.title || '',
+      extraPopupText: landing.extraPopupConfig?.text || '',
+      extraPopupButtons: landing.extraPopupConfig?.buttons?.length ? landing.extraPopupConfig.buttons : DEFAULT_EXTRA_POPUP_BUTTONS,
     });
   }, [landing]);
 
@@ -120,7 +131,12 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
         <CardTitle className="text-base">Опции лендинга</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <LandingBehaviorFields idPrefix="opt" state={state} onChange={(patch) => setState((s) => ({ ...s, ...patch }))} />
+        <LandingBehaviorFields
+        idPrefix="opt"
+        state={state}
+        onChange={(patch) => setState((s) => ({ ...s, ...patch }))}
+        templateId={landing?.templateId}
+      />
         {error && <p className="text-sm text-red-500">{error}</p>}
         <Button onClick={() => save.mutate()} disabled={save.isPending}>
           {save.isPending ? 'Сохраняем...' : 'Сохранить'}

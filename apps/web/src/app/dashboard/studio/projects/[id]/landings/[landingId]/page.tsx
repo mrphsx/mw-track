@@ -16,6 +16,8 @@ import {
   LandingBehaviorFields,
   LandingBehaviorState,
   EMPTY_LANDING_BEHAVIOR,
+  DEFAULT_EXTRA_POPUP_BUTTONS,
+  ExtraPopupButtonState,
   optionsOnlyPayload,
 } from '@/components/landing-behavior-fields';
 import { LandingContentCard } from '@/components/landing-content-card';
@@ -62,6 +64,11 @@ interface LandingFull {
   cloakingPrelandingBasePath: string | null;
   tiktokBrowserHint: boolean;
   tiktokHintTexts: TiktokHintTexts | null;
+  // Дополнительный попап (запрос клиентов 2026-10-02) — templateId нужен, чтобы скрыть настройку
+  // у шаблона «Проверка возраста + приглашение», где такой попап уже встроен.
+  templateId: string | null;
+  extraPopupEnabled: boolean;
+  extraPopupConfig: { title?: string; text?: string; buttons?: ExtraPopupButtonState[] } | null;
 }
 
 // Клоакинг переехал на отдельную страницу /landings/:id/cloaking (запрос пользователя
@@ -95,6 +102,10 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
       tiktokHintOpenButtonText: hintTexts.openButtonText || '',
       tiktokHintCopyButtonText: hintTexts.copyButtonText || '',
       tiktokHintCopiedText: hintTexts.copiedText || '',
+      extraPopupEnabled: landing.extraPopupEnabled ?? false,
+      extraPopupTitle: landing.extraPopupConfig?.title || '',
+      extraPopupText: landing.extraPopupConfig?.text || '',
+      extraPopupButtons: landing.extraPopupConfig?.buttons?.length ? landing.extraPopupConfig.buttons : DEFAULT_EXTRA_POPUP_BUTTONS,
     });
   }, [landing]);
 
@@ -114,7 +125,12 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
   return (
     <div className={`${STUDIO_CARD} p-5 space-y-4`}>
       <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Опции лендинга</h2>
-      <LandingBehaviorFields idPrefix="opt" state={state} onChange={(patch) => setState((s) => ({ ...s, ...patch }))} />
+      <LandingBehaviorFields
+        idPrefix="opt"
+        state={state}
+        onChange={(patch) => setState((s) => ({ ...s, ...patch }))}
+        templateId={landing?.templateId}
+      />
       {error && <p className="text-sm text-red-500">{error}</p>}
       <StudioLinkButton variant="primary" onClick={() => save.mutate()} disabled={save.isPending}>
         {save.isPending ? 'Сохраняем...' : 'Сохранить'}

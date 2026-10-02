@@ -10,6 +10,9 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Plus, X } from 'lucide-react';
 
 // Дефолты — те же строки, что встроены в apps/sdk/src/browser.ts (HINT_DEFAULTS). Дублируются
 // здесь как placeholder-подсказки в форме (запрос пользователя 2026-08-27: "оставьте поле
@@ -24,6 +27,43 @@ export const TIKTOK_HINT_TEXT_DEFAULTS = {
   copyButtonText: 'Copy link',
   copiedText: 'Link copied. Paste it into your browser.',
 };
+
+// Дополнительный попап (запрос клиентов 2026-10-02) — те же дефолты, что в
+// apps/api/src/modules/landings/extra-popup.util.ts (EXTRA_POPUP_DEFAULTS): здесь они нужны как
+// placeholder-подсказки и как начальный набор кнопок в форме. Дублируются по той же причине, что
+// и тексты подсказки TikTok выше — общего пакета между apps/api и apps/web в монорепо нет.
+// Тот же id, что в apps/api/src/modules/landings/extra-popup.util.ts.
+export const AGE_GATE_TEMPLATE_ID = 'age-gate-invite';
+
+export const EXTRA_POPUP_DEFAULTS = {
+  title: 'Тебе есть 18 лет?',
+  text: 'Подтвердите возраст, чтобы продолжить',
+};
+
+export type ExtraPopupAction = 'NEXT_STEP' | 'FINAL' | 'NONE';
+
+export interface ExtraPopupButtonState {
+  text: string;
+  action: ExtraPopupAction;
+}
+
+// Подписи ровно теми словами, которыми действия назвал пользователь в запросе.
+export const EXTRA_POPUP_ACTION_LABELS: Record<ExtraPopupAction, string> = {
+  NEXT_STEP: 'Второй (главный) попап — след. шаг',
+  FINAL: 'Конечный ресурс',
+  NONE: 'Без действия',
+};
+
+export const EXTRA_POPUP_ACTION_ORDER: ExtraPopupAction[] = ['NEXT_STEP', 'FINAL', 'NONE'];
+
+export const MAX_EXTRA_POPUP_BUTTONS = 4;
+
+// Начальная настройка по умолчанию — вопрос про 18 лет, «Да» ведёт на следующий шаг, «Нет» сразу
+// на конечный ресурс (явное требование пользователя).
+export const DEFAULT_EXTRA_POPUP_BUTTONS: ExtraPopupButtonState[] = [
+  { text: 'Да', action: 'NEXT_STEP' },
+  { text: 'Нет', action: 'FINAL' },
+];
 
 export interface LandingBehaviorState {
   autoRedirect: boolean;
@@ -43,6 +83,12 @@ export interface LandingBehaviorState {
   tiktokHintOpenButtonText: string;
   tiktokHintCopyButtonText: string;
   tiktokHintCopiedText: string;
+  // Дополнительный попап (запрос клиентов 2026-10-02) — см. Landing.extraPopupEnabled в
+  // schema.prisma. Пустой заголовок/текст = подставить дефолт, как и у текстов TikTok.
+  extraPopupEnabled: boolean;
+  extraPopupTitle: string;
+  extraPopupText: string;
+  extraPopupButtons: ExtraPopupButtonState[];
 }
 
 export const EMPTY_LANDING_BEHAVIOR: LandingBehaviorState = {
@@ -57,6 +103,10 @@ export const EMPTY_LANDING_BEHAVIOR: LandingBehaviorState = {
   tiktokHintOpenButtonText: '',
   tiktokHintCopyButtonText: '',
   tiktokHintCopiedText: '',
+  extraPopupEnabled: false,
+  extraPopupTitle: '',
+  extraPopupText: '',
+  extraPopupButtons: DEFAULT_EXTRA_POPUP_BUTTONS,
 };
 
 // Тот же формат, что и LandingsService.update() ждёт от PATCH — используется и после
@@ -78,6 +128,16 @@ export function behaviorStateToPayload(state: LandingBehaviorState) {
       copyButtonText: state.tiktokHintCopyButtonText,
       copiedText: state.tiktokHintCopiedText,
     },
+    extraPopupEnabled: state.extraPopupEnabled,
+    extraPopupConfig: {
+      title: state.extraPopupTitle,
+      text: state.extraPopupText,
+      // Кнопки без текста не отправляем: бэкенд требует непустой текст у каждой кнопки, а пустой
+      // массив не принимает вовсе — если не осталось ни одной, пусть подставит свои дефолты.
+      buttons: state.extraPopupButtons.filter((b) => b.text.trim()).length
+        ? state.extraPopupButtons.filter((b) => b.text.trim()).map((b) => ({ text: b.text.trim(), action: b.action }))
+        : undefined,
+    },
   };
 }
 
@@ -89,6 +149,8 @@ export function optionsOnlyPayload(state: LandingBehaviorState) {
     leadOnAutoRedirect: full.leadOnAutoRedirect,
     tiktokBrowserHint: full.tiktokBrowserHint,
     tiktokHintTexts: full.tiktokHintTexts,
+    extraPopupEnabled: full.extraPopupEnabled,
+    extraPopupConfig: full.extraPopupConfig,
   };
 }
 
@@ -100,6 +162,7 @@ export function isLandingBehaviorNonDefault(state: LandingBehaviorState): boolea
     !state.leadOnClick ||
     state.leadOnAutoRedirect ||
     state.tiktokBrowserHint ||
+    state.extraPopupEnabled ||
     [
       state.tiktokHintTitle,
       state.tiktokHintSubtitle,
@@ -116,11 +179,19 @@ export function LandingBehaviorFields({
   idPrefix,
   state,
   onChange,
+  templateId,
 }: {
   idPrefix: string;
   state: LandingBehaviorState;
   onChange: (patch: Partial<LandingBehaviorState>) => void;
+  // Нужен только для того, чтобы скрыть дополнительный попап у шаблона «Проверка возраста +
+  // приглашение»: у него такой попап уже встроен (бэкенд такую настройку там и не примет, см.
+  // LandingsService.assertExtraPopupAllowed).
+  templateId?: string | null;
 }) {
+  const buttons = state.extraPopupButtons.length ? state.extraPopupButtons : DEFAULT_EXTRA_POPUP_BUTTONS;
+  const patchButton = (index: number, patch: Partial<ExtraPopupButtonState>) =>
+    onChange({ extraPopupButtons: buttons.map((b, i) => (i === index ? { ...b, ...patch } : b)) });
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
@@ -170,6 +241,101 @@ export function LandingBehaviorFields({
           />
         </div>
       </div>
+
+      {templateId !== AGE_GATE_TEMPLATE_ID && (
+        <div className="rounded-md border border-border p-3 space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label htmlFor={`${idPrefix}-extra-popup`}>Дополнительный попап</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Окно с вопросом поверх лендинга: пока посетитель не ответит, ни лендинг, ни переход не откроются.
+              </p>
+            </div>
+            <Switch
+              id={`${idPrefix}-extra-popup`}
+              checked={state.extraPopupEnabled}
+              onCheckedChange={(v) => onChange({ extraPopupEnabled: v })}
+            />
+          </div>
+
+          {state.extraPopupEnabled && (
+            <div className="space-y-4 rounded-lg border border-dashed border-border p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-extra-popup-title`}>Заголовок</Label>
+                  <Input
+                    id={`${idPrefix}-extra-popup-title`}
+                    placeholder={EXTRA_POPUP_DEFAULTS.title}
+                    value={state.extraPopupTitle}
+                    onChange={(e) => onChange({ extraPopupTitle: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-extra-popup-text`}>Текст под заголовком</Label>
+                  <Input
+                    id={`${idPrefix}-extra-popup-text`}
+                    placeholder={EXTRA_POPUP_DEFAULTS.text}
+                    value={state.extraPopupText}
+                    onChange={(e) => onChange({ extraPopupText: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Кнопки</p>
+
+                {buttons.map((button, index) => (
+                  <div key={index} className="flex items-start gap-2">
+                    <Input
+                      aria-label={`Текст кнопки ${index + 1}`}
+                      placeholder="Текст кнопки"
+                      className="flex-1"
+                      value={button.text}
+                      onChange={(e) => patchButton(index, { text: e.target.value })}
+                    />
+                    <Select value={button.action} onValueChange={(v) => patchButton(index, { action: v as ExtraPopupAction })}>
+                      <SelectTrigger className="w-[15rem]">
+                        {/* Без children-функции Base UI показал бы сырое NEXT_STEP/FINAL/NONE —
+                            повторяющийся баг, см. get-link-dialog.tsx и components/cloaking. */}
+                        <SelectValue>{(v: ExtraPopupAction) => EXTRA_POPUP_ACTION_LABELS[v]}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="w-auto min-w-(--anchor-width)">
+                        {EXTRA_POPUP_ACTION_ORDER.map((action) => (
+                          <SelectItem key={action} value={action}>
+                            {EXTRA_POPUP_ACTION_LABELS[action]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {buttons.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Удалить кнопку ${index + 1}`}
+                        onClick={() => onChange({ extraPopupButtons: buttons.filter((_, i) => i !== index) })}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+
+                {buttons.length < MAX_EXTRA_POPUP_BUTTONS && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => onChange({ extraPopupButtons: [...buttons, { text: '', action: 'NONE' }] })}
+                  >
+                    <Plus className="w-4 h-4 mr-1" /> Добавить кнопку
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-4">
         <div>

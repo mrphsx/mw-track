@@ -818,6 +818,18 @@ model Landing {
 
   tiktokBrowserHint Boolean @default(false)
 
+  // Дополнительный попап (запрос клиентов через пользователя 2026-10-02) — работает как попап 1
+  // шаблона age-gate-invite ("тебе есть 18?"), но доступен ЛЮБОМУ лендингу, который рендерим мы
+  // (TEMPLATE + CUSTOM), кроме самого age-gate-invite: там он уже встроен в template.html.
+  // Разметку вставляет LandingRendererService.injectTrackingScripts (см. extra-popup.util.ts) —
+  // сервером, а не SDK: тег track.js грузится async, и нарисованный скриптом попап появился бы
+  // уже после самого лендинга. extraPopupConfig — один Json со всеми текстами и кнопками
+  // (title/text/buttons[{text, action}], action: NEXT_STEP | FINAL | NONE), тот же принцип, что у
+  // tiktokHintTexts выше: читается и пишется одним блоком, отдельные индексы не нужны, а
+  // пропущенный/пустой ключ означает "взять дефолт" (resolveExtraPopup), без отдельного sentinel.
+  extraPopupEnabled Boolean @default(false)
+  extraPopupConfig  Json?
+
   // Тексты попапа-подсказки выше (запрос пользователя 2026-08-27, "как у конкурента" — форма
   // редактирования текстов, англ. по умолчанию). Json, а не отдельные колонки: семь опциональных
   // строк, которые всегда читаются/пишутся одним блоком и не нуждаются в отдельных индексах —
