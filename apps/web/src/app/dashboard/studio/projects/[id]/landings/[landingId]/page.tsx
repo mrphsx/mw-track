@@ -73,6 +73,9 @@ interface LandingFull {
   templateId: string | null;
   extraPopupEnabled: boolean;
   extraPopupConfig: { title?: string; text?: string; buttons?: ExtraPopupButtonState[] } | null;
+  // Таймер обратного отсчёта (запрос пользователя 2026-10-02) — опция любого лендинга.
+  countdownEnabled: boolean;
+  countdownConfig: { label?: string; spotsText?: string; minutes?: number } | null;
 }
 
 // Клоакинг переехал на отдельную страницу /landings/:id/cloaking (запрос пользователя
@@ -110,6 +113,10 @@ function LandingOptionsCard({ landingId }: { landingId: string }) {
       extraPopupTitle: landing.extraPopupConfig?.title || '',
       extraPopupText: landing.extraPopupConfig?.text || '',
       extraPopupButtons: landing.extraPopupConfig?.buttons?.length ? landing.extraPopupConfig.buttons : DEFAULT_EXTRA_POPUP_BUTTONS,
+      countdownEnabled: landing.countdownEnabled ?? false,
+      countdownLabel: landing.countdownConfig?.label || '',
+      countdownSpotsText: landing.countdownConfig?.spotsText ?? '',
+      countdownMinutes: landing.countdownConfig?.minutes ? String(landing.countdownConfig.minutes) : '',
     });
   }, [landing]);
 

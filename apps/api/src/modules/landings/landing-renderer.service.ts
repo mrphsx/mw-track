@@ -12,6 +12,7 @@ import { matchDomainPath } from '../domains/domain-path.util';
 import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-link.util';
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 import { AGE_GATE_TEMPLATE_ID, renderExtraPopupHtml, resolveExtraPopup } from './extra-popup.util';
+import { COUNTDOWN_PLACEHOLDER, COUNTDOWN_TEMPLATE_ID, renderCountdownHtml, resolveCountdown } from './countdown.util';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { isBotUserAgent } from '../../common/bot-user-agent.util';
 import { getClientIp } from '../../common/client-ip.util';
@@ -427,6 +428,9 @@ export class LandingRendererService {
       LOCK_TEXT: '🔒 Доступ закроется через',
       SPOTS_TEXT: '🔥 Осталось 14 мест из 50',
       COUNTDOWN_MINUTES: '167',
+      // Таймер с 2026-10-02 — опция конкретного лендинга, а не часть шаблона, поэтому в превью
+      // галереи его нет; ключ нужен, чтобы плейсхолдер не остался в разметке текстом.
+      COUNTDOWN_BLOCK: '',
     };
 
     html = this.processConditionals(html, vars);
@@ -435,6 +439,19 @@ export class LandingRendererService {
     }
 
     return html;
+  }
+
+  // Таймер обратного отсчёта (запрос пользователя 2026-10-02) — готовая разметка блока либо
+  // пустая строка. Вызывается ИЗ ДВУХ мест: renderTemplate (TEMPLATE-лендинги, покрывает заодно
+  // предпросмотр renderPreviewHtml, который до injectTrackingScripts не доходит) и
+  // injectTrackingScripts (CUSTOM-лендинги, которые через renderTemplate вообще не проходят).
+  // Для TEMPLATE второй replaceAll находит 0 совпадений — тот же приём, что уже применён к
+  // {{TG_REDIRECT_URL}}.
+  private buildCountdownBlock(landing: Landing): string {
+    // У countdown-urgency таймер уже внутри собственной вёрстки — второй сверху был бы дублем.
+    if (!landing.countdownEnabled || landing.templateId === COUNTDOWN_TEMPLATE_ID) return '';
+    const accent = ((landing.templateData as Record<string, string> | null)?.PRIMARY_COLOR as string) || '#2AABEE';
+    return renderCountdownHtml(resolveCountdown(landing.countdownConfig), accent);
   }
 
   private async renderTemplate(landing: Landing & { project: ProjectWithLandingData }): Promise<string> {
@@ -502,6 +519,7 @@ export class LandingRendererService {
       // хостятся на том же публичном CDN-бакете, что и track.js (см.
       // apps/api/scripts/publish-template-assets.js), не на приватном StorageService-бакете.
       CDN_URL: process.env.CDN_URL || '',
+      COUNTDOWN_BLOCK: this.buildCountdownBlock(landing),
     };
 
     html = this.processConditionals(html, vars);
@@ -707,6 +725,13 @@ export class LandingRendererService {
     }
 
     html = html.replaceAll('{{START_CODE}}', startCode);
+
+    // Таймер обратного отсчёта (запрос пользователя 2026-10-02) — подставляется ВСЕГДА, в т.ч.
+    // пустой строкой при выключенной опции: иначе плейсхолдер остался бы в разметке видимым
+    // текстом. Акцент полосы — {{PRIMARY_COLOR}} самого лендинга, чтобы блок не вносил второй
+    // акцентный цвет (см. countdown.util.ts). У шаблона countdown-urgency таймер уже внутри
+    // собственной вёрстки — там опция не применяется.
+    html = html.replaceAll(COUNTDOWN_PLACEHOLDER, this.buildCountdownBlock(landing));
 
     // Обычный сайт (ChannelType.WEBSITE) — резолвим отложенный плейсхолдер из renderTemplate()
     // здесь, где уже есть req.query: прокидываем fbclid/utm/рекламные макросы визита прямо в

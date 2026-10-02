@@ -35,6 +35,18 @@ export const TIKTOK_HINT_TEXT_DEFAULTS = {
 // Тот же id, что в apps/api/src/modules/landings/extra-popup.util.ts.
 export const AGE_GATE_TEMPLATE_ID = 'age-gate-invite';
 
+// Таймер обратного отсчёта (запрос пользователя 2026-10-02: "не будет лучше включить его под
+// каждый лэндинг как доп опцию"). Дефолты продублированы из
+// apps/api/src/modules/landings/countdown.util.ts (COUNTDOWN_DEFAULTS) — нужны как
+// placeholder-подсказки; общего пакета между apps/api и apps/web в монорепо нет.
+// У этого шаблона таймер уже внутри собственной вёрстки — там опция не показывается.
+export const COUNTDOWN_TEMPLATE_ID = 'countdown-urgency';
+export const COUNTDOWN_DEFAULTS = {
+  label: '🔒 Доступ закроется через',
+  spotsText: '🔥 Осталось 14 мест из 50',
+  minutes: 60,
+};
+
 export const EXTRA_POPUP_DEFAULTS = {
   title: 'Тебе есть 18 лет?',
   text: 'Подтвердите возраст, чтобы продолжить',
@@ -89,6 +101,12 @@ export interface LandingBehaviorState {
   extraPopupTitle: string;
   extraPopupText: string;
   extraPopupButtons: ExtraPopupButtonState[];
+  // Таймер обратного отсчёта (запрос пользователя 2026-10-02). countdownMinutes — строка, а не
+  // число: это поле ввода, пустое значение в нём должно оставаться пустым, а не превращаться в 0.
+  countdownEnabled: boolean;
+  countdownLabel: string;
+  countdownSpotsText: string;
+  countdownMinutes: string;
 }
 
 export const EMPTY_LANDING_BEHAVIOR: LandingBehaviorState = {
@@ -107,6 +125,10 @@ export const EMPTY_LANDING_BEHAVIOR: LandingBehaviorState = {
   extraPopupTitle: '',
   extraPopupText: '',
   extraPopupButtons: DEFAULT_EXTRA_POPUP_BUTTONS,
+  countdownEnabled: false,
+  countdownLabel: '',
+  countdownSpotsText: '',
+  countdownMinutes: '',
 };
 
 // Тот же формат, что и LandingsService.update() ждёт от PATCH — используется и после
@@ -138,6 +160,14 @@ export function behaviorStateToPayload(state: LandingBehaviorState) {
         ? state.extraPopupButtons.filter((b) => b.text.trim()).map((b) => ({ text: b.text.trim(), action: b.action }))
         : undefined,
     },
+    countdownEnabled: state.countdownEnabled,
+    countdownConfig: {
+      label: state.countdownLabel,
+      // Пустая строка отправляется как есть — так убирается вторая строка блока; у label пустое
+      // значение означает "взять дефолт" (см. resolveCountdown на бэкенде).
+      spotsText: state.countdownSpotsText,
+      minutes: state.countdownMinutes.trim() ? Number(state.countdownMinutes) : undefined,
+    },
   };
 }
 
@@ -151,6 +181,8 @@ export function optionsOnlyPayload(state: LandingBehaviorState) {
     tiktokHintTexts: full.tiktokHintTexts,
     extraPopupEnabled: full.extraPopupEnabled,
     extraPopupConfig: full.extraPopupConfig,
+    countdownEnabled: full.countdownEnabled,
+    countdownConfig: full.countdownConfig,
   };
 }
 
@@ -163,6 +195,7 @@ export function isLandingBehaviorNonDefault(state: LandingBehaviorState): boolea
     state.leadOnAutoRedirect ||
     state.tiktokBrowserHint ||
     state.extraPopupEnabled ||
+    state.countdownEnabled ||
     [
       state.tiktokHintTitle,
       state.tiktokHintSubtitle,
@@ -241,6 +274,63 @@ export function LandingBehaviorFields({
           />
         </div>
       </div>
+
+      {templateId !== COUNTDOWN_TEMPLATE_ID && (
+        <div className="rounded-md border border-border p-3 space-y-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <Label htmlFor={`${idPrefix}-countdown`}>Таймер обратного отсчёта</Label>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Блок с убывающим временем над кнопкой перехода. Отсчёт начинается заново у каждого посетителя.
+              </p>
+            </div>
+            <Switch
+              id={`${idPrefix}-countdown`}
+              checked={state.countdownEnabled}
+              onCheckedChange={(v) => onChange({ countdownEnabled: v })}
+            />
+          </div>
+
+          {state.countdownEnabled && (
+            <div className="space-y-4 rounded-lg border border-dashed border-border p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  {/* id поля НЕ `-countdown-label`: Label переключателя выше сам получает
+                      id `${idPrefix}-countdown-label` (htmlFor + "-label"), и вышел бы дубликат
+                      id в разметке — подпись перестала бы указывать на своё поле. */}
+                  <Label htmlFor={`${idPrefix}-countdown-text`}>Подпись над таймером</Label>
+                  <Input
+                    id={`${idPrefix}-countdown-text`}
+                    placeholder={COUNTDOWN_DEFAULTS.label}
+                    value={state.countdownLabel}
+                    onChange={(e) => onChange({ countdownLabel: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`${idPrefix}-countdown-minutes`}>Сколько минут отсчитывать</Label>
+                  <Input
+                    id={`${idPrefix}-countdown-minutes`}
+                    inputMode="numeric"
+                    placeholder={String(COUNTDOWN_DEFAULTS.minutes)}
+                    value={state.countdownMinutes}
+                    onChange={(e) => onChange({ countdownMinutes: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor={`${idPrefix}-countdown-spots`}>Строка под таймером</Label>
+                <Input
+                  id={`${idPrefix}-countdown-spots`}
+                  placeholder={COUNTDOWN_DEFAULTS.spotsText}
+                  value={state.countdownSpotsText}
+                  onChange={(e) => onChange({ countdownSpotsText: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">Оставьте пустой, если вторая строка не нужна.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {templateId !== AGE_GATE_TEMPLATE_ID && (
         <div className="rounded-md border border-border p-3 space-y-4">

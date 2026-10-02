@@ -16,6 +16,7 @@ import { UpdateLandingDto } from './dto/update-landing.dto';
 import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
 import { AGE_GATE_TEMPLATE_ID } from './extra-popup.util';
+import { COUNTDOWN_TEMPLATE_ID } from './countdown.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
 import { CreateCloakingRuleDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
 import { CloakingLogsQueryDto } from './dto/cloaking-logs-query.dto';
@@ -228,6 +229,7 @@ export class LandingsService {
   async createFromTemplate(projectId: string, companyId: string, dto: CreateLandingFromTemplateDto, createdById?: string): Promise<Landing> {
     this.assertTemplateAllowed(dto.templateId, companyId);
     this.assertExtraPopupAllowed(dto.templateId, dto.extraPopupEnabled);
+    this.assertCountdownAllowed(dto.templateId, dto.countdownEnabled);
 
     // "Изначально стоит как в канале" (запрос пользователя 2026-07-04) — если пользователь не
     // указал число подписчиков вручную, подставляем реальное текущее число участников канала
@@ -290,6 +292,8 @@ export class LandingsService {
         tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
         extraPopupEnabled: dto.extraPopupEnabled,
         extraPopupConfig: dto.extraPopupConfig === undefined ? undefined : (dto.extraPopupConfig as Prisma.InputJsonValue | null),
+        countdownEnabled: dto.countdownEnabled,
+        countdownConfig: dto.countdownConfig === undefined ? undefined : (dto.countdownConfig as Prisma.InputJsonValue | null),
       },
     });
     // Автопубликация (запрос пользователя 2026-08-20: "при создании лэндинга он автоматом
@@ -574,6 +578,7 @@ export class LandingsService {
   async update(id: string, companyId: string, dto: UpdateLandingDto): Promise<Landing> {
     const landing = await this.findOne(id, companyId);
     this.assertExtraPopupAllowed(landing.templateId, dto.extraPopupEnabled);
+    this.assertCountdownAllowed(landing.templateId, dto.countdownEnabled);
 
     const existingData = (landing.templateData as Record<string, string>) || {};
     const templateDataPatch: Record<string, string> = {};
@@ -613,6 +618,8 @@ export class LandingsService {
         tiktokHintTexts: dto.tiktokHintTexts === undefined ? undefined : (dto.tiktokHintTexts as Prisma.InputJsonValue | null),
         extraPopupEnabled: dto.extraPopupEnabled,
         extraPopupConfig: dto.extraPopupConfig === undefined ? undefined : (dto.extraPopupConfig as Prisma.InputJsonValue | null),
+        countdownEnabled: dto.countdownEnabled,
+        countdownConfig: dto.countdownConfig === undefined ? undefined : (dto.countdownConfig as Prisma.InputJsonValue | null),
       },
     });
   }
@@ -624,6 +631,15 @@ export class LandingsService {
   private assertExtraPopupAllowed(templateId: string | null | undefined, extraPopupEnabled?: boolean): void {
     if (extraPopupEnabled && templateId === AGE_GATE_TEMPLATE_ID) {
       throw new BadRequestException('У шаблона «Проверка возраста + приглашение» такой попап уже есть — дополнительный здесь не нужен');
+    }
+  }
+
+  // Таймер обратного отсчёта (запрос пользователя 2026-10-02) доступен любому лендингу, КРОМЕ
+  // шаблона countdown-urgency: там таймер уже внутри собственной вёрстки, второй сверху был бы
+  // дублем. Та же логика и тот же способ отказа, что у assertExtraPopupAllowed выше.
+  private assertCountdownAllowed(templateId: string | null | undefined, countdownEnabled?: boolean): void {
+    if (countdownEnabled && templateId === COUNTDOWN_TEMPLATE_ID) {
+      throw new BadRequestException('У этого шаблона таймер уже встроен — отдельный здесь не нужен');
     }
   }
 
@@ -1255,6 +1271,8 @@ export class LandingsService {
         tiktokHintTexts: original.tiktokHintTexts === null ? Prisma.JsonNull : (original.tiktokHintTexts as Prisma.InputJsonValue),
         extraPopupEnabled: original.extraPopupEnabled,
         extraPopupConfig: original.extraPopupConfig === null ? Prisma.JsonNull : (original.extraPopupConfig as Prisma.InputJsonValue),
+        countdownEnabled: original.countdownEnabled,
+        countdownConfig: original.countdownConfig === null ? Prisma.JsonNull : (original.countdownConfig as Prisma.InputJsonValue),
         status: LandingStatus.DRAFT,
       },
     });

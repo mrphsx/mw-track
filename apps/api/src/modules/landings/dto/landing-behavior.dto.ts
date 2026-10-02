@@ -1,6 +1,7 @@
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength, MinLength, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { EXTRA_POPUP_ACTIONS, MAX_EXTRA_POPUP_BUTTONS } from '../extra-popup.util';
+import { MAX_COUNTDOWN_MINUTES, MIN_COUNTDOWN_MINUTES } from '../countdown.util';
 
 // Тексты попапа-подсказки (запрос пользователя 2026-08-27, "форма для замены текстов как у
 // конкурента", дефолт — английский, задаётся встроенным дефолтом в SDK, не здесь) — каждое поле
@@ -79,6 +80,28 @@ export class ExtraPopupConfigDto {
   buttons?: ExtraPopupButtonDto[];
 }
 
+// Таймер обратного отсчёта (запрос пользователя 2026-10-02) — см. Landing.countdownEnabled в
+// schema.prisma. spotsText может быть пустой строкой осознанно: это способ убрать вторую строку
+// блока, в отличие от label, у которого пустое значение = взять дефолт.
+export class CountdownConfigDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  label?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  spotsText?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(MIN_COUNTDOWN_MINUTES)
+  @Max(MAX_COUNTDOWN_MINUTES)
+  minutes?: number;
+}
+
 // Авторедирект и Lead-переключатели — общие для всех типов лендинга (TEMPLATE/CUSTOM/EXTERNAL) и
 // для создания, и для редактирования (запрос пользователя 2026-07-03: "внедрить и при создании,
 // а не только при редактировании"). Вынесено в отдельный класс, чтобы не дублировать
@@ -134,4 +157,16 @@ export class LandingBehaviorDto {
   @ValidateNested()
   @Type(() => ExtraPopupConfigDto)
   extraPopupConfig?: ExtraPopupConfigDto | null;
+
+  // Таймер обратного отсчёта (запрос пользователя 2026-10-02). null у конфига — явный сброс
+  // настроек на дефолт, как у extraPopupConfig/tiktokHintTexts выше.
+  @IsOptional()
+  @IsBoolean()
+  countdownEnabled?: boolean;
+
+  @IsOptional()
+  @ValidateIf((o) => o.countdownConfig !== null)
+  @ValidateNested()
+  @Type(() => CountdownConfigDto)
+  countdownConfig?: CountdownConfigDto | null;
 }
