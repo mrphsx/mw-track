@@ -45,6 +45,17 @@ export class ClientsController {
     return this.clientsService.findMany(projectId, filters, companyId, canViewCrossProject, scopedBuyerId, canViewTrafficSource);
   }
 
+  // Подсказки для фильтра по кампании/группе объявлений/объявлению (запрос пользователя
+  // 2026-10-02). Объявлен ДО @Get(':clientId') ниже — иначе 'filter-options' уедет в него как
+  // clientId (тот же порядок статических роутов, что уже требуется у company-stats в projects).
+  @Get('filter-options')
+  async filterOptions(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    const canViewTrafficSource = user.role !== UserRole.OPERATOR;
+    return this.clientsService.getFilterOptions(projectId, scopedBuyerId, canViewTrafficSource);
+  }
+
   @Get('stats')
   async stats(
     @Param('projectId') projectId: string,

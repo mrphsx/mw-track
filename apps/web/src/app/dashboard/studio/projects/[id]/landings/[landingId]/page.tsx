@@ -32,6 +32,10 @@ import { useAuthStore } from '@/store/auth.store';
 // (плейсхолдер-токен, см. память dark_theme_rollout), тот же цвет, что и везде на этой странице.
 const STUDIO_MUTED = 'text-[#5F6B7A] dark:text-[#92A0AF]';
 
+// Сколько подписчиков показывать прямо на странице лендинга (запрос пользователя 2026-10-02) —
+// остальные смотрятся на странице клиентов проекта по ссылке с фильтром landingId.
+const LANDING_CLIENTS_PREVIEW = 10;
+
 interface ProjectChannelInfo {
   channel: { tgChannelMembersCount: number | null } | null;
 }
@@ -163,9 +167,14 @@ export default function StudioLandingStatsPage() {
     queryFn: async () => (await api.get<ProjectChannelInfo>(`/projects/${projectId}`)).data,
   });
 
+  // Только первые LANDING_CLIENTS_PREVIEW подписчиков (запрос пользователя 2026-10-02:
+  // "показывай только 10 клиентов и кнопку посмотреть всех") — полный список живёт на странице
+  // клиентов проекта с уже выставленным фильтром по этому лендингу (ссылка ниже). total приходит
+  // из того же ответа, так что счётчик на кнопке не требует второго запроса.
   const { data: clients } = useQuery({
     queryKey: ['landing', landingId, 'clients'],
-    queryFn: async () => (await api.get<ClientsResponse>(`/projects/${projectId}/clients`, { params: { landingId, limit: 50 } })).data,
+    queryFn: async () =>
+      (await api.get<ClientsResponse>(`/projects/${projectId}/clients`, { params: { landingId, limit: LANDING_CLIENTS_PREVIEW } })).data,
   });
 
   const leadRate = stats && stats.funnel.pageViews > 0 ? Math.round((stats.funnel.leads / stats.funnel.pageViews) * 100) : null;
@@ -373,7 +382,21 @@ export default function StudioLandingStatsPage() {
       </div>
 
       <div>
-        <h2 className="text-lg font-semibold mb-3 text-[#131A24] dark:text-[#E9EDF3]">Подписчики этого лендинга</h2>
+        <div className="flex items-end justify-between gap-3 mb-3">
+          <div>
+            <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">Подписчики этого лендинга</h2>
+            {!!clients?.total && clients.total > LANDING_CLIENTS_PREVIEW && (
+              <p className={`text-xs mt-0.5 ${STUDIO_MUTED}`}>
+                Показаны первые {LANDING_CLIENTS_PREVIEW} из {clients.total}
+              </p>
+            )}
+          </div>
+          {!!clients?.items.length && (
+            <StudioLinkButton href={`/projects/${projectId}/clients?landingId=${landingId}`} icon={Users} size="sm">
+              Посмотреть всех{clients.total > LANDING_CLIENTS_PREVIEW ? ` (${clients.total})` : ''}
+            </StudioLinkButton>
+          )}
+        </div>
         {!clients?.items.length ? (
           <div className={`${STUDIO_CARD} p-8 text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]`}>
             Пока нет подписчиков, привязанных именно к этому лендингу.

@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Building2, AlertTriangle, History, ShieldAlert, LogOut } from 'lucide-react';
+import { Building2, AlertTriangle, History, Megaphone, ShieldAlert, LogOut } from 'lucide-react';
 import { useAuthStore } from '@/store/auth.store';
 
 const navItems = [
   { href: '/', label: 'Компании', icon: Building2 },
   { href: '/errors', label: 'Ошибки', icon: AlertTriangle },
+  { href: '/notices', label: 'Оповещения', icon: Megaphone },
   { href: '/actions', label: 'Действия админов', icon: History },
 ];
 

@@ -3,17 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { useQuery } from '@tanstack/react-query';
-import { Bell, Moon, Sun, Wallet } from 'lucide-react';
+import { Moon, Sun, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { StudioSidebar } from '@/components/layout/studio-sidebar';
 import { Switch } from '@/components/ui/switch';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import { StudioNotificationsMenu } from './notifications-menu';
 
 const PLAN_LABELS: Record<string, string> = {
   TRIAL: 'Триал',
@@ -136,45 +131,19 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
                 </div>
               )}
 
-              <DropdownMenu>
-                <DropdownMenuTrigger className="relative flex items-center px-3 py-1.5 border-l border-[#DCE1E8] dark:border-white/10 text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
-                  <Bell className="w-4 h-4" />
-                  {notifications.length > 0 && (
-                    <span className="absolute top-1 right-1.5 w-3.5 h-3.5 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center">
-                      {notifications.length}
-                    </span>
-                  )}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64">
-                  {notifications.length === 0 && <div className="px-2 py-1.5 text-sm text-muted-foreground">Всё в порядке</div>}
-                  {notifications.map((n, i) => (
-                    <DropdownMenuItem key={i} className="text-sm">
-                      {n}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <StudioNotificationsMenu
+                systemAlerts={notifications}
+                triggerClassName="relative flex items-center px-3 py-1.5 border-l border-[#DCE1E8] dark:border-white/10 text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                badgeClassName="absolute top-1 right-1.5 w-3.5 h-3.5 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center"
+              />
             </div>
 
             {/* Мобильный fallback — та же кнопка-колокол, только не в пилюле, скрыта от sm и выше. */}
-            <DropdownMenu>
-              <DropdownMenuTrigger className="relative sm:hidden w-9 h-9 flex items-center justify-center rounded-full bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors">
-                <Bell className="w-4 h-4" />
-                {notifications.length > 0 && (
-                  <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
-                    {notifications.length}
-                  </span>
-                )}
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-64">
-                {notifications.length === 0 && <div className="px-2 py-1.5 text-sm text-muted-foreground">Всё в порядке</div>}
-                {notifications.map((n, i) => (
-                  <DropdownMenuItem key={i} className="text-sm">
-                    {n}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <StudioNotificationsMenu
+              systemAlerts={notifications}
+              triggerClassName="relative sm:hidden w-9 h-9 flex items-center justify-center rounded-full bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              badgeClassName="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center"
+            />
 
             <div className="flex items-center gap-1.5 pl-1 pr-1">
               <Sun className="w-3.5 h-3.5 text-[#5F6B7A] dark:text-[#92A0AF] shrink-0" />

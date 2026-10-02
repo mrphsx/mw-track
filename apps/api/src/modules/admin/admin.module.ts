@@ -4,6 +4,7 @@ import { LandingsModule } from '../landings/landings.module';
 import { DomainsModule } from '../domains/domains.module';
 import { TeamModule } from '../team/team.module';
 import { AuthModule } from '../auth/auth.module';
+import { NoticesModule } from '../notices/notices.module';
 import { AdminController } from './admin.controller';
 import { AdminCompanyController } from './admin-company.controller';
 import { AdminService } from './admin.service';
@@ -21,7 +22,7 @@ import { AdminCron } from './admin.cron';
 // сам их импортирует так же, без проблем). AuthModule (для impersonation, запрос пользователя
 // 2026-09-24) тоже вне цикла — сам ни от чего доменного не зависит (только Passport/JwtModule).
 @Module({
-  imports: [PushesModule, LandingsModule, DomainsModule, TeamModule, AuthModule],
+  imports: [PushesModule, LandingsModule, DomainsModule, TeamModule, AuthModule, NoticesModule],
   controllers: [AdminController, AdminCompanyController],
   providers: [AdminService, AdminCompanyService, AdminCron],
 })

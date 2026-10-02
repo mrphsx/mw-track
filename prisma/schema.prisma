@@ -64,6 +64,7 @@ model Company {
   errorLogs           ErrorLog[]
   adminActionLogs     AdminActionLog[]
   notificationBot     NotificationBot?
+  adminNotices        AdminNotice[]
 }
 
 // Super Admin панель (Фаза 4.3, запрос пользователя 2026-07-19) — первая по-настоящему
@@ -109,6 +110,54 @@ model AdminActionLog {
   admin   User    @relation(fields: [adminUserId], references: [id])
 
   @@index([companyId, createdAt])
+}
+
+// Объявление, рассылаемое супер-админом из панели администрирования в колокол оповещений СРМ
+// (запрос пользователя 2026-10-02: "хочу чтобы я с панели администрации мог отправлять выбранным
+// компаниям (либо всем) оповещение"). companyId = null означает "всем компаниям, включая те,
+// что зарегистрируются позже"; рассылка на несколько выбранных компаний создаёт по строке на
+// каждую — так читающий запрос остаётся одним простым OR без join-таблицы адресатов.
+//
+// НЕ в modelsWithCompany (PrismaService middleware): companyId здесь nullable (null = всем), а
+// middleware подставляет строгое равенство и deletedAt, которого у этой таблицы нет — скрыло бы
+// как раз общие объявления. Все чтения скоупятся companyId вручную (NoticesService).
+// deletedAt нет сознательно: это не данные арендатора, а разовое объявление, и у него есть своё
+// "скрыть" на стороне получателя (AdminNoticeRead.clearedAt) — тот же класс, что
+// NotificationAlertState/PaymentDetailsLog.
+model AdminNotice {
+  id          String   @id @default(cuid())
+  companyId   String?
+  title       String
+  body        String
+  createdById String
+  createdAt   DateTime @default(now())
+
+  // onDelete: Cascade, а не дефолтный для опционального поля SetNull — иначе удаление компании
+  // превратило бы её адресное объявление в общее ("companyId = null" здесь значит "всем").
+  company   Company?          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User              @relation("AdminNoticeCreatedBy", fields: [createdById], references: [id])
+  reads     AdminNoticeRead[]
+
+  @@index([companyId, createdAt])
+  @@index([createdAt])
+}
+
+// Состояние объявления у КОНКРЕТНОГО пользователя, а не у компании: колокол свой у каждого
+// сотрудника, и прочитанное одним не должно гаснуть у остальных. readAt — "нажал, объявление
+// остаётся в списке, но больше не считается непрочитанным"; clearedAt — "Очистить все", после
+// чего объявление у этого пользователя из списка исчезает (у других остаётся).
+model AdminNoticeRead {
+  id        String    @id @default(cuid())
+  noticeId  String
+  userId    String
+  readAt    DateTime?
+  clearedAt DateTime?
+
+  notice AdminNotice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([noticeId, userId])
+  @@index([userId])
 }
 
 // ============================================================
@@ -161,6 +210,8 @@ model User {
   adminActions    AdminActionLog[]
   createdLandings Landing[]        @relation("LandingCreatedBy")
   createdPixels   TrackingPixel[]  @relation("PixelCreatedBy")
+  sentNotices     AdminNotice[]     @relation("AdminNoticeCreatedBy")
+  noticeReads     AdminNoticeRead[]
 
   @@index([companyId])
 }

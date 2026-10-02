@@ -92,6 +92,11 @@ export interface FindOrCreateClientInput {
   markSubscribed?: boolean;
 }
 
+// Потолок на длину каждого списка подсказок фильтра — не бизнес-ограничение, а защита от
+// запроса, который на проекте с десятками тысяч разных объявлений вернул бы гигантский JSON.
+// Сам выпадающий список на фронте ещё и ищет по вводу, так что показывать больше незачем.
+const FILTER_OPTIONS_CAP = 1000;
+
 @Injectable()
 export class ClientsService {
   private readonly logger = new Logger(ClientsService.name);
@@ -620,6 +625,55 @@ export class ClientsService {
   // проектов/каналов). Elevated-роли (Owner/Admin) всегда видят полную деталь — companyId и
   // canViewCrossProject уже решены вызывающим контроллером (hasPermission сама бывает elevated
   // bypass), сюда приходит готовый bool.
+  // Значения для выпадающих списков фильтра кампании/группы объявлений/объявления (запрос
+  // пользователя 2026-10-02: "сделай дропдаун, чтобы можно было выбрать из существующих, собери
+  // просто по клиентам эти данные") — раньше это были поля свободного ввода, в которых легко
+  // опечататься и ничего не найти. Страна сознательно НЕ здесь: её список берётся из полного
+  // ISO-справочника на фронте (тот же COUNTRY_OPTIONS, что уже у условий клоакинга) — показывать
+  // только встречавшиеся у клиентов страны там незачем, набор стран конечен и известен заранее.
+  //
+  // groupBy, а не findMany+distinct: distinct у Prisma применяется уже после выборки, поэтому в
+  // паре с take молча отдаёт меньше значений, чем есть; GROUP BY считает в самой базе.
+  async getFilterOptions(projectId: string, scopedBuyerId?: string, canViewTrafficSource = true) {
+    // Тот же критерий, что и у findMany/exportClientsCsv: оператор не видит рекламную атрибуцию
+    // ни в списке, ни в карточке, ни в экспорте — значит и подсказок для неё быть не должно.
+    if (!canViewTrafficSource) return { campaignNames: [], adsetNames: [], adNames: [] };
+
+    const base: Prisma.ClientWhereInput = {
+      projectId,
+      deletedAt: null,
+      ...(scopedBuyerId ? { buyerId: scopedBuyerId } : {}),
+    };
+    const take = FILTER_OPTIONS_CAP;
+
+    const [campaigns, adsets, ads] = await Promise.all([
+      this.prisma.client.groupBy({
+        by: ['campaignName'],
+        where: { ...base, campaignName: { not: null } },
+        orderBy: { campaignName: 'asc' },
+        take,
+      }),
+      this.prisma.client.groupBy({
+        by: ['adsetName'],
+        where: { ...base, adsetName: { not: null } },
+        orderBy: { adsetName: 'asc' },
+        take,
+      }),
+      this.prisma.client.groupBy({
+        by: ['adName'],
+        where: { ...base, adName: { not: null } },
+        orderBy: { adName: 'asc' },
+        take,
+      }),
+    ]);
+
+    return {
+      campaignNames: campaigns.map((r) => r.campaignName).filter((v): v is string => !!v),
+      adsetNames: adsets.map((r) => r.adsetName).filter((v): v is string => !!v),
+      adNames: ads.map((r) => r.adName).filter((v): v is string => !!v),
+    };
+  }
+
   async findMany(
     projectId: string,
     filters: ClientFiltersDto,
@@ -926,9 +980,13 @@ export class ClientsService {
         where.buyerId = { in: ids };
       }
     }
-    if (filters.campaignName) where.campaignName = { contains: filters.campaignName, mode: 'insensitive' };
-    if (filters.adName) where.adName = { contains: filters.adName, mode: 'insensitive' };
-    if (filters.adsetName) where.adsetName = { contains: filters.adsetName, mode: 'insensitive' };
+    // Точное совпадение, а не contains (с 2026-10-02 значение выбирается из выпадающего списка
+    // реально встречающихся названий, а не вводится руками) — при подстрочном поиске выбор
+    // кампании "Promo" молча прихватывал бы ещё и "Promo 2", а префиксы у названий кампаний/
+    // объявлений в рекламных кабинетах совпадают постоянно.
+    if (filters.campaignName) where.campaignName = filters.campaignName;
+    if (filters.adName) where.adName = filters.adName;
+    if (filters.adsetName) where.adsetName = filters.adsetName;
     if (filters.siteSourceName) where.siteSourceName = filters.siteSourceName;
 
     if (filters.minSpent !== undefined || filters.maxSpent !== undefined) {

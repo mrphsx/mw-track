@@ -19,6 +19,7 @@ import { DomainsModule } from './modules/domains/domains.module';
 import { HealthModule } from './modules/health/health.module';
 import { LandingsModule } from './modules/landings/landings.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { NoticesModule } from './modules/notices/notices.module';
 import { PersonalBroadcastsModule } from './modules/personal-broadcasts/personal-broadcasts.module';
 import { PixelsModule } from './modules/pixels/pixels.module';
 import { ProjectsModule } from './modules/projects/projects.module';
@@ -63,6 +64,7 @@ import { RedisModule } from './redis/redis.module';
     TeamModule,
     AudienceModule,
     NotificationsModule,
+    NoticesModule,
     AdminModule,
   ],
   providers: [

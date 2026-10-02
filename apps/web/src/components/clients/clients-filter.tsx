@@ -15,6 +15,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { MultiSelect } from '@/components/ui/multi-select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
+import { COUNTRY_OPTIONS } from '@/components/cloaking/country-list';
 
 export interface ClientsFilterState {
   channelType?: string;
@@ -76,6 +78,12 @@ export function writeClientsFiltersToSearchParams(filters: ClientsFilterState, p
   }
 }
 
+interface FilterOptions {
+  campaignNames: string[];
+  adsetNames: string[];
+  adNames: string[];
+}
+
 interface ClientsFilterProps {
   projectId: string;
   value: ClientsFilterState;
@@ -95,8 +103,16 @@ const PURCHASE_LABEL: Record<string, string> = { all: 'Все', true: 'Толь�
 const DIALOGUE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с диалогом', false: 'Только без диалога' };
 const AD_SOURCE_LABEL: Record<string, string> = { all: 'Все', FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
 
+// Сколько фильтров реально выставлено — панель фильтров разворачивается сама, если пришли из
+// ссылки с уже выставленным фильтром (запрос пользователя 2026-10-02: кнопка "посмотреть всех"
+// на странице лендинга ведёт сюда с ?landingId=...), иначе фильтр молча применён, а по виду
+// страницы этого не понять.
+function countActiveFilters(value: ClientsFilterState): number {
+  return Object.values(value).filter((v) => (Array.isArray(v) ? v.length > 0 : v !== undefined && v !== '')).length;
+}
+
 export function ClientsFilter({ projectId, value, onChange, containerClassName }: ClientsFilterProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => countActiveFilters(value) > 0);
 
   // Точная привязка "подписчик пришёл именно с этого лендинга" сейчас работает только для
   // приватных каналов с заявкой (см. Client.landingId) — список лендингов всё равно
@@ -125,12 +141,26 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
   });
   const pixels = project?.pixels ?? [];
 
+  // Кампании/группы объявлений/объявления (запрос пользователя 2026-10-02: "сделай дропдаун,
+  // чтобы можно было выбрать из существующих, собери просто по клиентам эти данные") — названия
+  // заводятся в рекламном кабинете и существуют только как текст на Client, поэтому список
+  // собирается по самим клиентам проекта (ClientsService.getFilterOptions), а не из справочника.
+  // Страна — наоборот, полный ISO-список (COUNTRY_OPTIONS, тот же, что у условий клоакинга).
+  const { data: options } = useQuery({
+    queryKey: ['clients', projectId, 'filter-options'],
+    queryFn: async () => (await api.get<FilterOptions>(`/projects/${projectId}/clients/filter-options`)).data,
+    enabled: open,
+  });
+  const toOptions = (values?: string[]) => (values ?? []).map((v) => ({ value: v, label: v }));
+
   const update = (patch: Partial<ClientsFilterState>) => onChange({ ...value, ...patch });
+  const activeCount = countActiveFilters(value);
 
   return (
     <div className="space-y-3">
       <Button variant="outline" size="sm" onClick={() => setOpen((o) => !o)}>
         <Filter className="w-4 h-4 mr-1.5" /> Фильтры
+        {activeCount > 0 && <span className="ml-1.5 opacity-70">· {activeCount}</span>}
       </Button>
 
       {open && (
@@ -194,13 +224,12 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="filter-country" className="text-xs">Страна (код)</Label>
-            <Input
-              id="filter-country"
-              placeholder="US"
-              value={value.country || ''}
-              onChange={(e) => update({ country: e.target.value || undefined })}
-              className="w-full"
+            <Label className="text-xs">Страна</Label>
+            <SearchableSelect
+              options={COUNTRY_OPTIONS}
+              value={value.country}
+              onChange={(v) => update({ country: v })}
+              searchPlaceholder="Страна или код..."
             />
           </div>
 
@@ -259,32 +288,29 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="filter-campaignName" className="text-xs">Кампания</Label>
-            <Input
-              id="filter-campaignName"
-              value={value.campaignName || ''}
-              onChange={(e) => update({ campaignName: e.target.value || undefined })}
-              className="w-full"
+            <Label className="text-xs">Кампания</Label>
+            <SearchableSelect
+              options={toOptions(options?.campaignNames)}
+              value={value.campaignName}
+              onChange={(v) => update({ campaignName: v })}
             />
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="filter-adName" className="text-xs">Объявление</Label>
-            <Input
-              id="filter-adName"
-              value={value.adName || ''}
-              onChange={(e) => update({ adName: e.target.value || undefined })}
-              className="w-full"
+            <Label className="text-xs">Объявление</Label>
+            <SearchableSelect
+              options={toOptions(options?.adNames)}
+              value={value.adName}
+              onChange={(v) => update({ adName: v })}
             />
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="filter-adsetName" className="text-xs">Группа объявлений</Label>
-            <Input
-              id="filter-adsetName"
-              value={value.adsetName || ''}
-              onChange={(e) => update({ adsetName: e.target.value || undefined })}
-              className="w-full"
+            <Label className="text-xs">Группа объявлений</Label>
+            <SearchableSelect
+              options={toOptions(options?.adsetNames)}
+              value={value.adsetName}
+              onChange={(v) => update({ adsetName: v })}
             />
           </div>
 
