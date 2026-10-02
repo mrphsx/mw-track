@@ -118,6 +118,11 @@ export default function StudioLandingsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landings'] }),
   });
 
+  const duplicate = useMutation({
+    mutationFn: (landingId: string) => api.post(`/landings/${landingId}/duplicate`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landings'] }),
+  });
+
   const invalidateAbTests = () => {
     queryClient.invalidateQueries({ queryKey: ['ab-test-groups', projectId] });
     queryClient.invalidateQueries({ queryKey: ['landings'] });
@@ -318,6 +323,7 @@ export default function StudioLandingsPage() {
                   onGetLink={() => setGetLinkLanding(l)}
                   onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
                   onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
+                  onDuplicate={() => duplicate.mutate(l.id)}
                   onPublish={() => publish.mutate(l.id)}
                   onUnpublish={() => unpublish.mutate(l.id)}
                   onDelete={() => remove.mutate(l.id)}
@@ -325,6 +331,7 @@ export default function StudioLandingsPage() {
                   // 2026-07-30: "кнопки всех лэндингов переходят в ожидание") — тот же фикс, что и
                   // раньше был на карточках, перенесён без изменений на строки таблицы.
                   isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+                  isDuplicatePending={duplicate.isPending && duplicate.variables === l.id}
                   isDeletePending={remove.isPending && remove.variables === l.id}
                   canDelete={hasPermission(user, projectId, 'LANDINGS_DELETE')}
                   selectable={compareMode}

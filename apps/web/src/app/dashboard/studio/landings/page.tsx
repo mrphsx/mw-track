@@ -104,6 +104,11 @@ export default function StudioAllLandingsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landings'] }),
   });
 
+  const duplicate = useMutation({
+    mutationFn: (landingId: string) => api.post(`/landings/${landingId}/duplicate`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['landings'] }),
+  });
+
   const preview = (landingId: string) => previewLanding(landingId);
 
   return (
@@ -282,10 +287,12 @@ export default function StudioAllLandingsPage() {
                   onManageAbTest={() =>
                     setAbTestTarget({ projectId: l.project.id, groupId: l.abTestGroupId, preselectedIds: l.abTestGroupId ? [] : [l.id] })
                   }
+                  onDuplicate={() => duplicate.mutate(l.id)}
                   onPublish={() => publish.mutate(l.id)}
                   onUnpublish={() => unpublish.mutate(l.id)}
                   onDelete={() => remove.mutate(l.id)}
                   isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+                  isDuplicatePending={duplicate.isPending && duplicate.variables === l.id}
                   isDeletePending={remove.isPending && remove.variables === l.id}
                   canDelete={hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
                   abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}

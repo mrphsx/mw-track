@@ -17,7 +17,7 @@
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Eye, Globe, Link2, MoreHorizontal, Shield, SplitSquareHorizontal, Trash2, Upload } from 'lucide-react';
+import { Copy, Eye, Globe, Link2, MoreHorizontal, Shield, SplitSquareHorizontal, Trash2, Upload } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { LandingItem, LandingStatus, STATUS_LABEL, TYPE_LABEL, TemplateInfo } from '@/lib/landings';
@@ -94,10 +94,12 @@ export function LandingRow({
   onReupload,
   onManageExternal,
   onManageAbTest,
+  onDuplicate,
   onPublish,
   onUnpublish,
   onDelete,
   isPublishPending,
+  isDuplicatePending,
   isDeletePending,
   canDelete = true,
   selectable,
@@ -114,10 +116,12 @@ export function LandingRow({
   onReupload?: () => void;
   onManageExternal?: () => void;
   onManageAbTest?: () => void;
+  onDuplicate: () => void;
   onPublish: () => void;
   onUnpublish: () => void;
   onDelete: () => void;
   isPublishPending: boolean;
+  isDuplicatePending?: boolean;
   isDeletePending: boolean;
   canDelete?: boolean;
   selectable?: boolean;
@@ -220,6 +224,12 @@ export function LandingRow({
                 <Globe className="w-4 h-4 mr-2" /> Подключение
               </DropdownMenuItem>
             )}
+            {/* Копия лендинга (запрос клиентов 2026-10-02: "чтоб просто домен заменить для
+                следующей ссылки") — копия создаётся БЕЗ привязки к домену, именно её клиент и
+                должен привязать отдельно через "Домен" выше. */}
+            <DropdownMenuItem onClick={onDuplicate} disabled={isDuplicatePending}>
+              <Copy className="w-4 h-4 mr-2" /> Копировать
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             {landing.status === 'PUBLISHED' ? (
               <DropdownMenuItem onClick={onUnpublish} disabled={isPublishPending}>

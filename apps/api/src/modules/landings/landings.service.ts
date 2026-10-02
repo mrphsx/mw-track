@@ -1199,6 +1199,106 @@ export class LandingsService {
     await this.prisma.landing.update({ where: { id }, data: { deletedAt: new Date(), status: LandingStatus.ARCHIVED } });
   }
 
+  // Копия лендинга (запрос клиентов через пользователя 2026-10-02: "а нет возможности лендинг
+  // сделать копируемым? чтоб просто домен заменить для следующей ссылки") — весь контент и
+  // настройки переносятся как есть, но НАРОЧНО НЕ переносятся: привязка к домену (DomainPath) —
+  // ровно то, что клиент и просит заменить на новый, копия стартует без домена; A/B-группа
+  // (копия не должна тихо присоединиться к тесту оригинала — abTestGroupId/abTestWeight не
+  // копируются); персональная Telegram-invite-ссылка (два лендинга с ОДНОЙ и той же ссылкой
+  // сломали бы пер-лендинговую атрибуцию подписчиков — publish() ниже сгенерирует копии свою,
+  // свежую); счётчики ботов (новый лендинг без своей истории трафика, стартует с нуля).
+  // CUSTOM-контент и белая страница клоакинга — реальные файлы в MinIO, а не просто строка пути
+  // в БД: customBasePath/cloakingPrelandingBasePath у обоих лендингов завязаны на их СОБСТВЕННЫЙ
+  // landing.id (см. processAndReviewZip/uploadCloakingPrelanding), поэтому физически копируются
+  // через StorageService.copyPrefix в новый, свой префикс — иначе оба лендинга делили бы один и
+  // тот же MinIO-путь, и перезаливка ZIP у одного стирала бы контент другого. CloakingRule/
+  // CloakingCondition — тоже реальные строки БД, копируются целиком с новыми id под новый
+  // лендинг, иначе клиенту пришлось бы настраивать фильтрацию заново на каждой копии.
+  async duplicate(id: string, companyId: string, createdById?: string): Promise<Landing> {
+    const original = await this.findOne(id, companyId);
+
+    const created = await this.prisma.landing.create({
+      data: {
+        companyId,
+        projectId: original.projectId,
+        createdById,
+        name: `${original.name} (копия)`,
+        type: original.type,
+        templateId: original.templateId,
+        templateData: original.templateData === null ? Prisma.JsonNull : (original.templateData as Prisma.InputJsonValue),
+        externalUrl: original.externalUrl,
+        metaTitle: original.metaTitle,
+        metaDescription: original.metaDescription,
+        faviconUrl: original.faviconUrl,
+        autoRedirect: original.autoRedirect,
+        cloakingEnabled: original.cloakingEnabled,
+        leadOnClick: original.leadOnClick,
+        leadOnAutoRedirect: original.leadOnAutoRedirect,
+        tiktokBrowserHint: original.tiktokBrowserHint,
+        tiktokHintTexts: original.tiktokHintTexts === null ? Prisma.JsonNull : (original.tiktokHintTexts as Prisma.InputJsonValue),
+        status: LandingStatus.DRAFT,
+      },
+    });
+
+    if (original.customBasePath) {
+      const newBasePath = `landings/${created.id}`;
+      await this.storage.copyPrefix(original.customBasePath, newBasePath);
+      await this.prisma.landing.update({ where: { id: created.id }, data: { customBasePath: newBasePath } });
+    }
+
+    if (original.cloakingPrelandingBasePath) {
+      const newPrelandingPath = `landing-cloaking-prelanding/${created.id}`;
+      await this.storage.copyPrefix(original.cloakingPrelandingBasePath, newPrelandingPath);
+      await this.prisma.landing.update({ where: { id: created.id }, data: { cloakingPrelandingBasePath: newPrelandingPath } });
+    }
+
+    if (original.avatarKey) {
+      const fileName = original.avatarKey.split('/').pop();
+      const newAvatarKey = `landing-avatars/${created.id}/${fileName}`;
+      await this.storage.copyObject(original.avatarKey, newAvatarKey);
+      await this.prisma.landing.update({ where: { id: created.id }, data: { avatarKey: newAvatarKey } });
+    }
+
+    const rules = await this.prisma.cloakingRule.findMany({
+      where: { landingId: id },
+      include: { conditions: true },
+      orderBy: { position: 'asc' },
+    });
+    for (const rule of rules) {
+      await this.prisma.cloakingRule.create({
+        data: {
+          landingId: created.id,
+          name: rule.name,
+          position: rule.position,
+          isEnabled: rule.isEnabled,
+          matchLogic: rule.matchLogic,
+          action: rule.action,
+          actionRedirectUrl: rule.actionRedirectUrl,
+          actionCustomHtml: rule.actionCustomHtml,
+          actionCustomText: rule.actionCustomText,
+          conditions: {
+            create: rule.conditions.map((c) => ({
+              field: c.field,
+              negate: c.negate,
+              config: c.config as Prisma.InputJsonValue,
+            })),
+          },
+        },
+      });
+    }
+
+    // EXTERNAL — контент живёт на сервере клиента, копия строки в нашей БД не копирует НИКАКОГО
+    // реального контента (в отличие от TEMPLATE/CUSTOM); клиенту ещё только предстоит поставить
+    // новый code snippet (со СВОИМ data-landing-id) на новую страницу, поэтому, как и при обычном
+    // createExternal, копия остаётся DRAFT до отдельной верификации — автопубликация здесь была
+    // бы откровенно лживой (показывала бы "Активен" при реально ещё не подключённой странице).
+    if (original.type === 'EXTERNAL') {
+      return this.prisma.landing.findUniqueOrThrow({ where: { id: created.id } });
+    }
+
+    return this.publish(created.id, companyId);
+  }
+
   // A/B/n-тестирование лендингов (Фаза 3.2, запрос пользователя 2026-07-15, расширено тем же
   // днём с пары до произвольного числа вариантов) — баер связывает N уже существующих
   // лендингов в группу с процентами трафика на каждый, сплит делается в

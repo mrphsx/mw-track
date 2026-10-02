@@ -89,6 +89,26 @@ export class StorageService implements OnModuleInit {
     if (objectNames.length > 0) await this.client.removeObjects(this.bucket, objectNames);
   }
 
+  // Копирование одного объекта (аватарка лендинга) — для LandingsService.duplicate (запрос
+  // пользователя 2026-10-02: "сделать лендинг копируемым"). Server-side copy внутри MinIO, без
+  // скачивания/перезаливки через наш сервер.
+  async copyObject(fromKey: string, toKey: string): Promise<void> {
+    await this.client.copyObject(this.bucket, toKey, `/${this.bucket}/${fromKey}`);
+  }
+
+  // Копирование всех объектов под префиксом в новый префикс (CUSTOM-контент/белая страница
+  // клоакинга при дублировании лендинга) — оба префикса завязаны на landing.id (см.
+  // processAndReviewZip/uploadCloakingPrelanding), поэтому копия ОБЯЗАНА получить СВОИ файлы под
+  // СВОИМ id, а не делить один и тот же префикс с оригиналом: иначе перезаливка ZIP у одного из
+  // двух лендингов стёрла бы содержимое другого (оба указывали бы на один и тот же MinIO-путь).
+  async copyPrefix(fromPrefix: string, toPrefix: string): Promise<void> {
+    const objectNames = await this.listPrefix(fromPrefix);
+    for (const name of objectNames) {
+      const relative = name.slice(fromPrefix.length + 1);
+      await this.copyObject(name, `${toPrefix}/${relative}`);
+    }
+  }
+
   private async walk(dir: string): Promise<string[]> {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const files: string[] = [];

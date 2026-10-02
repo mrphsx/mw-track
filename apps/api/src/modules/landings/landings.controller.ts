@@ -91,6 +91,15 @@ export class LandingsController {
     return this.landingsService.unpublish(id, companyId);
   }
 
+  // Копия лендинга (запрос клиентов 2026-10-02: "чтоб просто домен заменить для следующей
+  // ссылки") — та же LANDINGS_EDIT-проверка на исходный лендинг, что и у остальных мутирующих
+  // :id-роутов выше; копия остаётся в том же проекте, что и оригинал.
+  @Post(':id/duplicate')
+  async duplicate(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    return this.landingsService.duplicate(id, companyId, user.userId);
+  }
+
   // Багфикс 2026-07-28 (аудит разрешений сотрудников): раньше ни @RequirePermission, ни
   // assertAccess вообще — любой сотрудник компании мог посмотреть превью ЛЮБОГО лендинга
   // компании, зная его id, независимо от ProjectAccess к конкретному проекту.
