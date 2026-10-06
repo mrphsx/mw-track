@@ -1,9 +1,9 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { Check, Copy, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { Check, Copy, ExternalLink, Plus, ShieldOff, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { copyToClipboard, buildAutoPath } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuthStore } from '@/store/auth.store';
-import { hasAnyPermission } from '@/lib/permissions';
+import { hasAnyPermission, isElevatedUser } from '@/lib/permissions';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../ui';
 
 type DomainStatus = 'PENDING' | 'VERIFYING' | 'ACTIVE' | 'ERROR';
@@ -48,12 +48,31 @@ function pathTargetSubtitle(p: DomainPathItem): string {
   return '';
 }
 
+// Сотрудник, которому можно выдать домен (не-elevated роли) — приходит и в списке доменов
+// (кому уже выдан), и отдельным запросом для формы выбора.
+interface AssignableUser {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  email: string;
+  role: string;
+}
+
+function userLabel(u: AssignableUser): string {
+  const name = `${u.firstName} ${u.lastName || ''}`.trim();
+  return name || u.email;
+}
+
 interface DomainItem {
   id: string;
   domain: string;
   status: DomainStatus;
   sslStatus: string | null;
   paths: DomainPathItem[];
+  // Доступ к домену (запрос пользователя 2026-10-06). allowedUsers приходит пустым для ролей,
+  // которые не управляют доступом — им незачем знать, кому ещё выдан домен.
+  sharedWithAllBuyers: boolean;
+  allowedUsers: AssignableUser[];
   lastCheckError: string | null;
   instructions: {
     txtName: string;
@@ -93,18 +112,38 @@ export default function StudioDomainsPage() {
   const [error, setError] = useState('');
   const [pathsDomainId, setPathsDomainId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  // Доступ к доменам (запрос пользователя 2026-10-06) — настраивают только владелец/админ.
+  const canManageAccess = isElevatedUser(user);
+  const [accessDomainId, setAccessDomainId] = useState<string | null>(null);
+  const [showRevokeAll, setShowRevokeAll] = useState(false);
+  const [newShareAll, setNewShareAll] = useState(false);
+  const [newAllowedIds, setNewAllowedIds] = useState<string[]>([]);
 
   const { data: domains, isLoading } = useQuery({
     queryKey: ['domains'],
     queryFn: async () => (await api.get<DomainItem[]>('/domains')).data,
   });
 
+  const { data: assignableUsers } = useQuery({
+    queryKey: ['domain-assignable-users'],
+    queryFn: async () => (await api.get<AssignableUser[]>('/domains/access/assignable-users')).data,
+    enabled: canManageAccess,
+  });
+
   const addDomain = useMutation({
-    mutationFn: () => api.post('/domains', { domain: newDomain.trim().toLowerCase() }),
+    mutationFn: () =>
+      api.post('/domains', {
+        domain: newDomain.trim().toLowerCase(),
+        // Выбор присылается всегда, даже «никому»: иначе бэкенд применил бы дефолт схемы
+        // (доступен всем) и новый домен молча оказался бы у всех.
+        ...(canManageAccess ? { sharedWithAllBuyers: newShareAll, allowedUserIds: newShareAll ? [] : newAllowedIds } : {}),
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains'] });
       setShowAddModal(false);
       setNewDomain('');
+      setNewShareAll(false);
+      setNewAllowedIds([]);
       setError('');
     },
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось добавить домен'),
@@ -123,6 +162,15 @@ export default function StudioDomainsPage() {
     },
   });
 
+  const revokeAllAccess = useMutation({
+    mutationFn: () => api.post('/domains/access/revoke-all'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
+      setShowRevokeAll(false);
+    },
+  });
+
+  const accessDomain = domains?.find((d) => d.id === accessDomainId) || null;
   const pathsDomain = domains?.find((d) => d.id === pathsDomainId) || null;
   const deleteConfirmDomain = domains?.find((d) => d.id === deleteConfirmId) || null;
 
@@ -130,11 +178,18 @@ export default function StudioDomainsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Домены</h1>
-        {hasAnyPermission(user, 'DOMAINS_CREATE') && (
-          <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowAddModal(true)}>
-            Добавить домен
-          </StudioLinkButton>
-        )}
+        <div className="flex items-center gap-2">
+          {canManageAccess && !!domains?.length && (
+            <StudioLinkButton icon={ShieldOff} onClick={() => setShowRevokeAll(true)}>
+              Отозвать доступ у всех
+            </StudioLinkButton>
+          )}
+          {hasAnyPermission(user, 'DOMAINS_CREATE') && (
+            <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowAddModal(true)}>
+              Добавить домен
+            </StudioLinkButton>
+          )}
+        </div>
       </div>
 
       <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
@@ -164,6 +219,7 @@ export default function StudioDomainsPage() {
                 <th className="px-5 py-3 font-medium">Статус</th>
                 <th className="px-5 py-3 font-medium">SSL</th>
                 <th className="px-5 py-3 font-medium">Пути</th>
+                {canManageAccess && <th className="px-5 py-3 font-medium">Доступ</th>}
                 <th className="px-5 py-3 font-medium text-right">Действия</th>
               </tr>
             </thead>
@@ -209,6 +265,29 @@ export default function StudioDomainsPage() {
                         </div>
                       )}
                     </td>
+                    {canManageAccess && (
+                      <td className="px-5 py-3">
+                        <button
+                          type="button"
+                          onClick={() => setAccessDomainId(d.id)}
+                          className="text-left"
+                          title="Настроить, кому доступен домен"
+                        >
+                          <StudioPill hue={d.sharedWithAllBuyers ? 'sage' : d.allowedUsers.length ? 'teal' : 'slate'}>
+                            {d.sharedWithAllBuyers
+                              ? 'Всем баерам'
+                              : d.allowedUsers.length
+                                ? `Выбранным: ${d.allowedUsers.length}`
+                                : 'Только админам'}
+                          </StudioPill>
+                        </button>
+                        {!d.sharedWithAllBuyers && !!d.allowedUsers.length && (
+                          <div className="mt-1 text-xs text-[#5F6B7A] dark:text-[#92A0AF] truncate max-w-[200px]">
+                            {d.allowedUsers.map(userLabel).join(', ')}
+                          </div>
+                        )}
+                      </td>
+                    )}
                     <td className="px-5 py-3 text-right">
                       <div className="flex justify-end gap-2">
                         {d.status !== 'ACTIVE' && (
@@ -229,7 +308,7 @@ export default function StudioDomainsPage() {
                   </tr>
                   {d.status !== 'ACTIVE' && (
                     <tr>
-                      <td colSpan={5} className="px-5 bg-[#A8783C]/5 dark:bg-[#E0B378]/5">
+                      <td colSpan={canManageAccess ? 6 : 5} className="px-5 bg-[#A8783C]/5 dark:bg-[#E0B378]/5">
                         <div className="space-y-2 py-3 text-sm">
                           {d.lastCheckError && <p className="text-red-600 dark:text-red-400">⚠ {d.lastCheckError}</p>}
                           <p className="text-[#5F6B7A] dark:text-[#92A0AF]">Добавьте в DNS вашего домена три записи:</p>
@@ -273,6 +352,15 @@ export default function StudioDomainsPage() {
               срабатывании клоакинга или обычном HTTP→HTTPS редиректе браузер получит{' '}
               <code className="text-xs">ERR_TOO_MANY_REDIRECTS</code>.
             </p>
+            {canManageAccess && (
+              <AccessPicker
+                users={assignableUsers}
+                shareAll={newShareAll}
+                allowedIds={newAllowedIds}
+                onShareAllChange={setNewShareAll}
+                onAllowedIdsChange={setNewAllowedIds}
+              />
+            )}
             {error && <p className="text-sm text-red-500">{error}</p>}
             <Button onClick={() => addDomain.mutate()} disabled={!newDomain || addDomain.isPending}>
               {addDomain.isPending ? 'Добавляем...' : 'Добавить'}
@@ -307,8 +395,138 @@ export default function StudioDomainsPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showRevokeAll} onOpenChange={(open) => !open && setShowRevokeAll(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Отозвать доступ у всех?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
+              Со всех доменов компании снимется и общий доступ «всем баерам», и все точечные выдачи
+              конкретным сотрудникам. Домены останутся видны только владельцу и администраторам, пока вы
+              не выдадите доступ заново. Сами домены, пути и сертификаты не затрагиваются.
+            </p>
+            <div className="flex justify-end gap-2">
+              <StudioLinkButton onClick={() => setShowRevokeAll(false)}>Отмена</StudioLinkButton>
+              <Button variant="destructive" disabled={revokeAllAccess.isPending} onClick={() => revokeAllAccess.mutate()}>
+                {revokeAllAccess.isPending ? 'Отзываем...' : 'Отозвать доступ'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <DomainAccessDialog domain={accessDomain} users={assignableUsers} onClose={() => setAccessDomainId(null)} />
       <DomainPathsDialog domain={pathsDomain} onClose={() => setPathsDomainId(null)} />
     </div>
+  );
+}
+
+// Общий выбор «кому доступен домен» — один и тот же блок в форме создания и в диалоге правки
+// доступа у существующего домена, чтобы два места не разъехались по смыслу.
+function AccessPicker({
+  users,
+  shareAll,
+  allowedIds,
+  onShareAllChange,
+  onAllowedIdsChange,
+}: {
+  users: AssignableUser[] | undefined;
+  shareAll: boolean;
+  allowedIds: string[];
+  onShareAllChange: (v: boolean) => void;
+  onAllowedIdsChange: (v: string[]) => void;
+}) {
+  const toggle = (id: string) =>
+    onAllowedIdsChange(allowedIds.includes(id) ? allowedIds.filter((x) => x !== id) : [...allowedIds, id]);
+
+  return (
+    <div className="space-y-2">
+      <Label>Кому доступен</Label>
+      <label className="flex items-center gap-2 text-sm cursor-pointer">
+        <input type="checkbox" checked={shareAll} onChange={(e) => onShareAllChange(e.target.checked)} />
+        <span>Всем баерам компании (включая будущих)</span>
+      </label>
+
+      {!shareAll && (
+        <>
+          {!users?.length ? (
+            <p className="text-xs text-muted-foreground">В компании пока нет сотрудников, которым можно выдать домен.</p>
+          ) : (
+            <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+              {users.map((u) => (
+                <label key={u.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent">
+                  <input type="checkbox" checked={allowedIds.includes(u.id)} onChange={() => toggle(u.id)} />
+                  <span className="truncate">{userLabel(u)}</span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{u.email}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {!allowedIds.length && (
+            <p className="text-xs text-muted-foreground">
+              Никого не выбрано — домен будет виден только владельцу и администраторам.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function DomainAccessDialog({
+  domain,
+  users,
+  onClose,
+}: {
+  domain: DomainItem | null;
+  users: AssignableUser[] | undefined;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [shareAll, setShareAll] = useState(false);
+  const [allowedIds, setAllowedIds] = useState<string[]>([]);
+
+  // Префилл из самого домена при каждом открытии. key={domain.id} на диалоге ниже не поставить
+  // (компонент один на все строки), поэтому следим за id через useEffect.
+  useEffect(() => {
+    if (!domain) return;
+    setShareAll(domain.sharedWithAllBuyers);
+    setAllowedIds(domain.allowedUsers.map((u) => u.id));
+  }, [domain?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.patch(`/domains/${domain!.id}/access`, { sharedWithAllBuyers: shareAll, allowedUserIds: shareAll ? [] : allowedIds }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains'] });
+      onClose();
+    },
+  });
+
+  return (
+    <Dialog open={!!domain} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Доступ к {domain?.domain}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <AccessPicker
+            users={users}
+            shareAll={shareAll}
+            allowedIds={allowedIds}
+            onShareAllChange={setShareAll}
+            onAllowedIdsChange={setAllowedIds}
+          />
+          <div className="flex justify-end gap-2">
+            <StudioLinkButton onClick={onClose}>Отмена</StudioLinkButton>
+            <Button disabled={save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Сохраняем...' : 'Сохранить'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

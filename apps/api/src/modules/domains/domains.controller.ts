@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { Permission } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { DomainsService } from './domains.service';
 import { CreateDomainDto } from './dto/create-domain.dto';
+import { UpdateDomainAccessDto } from './dto/update-domain-access.dto';
 import { UpsertDomainPathDto } from './dto/upsert-domain-path.dto';
 
 // DOMAINS_* — единственное исключение из per-project модели прав (решение пользователя
@@ -31,25 +32,50 @@ export class DomainsController {
   @Get()
   async findAll(@Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_VIEW);
-    return this.domainsService.findAll(companyId);
+    return this.domainsService.findAll(companyId, { userId: user.userId, role: user.role });
+  }
+
+  // Управление доступом к доменам (запрос пользователя 2026-10-06: "это может делать тот кто
+  // старше по должности, овнер, администратор"). Роль проверяется внутри сервиса, а не
+  // декоратором @Roles: у OWNER и ADMIN одинаковый ранг, а RolesGuard сравнивает ранги, не
+  // членство в множестве (см. предупреждение в CLAUDE.md) — здесь нужны ровно elevated-роли.
+  // Статические пути объявлены до @Get(':id')/@Delete(':id') ниже, иначе 'access' уедет в :id.
+  @Get('access/assignable-users')
+  async assignableUsers(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.domainsService.listAssignableUsers(companyId, user.role);
+  }
+
+  @Post('access/revoke-all')
+  async revokeAllAccess(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.domainsService.revokeAllBuyerAccess(companyId, user.role);
+  }
+
+  @Patch(':id/access')
+  async updateAccess(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() dto: UpdateDomainAccessDto,
+  ) {
+    return this.domainsService.updateAccess(id, companyId, user.role, dto);
   }
 
   @Get(':id')
   async findOne(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_VIEW);
-    return this.domainsService.findOne(id, companyId);
+    return this.domainsService.findOne(id, companyId, { userId: user.userId, role: user.role });
   }
 
   @Post(':id/verify')
   async verify(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_EDIT);
-    return this.domainsService.verify(id, companyId);
+    return this.domainsService.verify(id, companyId, { userId: user.userId, role: user.role });
   }
 
   @Get(':id/paths')
   async listPaths(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_VIEW);
-    return this.domainsService.listPaths(id, companyId);
+    return this.domainsService.listPaths(id, companyId, { userId: user.userId, role: user.role });
   }
 
   // Один эндпоинт на создание и редактирование (upsert по domainId+path) — проще для фронта,
@@ -70,6 +96,6 @@ export class DomainsController {
   @Delete(':id')
   async remove(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_DELETE);
-    return this.domainsService.remove(id, companyId);
+    return this.domainsService.remove(id, companyId, { userId: user.userId, role: user.role });
   }
 }

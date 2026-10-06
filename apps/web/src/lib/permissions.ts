@@ -49,6 +49,14 @@ export type Permission = (typeof PERMISSIONS)[number];
 
 const ELEVATED_ROLES = ['OWNER', 'ADMIN', 'SUPER_ADMIN'];
 
+// Владелец/администратор (и супер-админ платформы) — роли без per-project проверок, полный
+// доступ везде. Отдельный хелпер, а не сравнение со строками по месту: SUPER_ADMIN уже
+// однажды забыли в такой инлайновой проверке (журнал реквизитов, 2026-08-29). Зеркалит
+// backend isElevatedRole.
+export function isElevatedUser(user: Pick<User, 'role'> | null | undefined): boolean {
+  return !!user && ELEVATED_ROLES.includes(user.role);
+}
+
 // Права per-project (запрос пользователя 2026-07-28) — нужен конкретный projectId. Elevated
 // роли (OWNER/ADMIN/SUPER_ADMIN) всегда полный доступ, не проверяются по списку — зеркалит
 // backend isElevatedRole/ProjectsService.assertAccess.

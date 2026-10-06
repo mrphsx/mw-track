@@ -7,7 +7,9 @@ import { ModuleRef } from '@nestjs/core';
 import { Domain, DomainPath, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NginxService } from '../landings/nginx.service';
+import { isElevatedRole, RESTRICTED_ROLES } from '../../common/permissions/permission.constants';
 import { CreateDomainDto } from './dto/create-domain.dto';
+import { UpdateDomainAccessDto } from './dto/update-domain-access.dto';
 import { UpsertDomainPathDto } from './dto/upsert-domain-path.dto';
 import { normalizeDomainPath } from './domain-path.util';
 import { ProjectsService } from '../projects/projects.service';
@@ -29,6 +31,23 @@ const PATH_WITH_LANDING_INCLUDE = {
   landing: { select: { id: true, name: true, project: { select: { id: true, name: true } } } },
   abTestGroup: { select: { id: true, name: true, landings: { select: { name: true } } } },
 } as const;
+
+// Кто смотрит на домены. undefined = внутренний/платформенный вызов без ограничений
+// (apps/admin, кросс-тенантная панель супер-админа) — там фильтровать нечего и не по кому.
+export interface DomainViewer {
+  userId: string;
+  role: UserRole;
+}
+
+// Краткая карточка сотрудника, которому выдан доступ — показывается только Owner/Admin
+// (см. findAll): баеру незачем знать, кому ещё раздали домен.
+export interface DomainAccessUser {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  email: string;
+  role: UserRole;
+}
 
 export type DomainPathWithLanding = DomainPath & {
   landing: { id: string; name: string; project: { id: string; name: string } } | null;
@@ -96,9 +115,20 @@ export class DomainsService {
       if (!project) throw new NotFoundException('Проект не найден');
     }
 
+    // Кому доступен новый домен (запрос пользователя 2026-10-06). Поле не прислано вовсе =
+    // остаётся дефолт схемы (доступен всем) — так старый клиент, не знающий про эту настройку,
+    // продолжает работать как раньше; Studio-форма всегда присылает выбор явно.
+    const allowedUsers = dto.sharedWithAllBuyers ? [] : await this.resolveAssignableUsers(companyId, dto.allowedUserIds ?? []);
+
     try {
       const domain = await this.prisma.domain.create({
-        data: { companyId, domain: dto.domain.toLowerCase(), projectId: dto.projectId },
+        data: {
+          companyId,
+          domain: dto.domain.toLowerCase(),
+          projectId: dto.projectId,
+          sharedWithAllBuyers: dto.sharedWithAllBuyers,
+          access: allowedUsers.length ? { createMany: { data: allowedUsers.map((u) => ({ userId: u.id })) } } : undefined,
+        },
       });
       return this.withInstructions(domain);
     } catch (error) {
@@ -109,23 +139,123 @@ export class DomainsService {
     }
   }
 
-  async findAll(companyId: string): Promise<(DomainWithInstructions & { paths: DomainPathWithLanding[] })[]> {
+  // Домены видят либо все (sharedWithAllBuyers), либо только те, кому их выдали точечно
+  // (запрос пользователя 2026-10-06). Owner/Admin/SUPER_ADMIN — всегда всё: распределяют
+  // доступ именно они. Один фрагмент на оба места (список и выборка одного домена), чтобы
+  // список и прямой переход по id не могли разойтись.
+  private accessWhere(viewer?: DomainViewer): Prisma.DomainWhereInput {
+    if (!viewer || isElevatedRole(viewer.role)) return {};
+    return { OR: [{ sharedWithAllBuyers: true }, { access: { some: { userId: viewer.userId } } }] };
+  }
+
+  private canManageAccess(role: UserRole): boolean {
+    return isElevatedRole(role);
+  }
+
+  async findAll(
+    companyId: string,
+    viewer?: DomainViewer,
+  ): Promise<(DomainWithInstructions & { paths: DomainPathWithLanding[]; allowedUsers: DomainAccessUser[] })[]> {
+    const showAccess = !viewer || this.canManageAccess(viewer.role);
     const domains = await this.prisma.domain.findMany({
-      where: { companyId, deletedAt: null },
-      include: { paths: { orderBy: { path: 'asc' }, include: PATH_WITH_LANDING_INCLUDE } },
+      where: { companyId, deletedAt: null, ...this.accessWhere(viewer) },
+      include: {
+        paths: { orderBy: { path: 'asc' }, include: PATH_WITH_LANDING_INCLUDE },
+        ...(showAccess
+          ? { access: { include: { user: { select: { id: true, firstName: true, lastName: true, email: true, role: true } } } } }
+          : {}),
+      },
       orderBy: { createdAt: 'desc' },
     });
-    return domains.map((d) => ({ ...this.withInstructions(d), paths: d.paths }));
+    return domains.map((d) => {
+      const { access, ...domain } = d as typeof d & { access?: { user: DomainAccessUser }[] };
+      return {
+        ...this.withInstructions(domain as Domain),
+        paths: d.paths,
+        // Для не-админских ролей список намеренно пуст, а не отсутствует — фронту не нужно
+        // различать "нет доступа к полю" и "никому не выдан".
+        allowedUsers: (access ?? []).map((a) => a.user),
+      };
+    });
   }
 
-  async findOne(id: string, companyId: string): Promise<DomainWithInstructions> {
-    const domain = await this.prisma.domain.findFirst({ where: { id, companyId, deletedAt: null } });
-    if (!domain) throw new NotFoundException('Домен не найден');
-    return this.withInstructions(domain);
+  // Кому вообще можно выдать домен — все не-elevated сотрудники компании (баеры и прочие
+  // роли, которые проверяются по правам). Owner/Admin/SUPER_ADMIN сюда не попадают: они и так
+  // видят все домены, и грант для них был бы пустой строкой в таблице.
+  async listAssignableUsers(companyId: string, requesterRole: UserRole): Promise<DomainAccessUser[]> {
+    if (!this.canManageAccess(requesterRole)) {
+      throw new ForbiddenException('Доступом к доменам управляют владелец и администратор');
+    }
+    return this.prisma.user.findMany({
+      where: { companyId, deletedAt: null, role: { in: RESTRICTED_ROLES } },
+      select: { id: true, firstName: true, lastName: true, email: true, role: true },
+      orderBy: [{ role: 'asc' }, { createdAt: 'asc' }],
+    });
   }
 
-  private async findOneRaw(id: string, companyId: string): Promise<Domain> {
-    const domain = await this.prisma.domain.findFirst({ where: { id, companyId, deletedAt: null } });
+  // Полная замена списка доступа, а не добавление: форма всегда присылает итоговое состояние
+  // целиком, иначе снять ранее выданный доступ было бы нечем.
+  async updateAccess(
+    domainId: string,
+    companyId: string,
+    requesterRole: UserRole,
+    dto: UpdateDomainAccessDto,
+  ): Promise<{ sharedWithAllBuyers: boolean; allowedUsers: DomainAccessUser[] }> {
+    if (!this.canManageAccess(requesterRole)) {
+      throw new ForbiddenException('Доступом к доменам управляют владелец и администратор');
+    }
+    await this.findOneRaw(domainId, companyId);
+
+    const sharedWithAllBuyers = dto.sharedWithAllBuyers ?? false;
+    // При "доступен всем" точечные гранты стираются, а не консервируются: иначе обратное
+    // переключение внезапно вернуло бы давно забытый список.
+    const users = sharedWithAllBuyers ? [] : await this.resolveAssignableUsers(companyId, dto.allowedUserIds ?? []);
+
+    await this.prisma.$transaction([
+      this.prisma.domain.update({ where: { id: domainId }, data: { sharedWithAllBuyers } }),
+      this.prisma.domainAccess.deleteMany({ where: { domainId } }),
+      ...(users.length
+        ? [this.prisma.domainAccess.createMany({ data: users.map((u) => ({ domainId, userId: u.id })) })]
+        : []),
+    ]);
+
+    return { sharedWithAllBuyers, allowedUsers: users };
+  }
+
+  // "Отключить доступ всем баерам ко всем доменам" (запрос пользователя 2026-10-06) — снимает
+  // и общий флаг, и все точечные гранты по всей компании разом. После этого домены остаются
+  // только у Owner/Admin, пока доступ не выдадут заново.
+  async revokeAllBuyerAccess(companyId: string, requesterRole: UserRole): Promise<{ domainsAffected: number; grantsRemoved: number }> {
+    if (!this.canManageAccess(requesterRole)) {
+      throw new ForbiddenException('Доступом к доменам управляют владелец и администратор');
+    }
+    const [updated, deleted] = await this.prisma.$transaction([
+      this.prisma.domain.updateMany({ where: { companyId, deletedAt: null, sharedWithAllBuyers: true }, data: { sharedWithAllBuyers: false } }),
+      this.prisma.domainAccess.deleteMany({ where: { domain: { companyId, deletedAt: null } } }),
+    ]);
+    return { domainsAffected: updated.count, grantsRemoved: deleted.count };
+  }
+
+  // Молча отбрасываем чужие/удалённые/elevated id, а не падаем на одном устаревшем: форма
+  // могла быть открыта до того, как сотрудника удалили или повысили.
+  private async resolveAssignableUsers(companyId: string, userIds: string[]): Promise<DomainAccessUser[]> {
+    if (!userIds.length) return [];
+    return this.prisma.user.findMany({
+      where: { id: { in: userIds }, companyId, deletedAt: null, role: { in: RESTRICTED_ROLES } },
+      select: { id: true, firstName: true, lastName: true, email: true, role: true },
+    });
+  }
+
+  async findOne(id: string, companyId: string, viewer?: DomainViewer): Promise<DomainWithInstructions> {
+    return this.withInstructions(await this.findOneRaw(id, companyId, viewer));
+  }
+
+  // Фильтр доступа живёт здесь, а не в каждом методе отдельно: через findOneRaw проходят ВСЕ
+  // операции над конкретным доменом (пути, верификация, удаление), поэтому сотрудник без
+  // доступа получает честный 404 и на прямой переход по id, и на попытку привязать путь —
+  // не только исчезновение домена из списка.
+  private async findOneRaw(id: string, companyId: string, viewer?: DomainViewer): Promise<Domain> {
+    const domain = await this.prisma.domain.findFirst({ where: { id, companyId, deletedAt: null, ...this.accessWhere(viewer) } });
     if (!domain) throw new NotFoundException('Домен не найден');
     return domain;
   }
@@ -151,8 +281,8 @@ export class DomainsService {
   // block/webhook всё равно снимается, так что домен реально перестаёт что-либо отдавать.
   // Уникальность hostname теперь частичный индекс WHERE deletedAt IS NULL (миграция
   // 20260902222554_domain_soft_delete), поэтому тот же хост можно добавить заново.
-  async remove(id: string, companyId: string): Promise<void> {
-    const domain = await this.findOneRaw(id, companyId);
+  async remove(id: string, companyId: string, viewer?: DomainViewer): Promise<void> {
+    const domain = await this.findOneRaw(id, companyId, viewer);
     try {
       await this.nginx.removeServerBlock(domain.domain);
     } catch (error) {
@@ -161,8 +291,8 @@ export class DomainsService {
     await this.prisma.domain.update({ where: { id }, data: { deletedAt: new Date() } });
   }
 
-  async listPaths(domainId: string, companyId: string): Promise<DomainPathWithLanding[]> {
-    await this.findOneRaw(domainId, companyId);
+  async listPaths(domainId: string, companyId: string, viewer?: DomainViewer): Promise<DomainPathWithLanding[]> {
+    await this.findOneRaw(domainId, companyId, viewer);
     return this.prisma.domainPath.findMany({
       where: { domainId },
       orderBy: { path: 'asc' },
@@ -178,7 +308,7 @@ export class DomainsService {
   // (LandingRendererService.renderByDomain), а не записывается в nginx-конфиг, поэтому
   // добавление/смена/удаление путей не требует nginx reload вообще.
   async upsertPath(domainId: string, companyId: string, dto: UpsertDomainPathDto, userId: string, role: UserRole): Promise<DomainPathWithLanding> {
-    await this.findOneRaw(domainId, companyId);
+    await this.findOneRaw(domainId, companyId, { userId, role });
 
     if (!!dto.landingId === !!dto.abTestGroupId) {
       throw new BadRequestException('Укажите либо лендинг, либо группу A/B-теста — ровно одно');
@@ -210,7 +340,7 @@ export class DomainsService {
   // от самого домена, см. решение "DOMAINS_* — общее право роли") всегда ведёт ровно в один
   // проект — та же логика, что уже есть у upsertPath.
   async removePath(domainId: string, pathId: string, companyId: string, userId: string, role: UserRole): Promise<void> {
-    await this.findOneRaw(domainId, companyId);
+    await this.findOneRaw(domainId, companyId, { userId, role });
     const path = await this.prisma.domainPath.findFirst({ where: { id: pathId, domainId } });
     if (!path) throw new NotFoundException('Путь не найден');
     if (path.landingId) await this.assertLandingOwnership(companyId, path.landingId, userId, role);
@@ -223,8 +353,8 @@ export class DomainsService {
   // импортировать DomainsModule, а тот уже импортирует LandingsModule за NginxService —
   // циклическая зависимость модулей.
 
-  async verify(id: string, companyId: string): Promise<DomainWithInstructions> {
-    const domain = await this.findOneRaw(id, companyId);
+  async verify(id: string, companyId: string, viewer?: DomainViewer): Promise<DomainWithInstructions> {
+    const domain = await this.findOneRaw(id, companyId, viewer);
     if (domain.status === 'ACTIVE') return this.withInstructions(domain); // уже всё проверено, повторно не дёргаем Certbot
 
     const txtOk = await this.checkTxtRecord(domain.domain, domain.verificationToken);

@@ -212,6 +212,7 @@ model User {
   createdPixels   TrackingPixel[]  @relation("PixelCreatedBy")
   sentNotices     AdminNotice[]     @relation("AdminNoticeCreatedBy")
   noticeReads     AdminNoticeRead[]
+  domainAccess    DomainAccess[]
 
   @@index([companyId])
 }
@@ -719,11 +720,41 @@ model Domain {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company Company      @relation(fields: [companyId], references: [id])
-  project Project?     @relation(fields: [projectId], references: [id])
+  // Кому из не-админских ролей доступен домен (запрос пользователя 2026-10-06: "надо сделать
+  // чтобы домены присваивались баерам, это может делать тот кто старше по должности").
+  // true = всем баерам компании, включая тех, кого заведут позже; false = только тем, кто
+  // перечислен в access ниже. @default(true) — это и есть требование "те домены что уже есть,
+  // пусть останутся доступны сразу для всех баеров": после миграции каждая существующая строка
+  // получает true и ничего не меняется. Новые домены создаются с явным выбором (см.
+  // CreateDomainDto). OWNER/ADMIN/SUPER_ADMIN видят все домены всегда, минуя оба поля.
+  sharedWithAllBuyers Boolean @default(true)
+
+  company Company       @relation(fields: [companyId], references: [id])
+  project Project?      @relation(fields: [projectId], references: [id])
   paths   DomainPath[]
+  access  DomainAccess[]
 
   @@index([companyId])
+}
+
+// Точечный доступ сотрудника к конкретному домену. Отдельная таблица, а не массив userId на
+// Domain: нужен FK на User (удалённый сотрудник не должен оставлять висящий грант) и обратный
+// индекс по userId для фильтра списка доменов.
+// Не в modelsWithCompany (PrismaService middleware): собственного companyId у строки нет и
+// deletedAt тоже — доступ всегда читается/пишется через Domain, который уже проскоуплен
+// компанией. Жёсткое удаление по тем же причинам, что у TeamInvite: это выданное право, а не
+// данные арендатора — отзыв должен действительно стирать строку.
+model DomainAccess {
+  id        String   @id @default(cuid())
+  domainId  String
+  userId    String
+  createdAt DateTime @default(now())
+
+  domain Domain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, userId])
+  @@index([userId])
 }
 
 // Один домен → много лендингов/проектов через путь (2026-06-29, запрос пользователя:
