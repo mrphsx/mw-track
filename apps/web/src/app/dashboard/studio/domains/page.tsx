@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { Check, Copy, ExternalLink, Plus, ShieldOff, Trash2 } from 'lucide-react';
+import { Check, Copy, ExternalLink, Plus, ShieldOff, Trash2, UserCog } from 'lucide-react';
 import { api } from '@/lib/api';
 import { copyToClipboard, buildAutoPath } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -298,6 +298,14 @@ export default function StudioDomainsPage() {
                         <StudioLinkButton size="sm" onClick={() => setPathsDomainId(d.id)}>
                           Пути
                         </StudioLinkButton>
+                        {/* Отдельная кнопка на выдачу доступа (запрос пользователя 2026-10-06):
+                            пилюля в колонке «Доступ» кликабельна и остаётся, но она маленькая и
+                            не читается как действие. */}
+                        {canManageAccess && (
+                          <StudioLinkButton size="sm" icon={UserCog} onClick={() => setAccessDomainId(d.id)}>
+                            Доступ
+                          </StudioLinkButton>
+                        )}
                         {hasAnyPermission(user, 'DOMAINS_DELETE') && (
                           <button type="button" onClick={() => setDeleteConfirmId(d.id)} className="text-[#5F6B7A] dark:text-[#92A0AF] hover:text-red-600 dark:hover:text-red-400">
                             <Trash2 className="w-4 h-4" />
@@ -337,11 +345,13 @@ export default function StudioDomainsPage() {
       )}
 
       <Dialog open={showAddModal} onOpenChange={(open) => !open && setShowAddModal(false)}>
-        <DialogContent className="max-w-sm">
+        {/* Шире sm: внутри список сотрудников с почтами, в 384px он читается впритык.
+            max-h/overflow — чтобы длинный список не выталкивал кнопку «Добавить» за экран. */}
+        <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Новый домен</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
             <div className="space-y-1.5">
               <Label htmlFor="new-domain">Домен</Label>
               <Input id="new-domain" value={newDomain} onChange={(e) => setNewDomain(e.target.value)} placeholder="example.com" />
@@ -441,7 +451,10 @@ function AccessPicker({
     onAllowedIdsChange(allowedIds.includes(id) ? allowedIds.filter((x) => x !== id) : [...allowedIds, id]);
 
   return (
-    <div className="space-y-2">
+    /* min-w-0 на каждом уровне вверх до грид-ячейки DialogContent: без этого длинная почта
+       задаёт колонке грида свою ширину (min-width ячейки по умолчанию auto), и содержимое
+       вылезает за попап целиком — именно это и был визуальный баг. */
+    <div className="min-w-0 space-y-2">
       <Label>Кому доступен</Label>
       <label className="flex items-center gap-2 text-sm cursor-pointer">
         <input type="checkbox" checked={shareAll} onChange={(e) => onShareAllChange(e.target.checked)} />
@@ -453,12 +466,22 @@ function AccessPicker({
           {!users?.length ? (
             <p className="text-xs text-muted-foreground">В компании пока нет сотрудников, которым можно выдать домен.</p>
           ) : (
-            <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+            /* Высота списка от экрана, а не фиксированные 11rem (запрос пользователя 2026-10-06:
+               "чтобы больше баеров помещалось на экране без скрола"): на большом мониторе
+               показываем до 55% высоты окна, на маленьком — не разрастаемся за пределы попапа.
+               Сам попап ограничен 85vh и скроллится, так что список не может выдавить кнопки. */
+            <div className="max-h-[min(55vh,34rem)] space-y-1 overflow-y-auto rounded-md border border-border p-2">
               {users.map((u) => (
-                <label key={u.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent">
-                  <input type="checkbox" checked={allowedIds.includes(u.id)} onChange={() => toggle(u.id)} />
-                  <span className="truncate">{userLabel(u)}</span>
-                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{u.email}</span>
+                /* Имя и почта в две строки, а не в одну: почта длиннее ширины диалога почти
+                   всегда, и в один ряд она либо выдавливала имя, либо вылезала за край. У
+                   обёртки обязателен min-w-0 — без него truncate внутри flex не срабатывает
+                   (ячейка flex не сжимается уже своего содержимого). */
+                <label key={u.id} className="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-sm hover:bg-accent">
+                  <input type="checkbox" className="mt-1 shrink-0" checked={allowedIds.includes(u.id)} onChange={() => toggle(u.id)} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">{userLabel(u)}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{u.email}</span>
+                  </span>
                 </label>
               ))}
             </div>
@@ -506,11 +529,12 @@ function DomainAccessDialog({
 
   return (
     <Dialog open={!!domain} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Доступ к {domain?.domain}</DialogTitle>
+          {/* Домены бывают длинные — заголовок переносим, а не обрезаем. */}
+          <DialogTitle className="break-all">Доступ к {domain?.domain}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-3">
+        <div className="min-w-0 space-y-3">
           <AccessPicker
             users={users}
             shareAll={shareAll}
