@@ -1,3 +1,5 @@
+import { MAX_PURCHASE_AMOUNT_USD } from '../../common/purchase-amount.const';
+
 // Разбор того, что менеджер присылает боту канала текстом (запрос пользователя 2026-09-17:
 // "чтобы можно было отправить не только пересланное, но и юзер айди или тэг клиента"), и суммы
 // покупки. Отдельно от TelegramProvider, чтобы правила можно было проверить без бота.
@@ -56,13 +58,14 @@ export function parseClientIdentifier(rawText: string, entities: ManagerMessageE
   return null;
 }
 
-// Пока бот ждёт сумму, число из 7+ цифр — это ID клиента, а не сумма: депозитов на миллион
-// долларов здесь не бывает, а менеджер мог просто перейти к следующему клиенту.
+// Пока бот ждёт сумму, ГОЛОЕ число из 7+ цифр — это ID клиента, а не сумма: менеджер мог просто
+// перейти к следующему клиенту, и записать вставленный ID как депозит на миллионы было бы
+// заметно хуже, чем переспросить. Ограничение именно на голые цифры: сумму такого размера всегда
+// можно ввести однозначно — "$1000000", "1000000.00" или "1 000 000" сюда не попадают и
+// разбираются как сумма (см. parseUsdAmount/looksLikeAmountInput ниже).
 export function looksLikeUserIdInsteadOfAmount(rawText: string): boolean {
   return /^\d{7,15}$/.test(rawText.trim());
 }
-
-export const MAX_MANAGER_PURCHASE_USD = 100_000;
 
 export type ParsedAmount = { amount: number } | { error: 'format' | 'too_small' | 'too_large' };
 
@@ -78,7 +81,9 @@ export function parseUsdAmount(rawText: string): ParsedAmount {
   if (!/^\d+([.,]\d{1,2})?$/.test(cleaned)) return { error: 'format' };
   const amount = Math.round(Number(cleaned.replace(',', '.')) * 100) / 100;
   if (!(amount >= 0.01)) return { error: 'too_small' };
-  if (amount > MAX_MANAGER_PURCHASE_USD) return { error: 'too_large' };
+  // Верхней границы по бизнесу нет (запрос пользователя 2026-10-07) — остаётся только та, что
+  // физически влезает в колонку Decimal(10,2).
+  if (amount > MAX_PURCHASE_AMOUNT_USD) return { error: 'too_large' };
   return { amount };
 }
 

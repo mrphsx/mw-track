@@ -14,11 +14,11 @@ import { ApproveJoinRequestJob } from '../join-request-approval.processor';
 import { BotScenarioEngineService } from '../bot-scenario-engine.service';
 import { VideoProcessingService } from '../video-processing.service';
 import { extractInviteHash } from '../telegram-link.util';
+import { MAX_PURCHASE_AMOUNT_USD } from '../../../common/purchase-amount.const';
 import {
   ClientIdentifier,
   looksLikeAmountInput,
   looksLikeUserIdInsteadOfAmount,
-  MAX_MANAGER_PURCHASE_USD,
   parseClientIdentifier,
   parseUsdAmount,
 } from '../manager-input.util';
@@ -1053,9 +1053,14 @@ export class TelegramProvider implements ChannelProvider {
           : origin?.type === 'user' && origin.sender_user.username
             ? `@${origin.sender_user.username} (ID ${identifier.value})`
             : `с ID ${identifier.value}`;
-      const amountHint = looksLikeAmountInput(text)
-        ? '\nЕсли это сумма покупки — сначала пришлите клиента и нажмите «Покупка».'
-        : '';
+      // Голое число из 7+ цифр бот считает ID клиента, а не суммой (см.
+      // looksLikeUserIdInsteadOfAmount). Если сумму всё-таки ждут, подсказываем, как ввести её
+      // однозначно — иначе крупный депозит выглядел бы как «клиент не найден» без объяснений.
+      const amountHint = !looksLikeAmountInput(text)
+        ? ''
+        : pending
+          ? '\nЕсли это сумма покупки — отправьте её со знаком доллара или с копейками, например $1000000 или 1000000.00.'
+          : '\nЕсли это сумма покупки — сначала пришлите клиента и нажмите «Покупка».';
       await ctx.reply(`Клиент ${label} не найден среди клиентов этого проекта.${amountHint}`);
       return;
     }
@@ -1175,7 +1180,7 @@ export class TelegramProvider implements ChannelProvider {
     if ('error' in parsed) {
       const reason =
         parsed.error === 'too_large'
-          ? `Сумма больше $${formatUsd(MAX_MANAGER_PURCHASE_USD)} — проверьте и отправьте ещё раз.`
+          ? `Столько записать нельзя — максимум $${formatUsd(MAX_PURCHASE_AMOUNT_USD)}. Проверьте сумму и отправьте ещё раз.`
           : parsed.error === 'too_small'
             ? 'Сумма должна быть больше нуля.'
             : 'Не понял сумму. Введите её цифрами в долларах, например 150 или 49.99.';
