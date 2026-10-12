@@ -16,6 +16,10 @@ export const PERMISSIONS = [
   'DOMAINS_CREATE',
   'DOMAINS_EDIT',
   'DOMAINS_DELETE',
+  'DOMAINS_EDIT_OWN',
+  'DOMAINS_EDIT_PROJECTS',
+  'DOMAINS_DELETE_OWN',
+  'DOMAINS_DELETE_PROJECTS',
   'PUSHES_VIEW',
   'PUSHES_CREATE',
   'PUSHES_SEND',
@@ -89,7 +93,32 @@ export function hasAnyPermission(
 // привязаны к одному проекту) — рендерится отдельно от остальных, одним блоком на участника
 // целиком, см. DomainsPermissionsSection в team/page.tsx. Зеркалит backend
 // permission.constants.ts DOMAIN_PERMISSIONS.
-export const DOMAIN_PERMISSIONS: Permission[] = ['DOMAINS_VIEW', 'DOMAINS_CREATE', 'DOMAINS_EDIT', 'DOMAINS_DELETE'];
+export const DOMAIN_PERMISSIONS: Permission[] = [
+  'DOMAINS_VIEW',
+  'DOMAINS_CREATE',
+  'DOMAINS_EDIT',
+  'DOMAINS_DELETE',
+  'DOMAINS_EDIT_OWN',
+  'DOMAINS_EDIT_PROJECTS',
+  'DOMAINS_DELETE_OWN',
+  'DOMAINS_DELETE_PROJECTS',
+];
+
+// Области прав на изменение/удаление доменов (запрос пользователя 2026-10-12: "3 категории —
+// все, свои, доступных проектов, и под каждую настроить может удалять или нет"). Строка —
+// категория домена, столбец — действие. "Все домены" — прежние DOMAINS_EDIT/DOMAINS_DELETE,
+// поэтому уже выданные права не меняют смысла. Зеркалит backend DOMAIN_ACTION_PERMISSIONS.
+export const DOMAIN_SCOPE_ROWS: { key: 'own' | 'projects' | 'all'; label: string; hint: string; edit: Permission; delete: Permission }[] = [
+  { key: 'own', label: 'Свои домены', hint: 'Которые сотрудник добавил сам', edit: 'DOMAINS_EDIT_OWN', delete: 'DOMAINS_DELETE_OWN' },
+  {
+    key: 'projects',
+    label: 'Домены доступных проектов',
+    hint: 'Все ссылки домена ведут в проекты, к которым у него есть доступ',
+    edit: 'DOMAINS_EDIT_PROJECTS',
+    delete: 'DOMAINS_DELETE_PROJECTS',
+  },
+  { key: 'all', label: 'Все домены', hint: 'Любой домен, который ему виден', edit: 'DOMAINS_EDIT', delete: 'DOMAINS_DELETE' },
+];
 
 export const DOMAINS_PERMISSION_GROUP: { label: string; permissions: { value: Permission; label: string }[] } = {
   label: 'Домены',

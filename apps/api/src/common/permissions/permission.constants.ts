@@ -68,7 +68,22 @@ export const DOMAIN_PERMISSIONS: Permission[] = [
   Permission.DOMAINS_CREATE,
   Permission.DOMAINS_EDIT,
   Permission.DOMAINS_DELETE,
+  Permission.DOMAINS_EDIT_OWN,
+  Permission.DOMAINS_EDIT_PROJECTS,
+  Permission.DOMAINS_DELETE_OWN,
+  Permission.DOMAINS_DELETE_PROJECTS,
 ];
+
+// Области прав на изменение/удаление домена (запрос пользователя 2026-10-12: "3 категории —
+// все, свои, доступных проектов, и под каждую можно настроить может удалять или нет").
+// Просмотр сюда не входит: что сотрудник вообще видит, решает раздача доменов
+// (Domain.sharedWithAllBuyers/DomainAccess); создание тоже — у нового домена нет категории.
+// all — прежние DOMAINS_EDIT/DOMAINS_DELETE, их смысл "любой видимый домен" не изменился.
+export type DomainAction = 'edit' | 'delete';
+export const DOMAIN_ACTION_PERMISSIONS: Record<DomainAction, { all: Permission; own: Permission; projects: Permission }> = {
+  edit: { all: Permission.DOMAINS_EDIT, own: Permission.DOMAINS_EDIT_OWN, projects: Permission.DOMAINS_EDIT_PROJECTS },
+  delete: { all: Permission.DOMAINS_DELETE, own: Permission.DOMAINS_DELETE_OWN, projects: Permission.DOMAINS_DELETE_PROJECTS },
+};
 
 // Роли, которые физически проверяются по UserPermission — остальные (SUPER_ADMIN/OWNER/
 // ADMIN) elevated, безусловный полный доступ.

@@ -7,7 +7,7 @@ import { ModuleRef } from '@nestjs/core';
 import { Domain, DomainPath, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NginxService } from '../landings/nginx.service';
-import { isElevatedRole, RESTRICTED_ROLES } from '../../common/permissions/permission.constants';
+import { DOMAIN_ACTION_PERMISSIONS, DOMAIN_PERMISSIONS, DomainAction, isElevatedRole, RESTRICTED_ROLES } from '../../common/permissions/permission.constants';
 import { CreateDomainDto } from './dto/create-domain.dto';
 import { UpdateDomainAccessDto } from './dto/update-domain-access.dto';
 import { UpsertDomainPathDto } from './dto/upsert-domain-path.dto';
@@ -29,7 +29,7 @@ export interface DomainWithInstructions extends Domain {
 // показать человекочитаемую подпись. Ровно один из двух будет не-null на каждой строке.
 const PATH_WITH_LANDING_INCLUDE = {
   landing: { select: { id: true, name: true, project: { select: { id: true, name: true } } } },
-  abTestGroup: { select: { id: true, name: true, landings: { select: { name: true } } } },
+  abTestGroup: { select: { id: true, name: true, projectId: true, landings: { select: { name: true } } } },
 } as const;
 
 // Кто смотрит на домены. undefined = внутренний/платформенный вызов без ограничений
@@ -49,9 +49,32 @@ export interface DomainAccessUser {
   role: UserRole;
 }
 
+// Что конкретный сотрудник может делать с доменами — считается один раз на запрос
+// (resolveActionContext) и потом применяется к каждому домену без новых походов в БД.
+// unrestricted = elevated-роль или внутренний вызов без viewer.
+interface DomainActionContext {
+  unrestricted: boolean;
+  userId: string | null;
+  granted: Set<string>;
+  accessibleProjectIds: Set<string>;
+}
+
+// Минимум, по которому определяется категория домена: автор + все проекты, с которыми домен
+// связан (подпись Domain.projectId и проекты каждого пути).
+interface DomainScopeShape {
+  createdById: string | null;
+  projectId: string | null;
+  paths: { landing: { project: { id: string } } | null; abTestGroup: { projectId: string } | null }[];
+}
+
+const DOMAIN_SCOPE_PATHS_SELECT = {
+  landing: { select: { project: { select: { id: true } } } },
+  abTestGroup: { select: { projectId: true } },
+} as const;
+
 export type DomainPathWithLanding = DomainPath & {
   landing: { id: string; name: string; project: { id: string; name: string } } | null;
-  abTestGroup: { id: string; name: string | null; landings: { name: string }[] } | null;
+  abTestGroup: { id: string; name: string | null; projectId: string; landings: { name: string }[] } | null;
 };
 
 // Self-service домены (решение от 2026-06-27, см. 04_BACKEND_PROJECTS_DOMAINS.md): клиент сам
@@ -98,7 +121,7 @@ export class DomainsService {
     };
   }
 
-  async create(companyId: string, dto: CreateDomainDto): Promise<DomainWithInstructions> {
+  async create(companyId: string, dto: CreateDomainDto, createdById?: string): Promise<DomainWithInstructions> {
     // Ручная блокировка создания доменов супер-админом (Фаза 4.3D, запрос пользователя
     // 2026-07-19) — этот метод раньше не имел вообще никакого guard/лимита.
     const company = await this.prisma.company.findUniqueOrThrow({ where: { id: companyId }, select: { domainsBlocked: true } });
@@ -126,6 +149,7 @@ export class DomainsService {
           companyId,
           domain: dto.domain.toLowerCase(),
           projectId: dto.projectId,
+          createdById: createdById ?? null,
           sharedWithAllBuyers: dto.sharedWithAllBuyers,
           access: allowedUsers.length ? { createMany: { data: allowedUsers.map((u) => ({ userId: u.id })) } } : undefined,
         },
@@ -152,15 +176,95 @@ export class DomainsService {
     return isElevatedRole(role);
   }
 
+  // ---- Области прав на изменение/удаление (запрос пользователя 2026-10-12) ----
+  // Три категории домена, на каждую своё право: "все" (DOMAINS_EDIT/DELETE, как было раньше),
+  // "свои" (добавил сам) и "доступных проектов". Категории не вложены друг в друга, право
+  // достаточно иметь по любой подходящей.
+
+  private async resolveActionContext(viewer?: DomainViewer): Promise<DomainActionContext> {
+    if (!viewer || isElevatedRole(viewer.role)) {
+      return { unrestricted: true, userId: viewer?.userId ?? null, granted: new Set(), accessibleProjectIds: new Set() };
+    }
+    const [permissions, access] = await Promise.all([
+      // Без фильтра по projectId — DOMAINS_* общее право сотрудника, см. hasAnyProjectPermission.
+      this.prisma.userPermission.findMany({
+        where: { userId: viewer.userId, permission: { in: DOMAIN_PERMISSIONS } },
+        select: { permission: true },
+      }),
+      this.prisma.projectAccess.findMany({ where: { userId: viewer.userId }, select: { projectId: true } }),
+    ]);
+    return {
+      unrestricted: false,
+      userId: viewer.userId,
+      granted: new Set(permissions.map((p) => p.permission)),
+      accessibleProjectIds: new Set(access.map((a) => a.projectId)),
+    };
+  }
+
+  // "Домен доступных проектов" — домен привязан хотя бы к одному проекту, и КАЖДЫЙ проект, с
+  // которым он связан, сотруднику доступен. Строгое "каждый" — намеренно: удаление домена
+  // сносит все его пути разом, и если бы хватало одного своего пути, баер мог бы уронить
+  // ссылки чужого проекта, живущие на том же домене. Домен без единой привязки сюда не
+  // попадает — он ничей с точки зрения проектов (но может быть "своим").
+  private isInAccessibleProjects(domain: DomainScopeShape, ctx: DomainActionContext): boolean {
+    const linked = new Set<string>();
+    if (domain.projectId) linked.add(domain.projectId);
+    for (const path of domain.paths) {
+      const projectId = path.landing?.project.id ?? path.abTestGroup?.projectId;
+      if (projectId) linked.add(projectId);
+    }
+    if (linked.size === 0) return false;
+    return [...linked].every((id) => ctx.accessibleProjectIds.has(id));
+  }
+
+  private canPerform(action: DomainAction, domain: DomainScopeShape, ctx: DomainActionContext): boolean {
+    if (ctx.unrestricted) return true;
+    const perms = DOMAIN_ACTION_PERMISSIONS[action];
+    if (ctx.granted.has(perms.all)) return true;
+    if (ctx.granted.has(perms.own) && !!domain.createdById && domain.createdById === ctx.userId) return true;
+    if (ctx.granted.has(perms.projects) && this.isInAccessibleProjects(domain, ctx)) return true;
+    return false;
+  }
+
+  // Домен + проверка права на действие одним заходом. Сначала видимость (findOneRaw-логика:
+  // недоступный домен — честный 404, а не 403, чтобы не подтверждать его существование),
+  // потом область права.
+  private async findOneForAction(id: string, companyId: string, action: DomainAction, viewer?: DomainViewer): Promise<Domain> {
+    const domain = await this.prisma.domain.findFirst({
+      where: { id, companyId, deletedAt: null, ...this.accessWhere(viewer) },
+      include: { paths: { select: DOMAIN_SCOPE_PATHS_SELECT } },
+    });
+    if (!domain) throw new NotFoundException('Домен не найден');
+    const ctx = await this.resolveActionContext(viewer);
+    if (!this.canPerform(action, domain, ctx)) {
+      throw new ForbiddenException(
+        action === 'delete' ? 'Нет права удалять этот домен' : 'Нет права изменять этот домен',
+      );
+    }
+    const { paths: _paths, ...plain } = domain;
+    return plain;
+  }
+
   async findAll(
     companyId: string,
     viewer?: DomainViewer,
-  ): Promise<(DomainWithInstructions & { paths: DomainPathWithLanding[]; allowedUsers: DomainAccessUser[] })[]> {
+  ): Promise<
+    (DomainWithInstructions & {
+      paths: DomainPathWithLanding[];
+      allowedUsers: DomainAccessUser[];
+      createdBy: { id: string; firstName: string; lastName: string | null } | null;
+      isOwn: boolean;
+      canEdit: boolean;
+      canDelete: boolean;
+    })[]
+  > {
     const showAccess = !viewer || this.canManageAccess(viewer.role);
+    const ctx = await this.resolveActionContext(viewer);
     const domains = await this.prisma.domain.findMany({
       where: { companyId, deletedAt: null, ...this.accessWhere(viewer) },
       include: {
         paths: { orderBy: { path: 'asc' }, include: PATH_WITH_LANDING_INCLUDE },
+        createdBy: { select: { id: true, firstName: true, lastName: true } },
         ...(showAccess
           ? { access: { include: { user: { select: { id: true, firstName: true, lastName: true, email: true, role: true } } } } }
           : {}),
@@ -168,10 +272,24 @@ export class DomainsService {
       orderBy: { createdAt: 'desc' },
     });
     return domains.map((d) => {
-      const { access, ...domain } = d as typeof d & { access?: { user: DomainAccessUser }[] };
+      const { access, createdBy, ...domain } = d as typeof d & { access?: { user: DomainAccessUser }[] };
+      // Категорию считаем по тем же полям, что и серверная проверка (canPerform) — флаги для
+      // кнопок в списке и реальный 403 не могут разойтись.
+      const scopeShape: DomainScopeShape = {
+        createdById: d.createdById,
+        projectId: d.projectId,
+        paths: d.paths.map((p) => ({
+          landing: p.landing ? { project: { id: p.landing.project.id } } : null,
+          abTestGroup: p.abTestGroup ? { projectId: p.abTestGroup.projectId } : null,
+        })),
+      };
       return {
-        ...this.withInstructions(domain as Domain),
+        ...this.withInstructions(domain as unknown as Domain),
         paths: d.paths,
+        createdBy,
+        isOwn: !!viewer && !!d.createdById && d.createdById === viewer.userId,
+        canEdit: this.canPerform('edit', scopeShape, ctx),
+        canDelete: this.canPerform('delete', scopeShape, ctx),
         // Для не-админских ролей список намеренно пуст, а не отсутствует — фронту не нужно
         // различать "нет доступа к полю" и "никому не выдан".
         allowedUsers: (access ?? []).map((a) => a.user),
@@ -282,7 +400,7 @@ export class DomainsService {
   // Уникальность hostname теперь частичный индекс WHERE deletedAt IS NULL (миграция
   // 20260902222554_domain_soft_delete), поэтому тот же хост можно добавить заново.
   async remove(id: string, companyId: string, viewer?: DomainViewer): Promise<void> {
-    const domain = await this.findOneRaw(id, companyId, viewer);
+    const domain = await this.findOneForAction(id, companyId, 'delete', viewer);
     try {
       await this.nginx.removeServerBlock(domain.domain);
     } catch (error) {
@@ -308,7 +426,7 @@ export class DomainsService {
   // (LandingRendererService.renderByDomain), а не записывается в nginx-конфиг, поэтому
   // добавление/смена/удаление путей не требует nginx reload вообще.
   async upsertPath(domainId: string, companyId: string, dto: UpsertDomainPathDto, userId: string, role: UserRole): Promise<DomainPathWithLanding> {
-    await this.findOneRaw(domainId, companyId, { userId, role });
+    await this.findOneForAction(domainId, companyId, 'edit', { userId, role });
 
     if (!!dto.landingId === !!dto.abTestGroupId) {
       throw new BadRequestException('Укажите либо лендинг, либо группу A/B-теста — ровно одно');
@@ -340,7 +458,7 @@ export class DomainsService {
   // от самого домена, см. решение "DOMAINS_* — общее право роли") всегда ведёт ровно в один
   // проект — та же логика, что уже есть у upsertPath.
   async removePath(domainId: string, pathId: string, companyId: string, userId: string, role: UserRole): Promise<void> {
-    await this.findOneRaw(domainId, companyId, { userId, role });
+    await this.findOneForAction(domainId, companyId, 'edit', { userId, role });
     const path = await this.prisma.domainPath.findFirst({ where: { id: pathId, domainId } });
     if (!path) throw new NotFoundException('Путь не найден');
     if (path.landingId) await this.assertLandingOwnership(companyId, path.landingId, userId, role);
@@ -354,7 +472,7 @@ export class DomainsService {
   // циклическая зависимость модулей.
 
   async verify(id: string, companyId: string, viewer?: DomainViewer): Promise<DomainWithInstructions> {
-    const domain = await this.findOneRaw(id, companyId, viewer);
+    const domain = await this.findOneForAction(id, companyId, 'edit', viewer);
     if (domain.status === 'ACTIVE') return this.withInstructions(domain); // уже всё проверено, повторно не дёргаем Certbot
 
     const txtOk = await this.checkTxtRecord(domain.domain, domain.verificationToken);

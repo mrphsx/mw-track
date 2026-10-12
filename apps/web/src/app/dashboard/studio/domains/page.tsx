@@ -73,6 +73,12 @@ interface DomainItem {
   // которые не управляют доступом — им незачем знать, кому ещё выдан домен.
   sharedWithAllBuyers: boolean;
   allowedUsers: AssignableUser[];
+  // Права на конкретный домен (запрос пользователя 2026-10-12) — считает сервер по категории
+  // домена: свой / доступных проектов / любой. Кнопки ниже опираются только на эти флаги.
+  createdBy: { id: string; firstName: string; lastName: string | null } | null;
+  isOwn: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
   lastCheckError: string | null;
   instructions: {
     txtName: string;
@@ -236,6 +242,15 @@ export default function StudioDomainsPage() {
                       >
                         {d.domain}
                       </button>
+                      {d.isOwn ? (
+                        <div className="text-xs font-normal text-[#5F6B7A] dark:text-[#92A0AF]">Добавили вы</div>
+                      ) : (
+                        d.createdBy && (
+                          <div className="text-xs font-normal text-[#5F6B7A] dark:text-[#92A0AF]">
+                            Добавил: {`${d.createdBy.firstName} ${d.createdBy.lastName || ''}`.trim()}
+                          </div>
+                        )
+                      )}
                     </td>
                     <td className="px-5 py-3">
                       <StudioPill hue={STATUS_HUE[d.status]}>{STATUS_LABEL[d.status]}</StudioPill>
@@ -290,7 +305,7 @@ export default function StudioDomainsPage() {
                     )}
                     <td className="px-5 py-3 text-right">
                       <div className="flex justify-end gap-2">
-                        {d.status !== 'ACTIVE' && (
+                        {d.status !== 'ACTIVE' && d.canEdit && (
                           <StudioLinkButton size="sm" disabled={verifyDomain.isPending} onClick={() => verifyDomain.mutate(d.id)}>
                             Проверить →
                           </StudioLinkButton>
@@ -306,8 +321,8 @@ export default function StudioDomainsPage() {
                             Доступ
                           </StudioLinkButton>
                         )}
-                        {hasAnyPermission(user, 'DOMAINS_DELETE') && (
-                          <button type="button" onClick={() => setDeleteConfirmId(d.id)} className="text-[#5F6B7A] dark:text-[#92A0AF] hover:text-red-600 dark:hover:text-red-400">
+                        {d.canDelete && (
+                          <button type="button" title="Удалить домен" onClick={() => setDeleteConfirmId(d.id)} className="text-[#5F6B7A] dark:text-[#92A0AF] hover:text-red-600 dark:hover:text-red-400">
                             <Trash2 className="w-4 h-4" />
                           </button>
                         )}
@@ -641,13 +656,16 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
                     {pathTargetSubtitle(p)} — {pathTargetLabel(p)}
                   </p>
                 </div>
-                <Button size="icon" variant="ghost" className="shrink-0" onClick={() => removePath.mutate(p.id)} disabled={removePath.isPending}>
-                  <Trash2 className="w-3.5 h-3.5" />
-                </Button>
+                {domain.canEdit && (
+                  <Button size="icon" variant="ghost" className="shrink-0" onClick={() => removePath.mutate(p.id)} disabled={removePath.isPending}>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                )}
               </div>
             ))}
           </div>
 
+          {domain.canEdit ? (
           <div className="space-y-2 border-t pt-3">
             <Label>Добавить путь</Label>
             <p className="text-xs text-muted-foreground">
@@ -710,6 +728,9 @@ function DomainPathsDialog({ domain, onClose }: { domain: DomainItem | null; onC
               {upsertPath.isPending ? 'Добавляем...' : 'Добавить путь'}
             </Button>
           </div>
+          ) : (
+            <p className="text-sm text-muted-foreground border-t pt-3">У вас нет права менять ссылки на этом домене.</p>
+          )}
         </div>
       </DialogContent>
     </Dialog>

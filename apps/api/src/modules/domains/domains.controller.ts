@@ -16,6 +16,11 @@ import { UpsertDomainPathDto } from './dto/upsert-domain-path.dto';
 // — "есть ли это право хотя бы на одном из проектов пользователя". Реальные пути (upsertPath/
 // removePath в DomainsService) всё равно проверяют владение конкретным лендингом/группой A/B-
 // теста — путь, в отличие от самого домена, всегда ведёт ровно в один проект.
+//
+// Изменение и удаление (verify/paths/remove) декоратором/assert-ом здесь НЕ проверяются
+// (запрос пользователя 2026-10-12): право теперь зависит от категории конкретного домена —
+// свой / доступных проектов / любой — и проверяется внутри DomainsService.findOneForAction,
+// где домен уже загружен.
 @Controller('domains')
 export class DomainsController {
   constructor(
@@ -26,7 +31,7 @@ export class DomainsController {
   @Post()
   async create(@Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: CreateDomainDto) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_CREATE);
-    return this.domainsService.create(companyId, dto);
+    return this.domainsService.create(companyId, dto, user.userId);
   }
 
   @Get()
@@ -68,7 +73,6 @@ export class DomainsController {
 
   @Post(':id/verify')
   async verify(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_EDIT);
     return this.domainsService.verify(id, companyId, { userId: user.userId, role: user.role });
   }
 
@@ -83,19 +87,16 @@ export class DomainsController {
   // (не CREATE) — с точки зрения прав это правка домена, а не создание нового домена.
   @Post(':id/paths')
   async upsertPath(@Param('id') id: string, @Company() companyId: string, @Body() dto: UpsertDomainPathDto, @CurrentUser() user: AuthUser) {
-    await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_EDIT);
     return this.domainsService.upsertPath(id, companyId, dto, user.userId, user.role);
   }
 
   @Delete(':id/paths/:pathId')
   async removePath(@Param('id') id: string, @Param('pathId') pathId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_EDIT);
     return this.domainsService.removePath(id, pathId, companyId, user.userId, user.role);
   }
 
   @Delete(':id')
   async remove(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.DOMAINS_DELETE);
     return this.domainsService.remove(id, companyId, { userId: user.userId, role: user.role });
   }
 }

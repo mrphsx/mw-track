@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Check, Copy } from 'lucide-react';
 import { api } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
-import { DEFAULT_ROLE_PERMISSIONS, DOMAINS_PERMISSION_GROUP, PERMISSION_GROUPS, Permission, splitPermissionsByScope } from '@/lib/permissions';
+import { DEFAULT_ROLE_PERMISSIONS, DOMAIN_SCOPE_ROWS, DOMAINS_PERMISSION_GROUP, PERMISSION_GROUPS, Permission, splitPermissionsByScope } from '@/lib/permissions';
 
 export type TeamRole = 'OWNER' | 'ADMIN' | 'BUYER' | 'OPERATOR' | 'OPERATOR_ADMIN';
 export type CreatableRole = 'ADMIN' | 'BUYER' | 'OPERATOR' | 'OPERATOR_ADMIN';
@@ -440,11 +440,86 @@ export function ProjectPermissionsEditor({
 // Общий блок доменных прав (решение пользователя 2026-07-28: домены не привязаны к одному
 // проекту, остаются общим правом роли/сотрудника) — рендерится один раз, отдельно от
 // per-project части, не дублируется под каждым проектом.
-export function DomainsPermissionsSection({ selected, onToggle }: { selected: Permission[]; onToggle: (p: Permission) => void }) {
+// scoped (только Studio, запрос пользователя 2026-10-12) — вместо плоских "Изменение"/
+// "Удаление" показывает матрицу: категория домена (свои / доступных проектов / все) × действие.
+// Классика по-прежнему рендерит плоский список без этого пропа.
+export function DomainsPermissionsSection({
+  selected,
+  onToggle,
+  scoped = false,
+}: {
+  selected: Permission[];
+  onToggle: (p: Permission) => void;
+  scoped?: boolean;
+}) {
+  if (scoped) return <ScopedDomainsPermissions selected={selected} onToggle={onToggle} />;
   return (
     <div className="space-y-1.5">
       <p className="text-xs text-muted-foreground">Общее право для сотрудника — не привязано к конкретному проекту.</p>
       <PermissionMatrix groups={[DOMAINS_PERMISSION_GROUP]} selected={selected} onToggle={onToggle} />
+    </div>
+  );
+}
+
+function ScopedDomainsPermissions({ selected, onToggle }: { selected: Permission[]; onToggle: (p: Permission) => void }) {
+  const has = (p: Permission) => selected.includes(p);
+  // "Все домены" включает в себя обе остальные категории — их галочки показываем отмеченными
+  // и заблокированными, чтобы было видно, что право уже покрыто, а не три независимые галочки,
+  // две из которых ни на что не влияют.
+  const cell = (row: (typeof DOMAIN_SCOPE_ROWS)[number], action: 'edit' | 'delete') => {
+    const allPermission = action === 'edit' ? 'DOMAINS_EDIT' : 'DOMAINS_DELETE';
+    const coveredByAll = row.key !== 'all' && has(allPermission);
+    return (
+      <Checkbox
+        checked={coveredByAll || has(row[action])}
+        disabled={coveredByAll}
+        onCheckedChange={() => onToggle(row[action])}
+        aria-label={`${row.label}: ${action === 'edit' ? 'изменение' : 'удаление'}`}
+      />
+    );
+  };
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">Общее право для сотрудника — не привязано к конкретному проекту.</p>
+      <div className="border rounded-md p-3 space-y-3">
+        <div className="flex flex-wrap gap-x-6 gap-y-1.5">
+          <label className="flex items-center gap-1.5 text-sm">
+            <Checkbox checked={has('DOMAINS_VIEW')} onCheckedChange={() => onToggle('DOMAINS_VIEW')} />
+            Просмотр
+          </label>
+          <label className="flex items-center gap-1.5 text-sm">
+            <Checkbox checked={has('DOMAINS_CREATE')} onCheckedChange={() => onToggle('DOMAINS_CREATE')} />
+            Добавление новых доменов
+          </label>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground">
+                <th className="text-left font-medium pb-1.5 pr-3">Какие домены</th>
+                <th className="font-medium pb-1.5 px-3 w-24 text-center">Изменение</th>
+                <th className="font-medium pb-1.5 pl-3 w-24 text-center">Удаление</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {DOMAIN_SCOPE_ROWS.map((row) => (
+                <tr key={row.key}>
+                  <td className="py-2 pr-3">
+                    <div>{row.label}</div>
+                    <div className="text-xs text-muted-foreground">{row.hint}</div>
+                  </td>
+                  <td className="py-2 px-3 text-center">{cell(row, 'edit')}</td>
+                  <td className="py-2 pl-3 text-center">{cell(row, 'delete')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Изменение — проверка домена и привязка или отвязка ссылок. Какие домены сотрудник вообще видит, настраивается на
+          странице «Домены» кнопкой «Доступ».
+        </p>
+      </div>
     </div>
   );
 }

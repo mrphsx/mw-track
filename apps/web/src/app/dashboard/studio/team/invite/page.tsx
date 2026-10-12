@@ -145,7 +145,7 @@ export default function StudioNewInvitePage() {
 
           <div className={`${STUDIO_CARD} p-5 space-y-2`}>
             <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Домены</h2>
-            <DomainsPermissionsSection selected={form.domainsPermissions} onToggle={form.toggleDomainsPermission} />
+            <DomainsPermissionsSection scoped selected={form.domainsPermissions} onToggle={form.toggleDomainsPermission} />
           </div>
 
           <div className={`${STUDIO_CARD} p-5 space-y-2`}>
