@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Header, Param, Patch, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Delete, Get, Header, Param, Patch, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { Permission } from '@prisma/client';
@@ -7,7 +7,7 @@ import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { ProjectsService } from '../projects/projects.service';
-import { LandingsService } from './landings.service';
+import { LandingAction, LandingsService } from './landings.service';
 import { LandingRendererService } from './landing-renderer.service';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { UploadPrelandingHtmlDto } from './dto/upload-prelanding-html.dto';
@@ -36,7 +36,29 @@ export class LandingsController {
   // основных списках.
   private async assertAccess(id: string, companyId: string, user: AuthUser, requiredPermissions?: Permission[]): Promise<void> {
     const landing = await this.landingsService.findOne(id, companyId);
-    await this.projectsService.assertAccess(landing.projectId, companyId, user.userId, user.role, requiredPermissions, { allowArchived: true });
+    try {
+      await this.projectsService.assertAccess(landing.projectId, companyId, user.userId, user.role, requiredPermissions, { allowArchived: true });
+    } catch (error) {
+      // Просмотр одного лендинга: кто по области прав может его изменять или удалять (см.
+      // assertAction ниже), тот может его и открыть — иначе "изменение своих" было бы правом,
+      // которым нельзя воспользоваться.
+      if (!(error instanceof ForbiddenException)) throw error;
+      const ctx = await this.landingsService.resolveActionContext(user.userId, user.role);
+      if (!this.landingsService.canPerform('edit', landing, ctx) && !this.landingsService.canPerform('delete', landing, ctx)) throw error;
+    }
+  }
+
+  // Изменение и удаление (запрос пользователя 2026-10-13: "3 категории — все лендинги, свои,
+  // лендинги доступных проектов, и под каждую настроить может удалять или нет"). Право даёт
+  // либо per-project LANDINGS_EDIT/LANDINGS_DELETE, либо общая область сотрудника
+  // (User.landingsEditScope/landingsDeleteScope) — вся логика в LandingsService.canPerform.
+  // findOne ищет по companyId, так что чужая компания по-прежнему получает 404.
+  private async assertAction(id: string, companyId: string, user: AuthUser, action: LandingAction): Promise<void> {
+    const landing = await this.landingsService.findOne(id, companyId);
+    const ctx = await this.landingsService.resolveActionContext(user.userId, user.role);
+    if (!this.landingsService.canPerform(action, landing, ctx)) {
+      throw new ForbiddenException(action === 'delete' ? 'Нет права удалять этот лендинг' : 'Нет права изменять этот лендинг');
+    }
   }
 
   @Get('templates')
@@ -64,30 +86,33 @@ export class LandingsController {
   @Get()
   async findAllForCompany(@Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.permissionsService.assertAnyProjectPermission(user.userId, user.role, Permission.LANDINGS_VIEW);
-    return this.landingsService.findAllForCompany(companyId, user.userId, user.role);
+    const landings = await this.landingsService.findAllForCompany(companyId, user.userId, user.role);
+    return this.landingsService.withActionFlags(landings, user.userId, user.role);
   }
 
   @Get(':id')
   async findOne(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
-    return this.landingsService.findOne(id, companyId);
+    const landing = await this.landingsService.findOne(id, companyId);
+    const [withFlags] = await this.landingsService.withActionFlags([landing], user.userId, user.role);
+    return withFlags;
   }
 
   @Patch(':id')
   async update(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: UpdateLandingDto) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.update(id, companyId, dto);
   }
 
   @Post(':id/publish')
   async publish(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.publish(id, companyId);
   }
 
   @Post(':id/unpublish')
   async unpublish(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.unpublish(id, companyId);
   }
 
@@ -96,7 +121,7 @@ export class LandingsController {
   // :id-роутов выше; копия остаётся в том же проекте, что и оригинал.
   @Post(':id/duplicate')
   async duplicate(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.duplicate(id, companyId, user.userId);
   }
 
@@ -140,7 +165,7 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.uploadCustomLanding(id, companyId, file);
   }
 
@@ -157,13 +182,13 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.uploadCloakingPrelanding(id, companyId, file);
   }
 
   @Delete(':id/cloaking/prelanding')
   async removeCloakingPrelanding(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.removeCloakingPrelanding(id, companyId);
   }
 
@@ -176,7 +201,7 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: UploadPrelandingHtmlDto,
   ) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.uploadCloakingPrelandingHtml(id, companyId, dto.html);
   }
 
@@ -235,13 +260,13 @@ export class LandingsController {
 
   @Post(':id/cloaking/rules')
   async createCloakingRule(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: CreateCloakingRuleDto) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.createCloakingRule(id, companyId, dto);
   }
 
   @Patch(':id/cloaking/rules/reorder')
   async reorderCloakingRules(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: ReorderCloakingRulesDto) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     await this.landingsService.reorderCloakingRules(id, companyId, dto.ruleIds);
   }
 
@@ -253,13 +278,13 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @Body() dto: UpdateCloakingRuleDto,
   ) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.updateCloakingRule(id, companyId, ruleId, dto);
   }
 
   @Delete(':id/cloaking/rules/:ruleId')
   async removeCloakingRule(@Param('id') id: string, @Param('ruleId') ruleId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     await this.landingsService.removeCloakingRule(id, companyId, ruleId);
   }
 
@@ -273,7 +298,7 @@ export class LandingsController {
 
   @Post(':id/verify-connection')
   async verifyConnection(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.verifyExternalLanding(id, companyId);
   }
 
@@ -285,7 +310,7 @@ export class LandingsController {
 
   @Delete(':id')
   async remove(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_DELETE]);
+    await this.assertAction(id, companyId, user, 'delete');
     return this.landingsService.remove(id, companyId);
   }
 
@@ -297,13 +322,13 @@ export class LandingsController {
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.uploadAvatar(id, companyId, file);
   }
 
   @Delete(':id/avatar')
   async removeAvatar(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
-    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_EDIT]);
+    await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.removeAvatar(id, companyId);
   }
 

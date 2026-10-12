@@ -2,7 +2,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import AdmZip from 'adm-zip';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AbTestGroup, CloakingConditionField, Landing, LandingStatus, Permission, Prisma, UserRole } from '@prisma/client';
+import { AbTestGroup, CloakingConditionField, Landing, LandingsActionScope, LandingStatus, Permission, Prisma, UserRole } from '@prisma/client';
+import { isElevatedRole } from '../../common/permissions/permission.constants';
 import { Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql } from '../../common/timezone.util';
@@ -102,6 +103,19 @@ const LANDING_WITH_CONTEXT_INCLUDE = {
 } satisfies Prisma.LandingInclude;
 
 export type LandingWithContext = Prisma.LandingGetPayload<{ include: typeof LANDING_WITH_CONTEXT_INCLUDE }>;
+
+export type LandingAction = 'edit' | 'delete';
+
+// Что сотрудник может делать с лендингами — см. LandingsService.resolveActionContext.
+export interface LandingActionContext {
+  unrestricted: boolean;
+  userId: string;
+  editScope: LandingsActionScope;
+  deleteScope: LandingsActionScope;
+  accessProjectIds: Set<string>;
+  editProjectIds: Set<string>;
+  deleteProjectIds: Set<string>;
+}
 
 @Injectable()
 export class LandingsService {
@@ -302,6 +316,62 @@ export class LandingsService {
     // status: PUBLISHED в create() выше, чтобы не терять существующую логику первой публикации
     // (создание персональной invite-ссылки для PRIVATE_CHANNEL_REQUEST-атрибуции, см. publish()).
     return this.publish(created.id, companyId);
+  }
+
+  // ---- Кто что может делать с лендингом (запрос пользователя 2026-10-13) ----
+  // Право складывается из двух источников, достаточно любого:
+  //  1) per-project LANDINGS_EDIT/LANDINGS_DELETE на проекте лендинга (как было всегда);
+  //  2) общая для сотрудника область User.landingsEditScope/landingsDeleteScope — те же три
+  //     категории, что у видимости списка: свои (createdById) → + лендинги доступных проектов
+  //     (ProjectAccess) → + все лендинги компании. Накопительно.
+  // "Свои" определяется только авторством, как и OWN_LANDINGS в видимости — строка таблицы
+  // прав означает один и тот же набор лендингов и в "видит", и в "изменяет/удаляет".
+  // Контекст считается один раз на запрос и применяется к любому числу лендингов.
+  async resolveActionContext(userId: string, role: UserRole): Promise<LandingActionContext> {
+    if (isElevatedRole(role)) {
+      return { unrestricted: true, userId, editScope: 'ALL', deleteScope: 'ALL', accessProjectIds: new Set(), editProjectIds: new Set(), deleteProjectIds: new Set() };
+    }
+    const [user, access, grants] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId }, select: { landingsEditScope: true, landingsDeleteScope: true } }),
+      this.prisma.projectAccess.findMany({ where: { userId }, select: { projectId: true } }),
+      this.prisma.userPermission.findMany({
+        where: { userId, permission: { in: [Permission.LANDINGS_EDIT, Permission.LANDINGS_DELETE] } },
+        select: { projectId: true, permission: true },
+      }),
+    ]);
+    const accessProjectIds = new Set(access.map((a) => a.projectId));
+    // Грант без ProjectAccess не считается — то же условие, что в ProjectsService.assertAccess.
+    const withAccess = grants.filter((g) => accessProjectIds.has(g.projectId));
+    return {
+      unrestricted: false,
+      userId,
+      editScope: user?.landingsEditScope ?? 'NONE',
+      deleteScope: user?.landingsDeleteScope ?? 'NONE',
+      accessProjectIds,
+      editProjectIds: new Set(withAccess.filter((g) => g.permission === Permission.LANDINGS_EDIT).map((g) => g.projectId)),
+      deleteProjectIds: new Set(withAccess.filter((g) => g.permission === Permission.LANDINGS_DELETE).map((g) => g.projectId)),
+    };
+  }
+
+  canPerform(action: LandingAction, landing: { projectId: string; createdById: string | null }, ctx: LandingActionContext): boolean {
+    if (ctx.unrestricted) return true;
+    if ((action === 'edit' ? ctx.editProjectIds : ctx.deleteProjectIds).has(landing.projectId)) return true;
+    const scope = action === 'edit' ? ctx.editScope : ctx.deleteScope;
+    if (scope === 'ALL') return true;
+    if (scope === 'PROJECTS' && ctx.accessProjectIds.has(landing.projectId)) return true;
+    if (scope !== 'NONE' && !!landing.createdById && landing.createdById === ctx.userId) return true;
+    return false;
+  }
+
+  // Флаги для кнопок в списках — считает та же canPerform, что и реальная проверка в
+  // контроллере, поэтому кнопка и 403 не могут разойтись.
+  async withActionFlags<T extends { projectId: string; createdById: string | null }>(
+    landings: T[],
+    userId: string,
+    role: UserRole,
+  ): Promise<(T & { canEdit: boolean; canDelete: boolean })[]> {
+    const ctx = await this.resolveActionContext(userId, role);
+    return landings.map((l) => ({ ...l, canEdit: this.canPerform('edit', l, ctx), canDelete: this.canPerform('delete', l, ctx) }));
   }
 
   async findAll(projectId: string, companyId: string): Promise<LandingWithContext[]> {

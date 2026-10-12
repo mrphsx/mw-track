@@ -21,7 +21,8 @@ export class ProjectLandingsController {
   @Get()
   async findAll(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.LANDINGS_VIEW]);
-    return this.landingsService.findAll(projectId, companyId);
+    const landings = await this.landingsService.findAll(projectId, companyId);
+    return this.landingsService.withActionFlags(landings, user.userId, user.role);
   }
 
   @Post()

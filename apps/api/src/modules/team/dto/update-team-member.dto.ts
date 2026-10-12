@@ -1,6 +1,6 @@
 import { IsArray, IsBoolean, IsEmail, IsEnum, IsIn, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ClientsVisibilityScope, LandingsVisibilityScope, Permission } from '@prisma/client';
+import { ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission } from '@prisma/client';
 import { CREATABLE_ROLES, CreatableRole, ProjectPermissionsDto } from './create-team-member.dto';
 
 export class UpdateTeamMemberDto {
@@ -43,6 +43,16 @@ export class UpdateTeamMemberDto {
   @IsOptional()
   @IsEnum(LandingsVisibilityScope)
   landingsVisibilityScope?: LandingsVisibilityScope;
+
+  // Что сотрудник может изменять/удалять сверх прав по проектам (запрос пользователя
+  // 2026-10-13) — свои / доступных проектов / все лендинги. Дефолт NONE (см. схему).
+  @IsOptional()
+  @IsEnum(LandingsActionScope)
+  landingsEditScope?: LandingsActionScope;
+
+  @IsOptional()
+  @IsEnum(LandingsActionScope)
+  landingsDeleteScope?: LandingsActionScope;
 
   // См. комментарий в CreateTeamMemberDto.
   @IsOptional()

@@ -184,6 +184,14 @@ model User {
   // теряют и не приобретают видимость молча при миграции.
   landingsVisibilityScope LandingsVisibilityScope @default(PROJECT_LANDINGS)
 
+  // Какие лендинги сотрудник может изменять/удалять СВЕРХ прав по конкретным проектам (запрос
+  // пользователя 2026-10-13: "3 категории — все, свои, доступных проектов, и под каждую
+  // настроить может удалять или нет"). Те же три категории, что у видимости выше. NONE — дефолт
+  // и прежнее поведение: решают только per-project LANDINGS_EDIT/LANDINGS_DELETE. Категории
+  // накопительные (ALL включает PROJECTS, PROJECTS включает OWN), см. LandingsService.canPerform.
+  landingsEditScope   LandingsActionScope @default(NONE)
+  landingsDeleteScope LandingsActionScope @default(NONE)
+
   // "Только свои клиенты" для Buyer (запрос пользователя 2026-08-03, переключатель по каждому
   // сотруднику отдельно, подтверждено AskUserQuestion) — ALL_CLIENTS = текущее поведение (все
   // клиенты доступных по ProjectAccess проектов), OWN_CLIENTS = только Client.buyerId === он сам.
@@ -215,6 +223,13 @@ model User {
   domainAccess    DomainAccess[]
 
   @@index([companyId])
+}
+
+enum LandingsActionScope {
+  NONE // только то, что разрешено правами конкретного проекта
+  OWN // + лендинги, созданные самим сотрудником (Landing.createdById)
+  PROJECTS // + любые лендинги проектов, к которым у него есть доступ (ProjectAccess)
+  ALL // + любые лендинги компании
 }
 
 enum LandingsVisibilityScope {

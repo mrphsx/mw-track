@@ -69,6 +69,10 @@ export interface LandingProject {
 }
 
 export interface LandingItem {
+  // Что текущий сотрудник может делать с этим лендингом — считает сервер (права проекта +
+  // общая область «свои / доступных проектов / все», запрос пользователя 2026-10-13).
+  canEdit?: boolean;
+  canDelete?: boolean;
   id: string;
   name: string;
   type: LandingType;

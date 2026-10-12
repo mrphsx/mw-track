@@ -294,7 +294,7 @@ export default function StudioAllLandingsPage() {
                   isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
                   isDuplicatePending={duplicate.isPending && duplicate.variables === l.id}
                   isDeletePending={remove.isPending && remove.variables === l.id}
-                  canDelete={hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
+                  canDelete={l.canDelete ?? hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
                   abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
                 />
               ))}

@@ -14,7 +14,7 @@ import {
   CreatableRole,
   CredRow,
   DomainsPermissionsSection,
-  LandingsVisibilityScopeSection,
+  LandingsAccessSection,
   ProjectChecklist,
   ProjectPermissionsEditor,
   ProjectSummary,
@@ -56,6 +56,8 @@ export default function StudioNewInvitePage() {
             : form.projectIds.map((projectId) => ({ projectId, permissions: form.projectPermissions[projectId] ?? [] })),
         domainsPermissions: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.domainsPermissions,
         landingsVisibilityScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsVisibilityScope,
+        landingsEditScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsEditScope,
+        landingsDeleteScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsDeleteScope,
         clientsVisibilityScope: form.role === 'BUYER' ? form.clientsVisibilityScope : undefined,
       }),
     onSuccess: ({ data }) => {
@@ -149,8 +151,15 @@ export default function StudioNewInvitePage() {
           </div>
 
           <div className={`${STUDIO_CARD} p-5 space-y-2`}>
-            <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Видимость лендингов</h2>
-            <LandingsVisibilityScopeSection value={form.landingsVisibilityScope} onChange={form.setLandingsVisibilityScope} />
+            <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Лендинги: что видит и что может</h2>
+            <LandingsAccessSection
+              visibility={form.landingsVisibilityScope}
+              onVisibilityChange={form.setLandingsVisibilityScope}
+              editScope={form.landingsEditScope}
+              onEditScopeChange={form.setLandingsEditScope}
+              deleteScope={form.landingsDeleteScope}
+              onDeleteScopeChange={form.setLandingsDeleteScope}
+            />
           </div>
 
           {form.role === 'BUYER' && (

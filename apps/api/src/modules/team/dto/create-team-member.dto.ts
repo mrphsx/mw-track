@@ -1,6 +1,6 @@
 import { ArrayMinSize, IsArray, IsEnum, IsIn, IsEmail, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ClientsVisibilityScope, LandingsVisibilityScope, Permission } from '@prisma/client';
+import { ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission } from '@prisma/client';
 
 // role=OWNER не входит в допустимые значения намеренно — смена/создание второго Owner не
 // поддерживается в Фазе 1 (см. память/15_PHASES.md, "Team/роли Фаза 1"). OPERATOR_ADMIN — новая
@@ -73,6 +73,16 @@ export class CreateTeamMemberDto {
   @IsOptional()
   @IsEnum(LandingsVisibilityScope)
   landingsVisibilityScope?: LandingsVisibilityScope;
+
+  // Что сотрудник может изменять/удалять сверх прав по проектам (запрос пользователя
+  // 2026-10-13) — свои / доступных проектов / все лендинги. Дефолт NONE (см. схему).
+  @IsOptional()
+  @IsEnum(LandingsActionScope)
+  landingsEditScope?: LandingsActionScope;
+
+  @IsOptional()
+  @IsEnum(LandingsActionScope)
+  landingsDeleteScope?: LandingsActionScope;
 
   // "Только свои клиенты" (запрос пользователя 2026-08-03) — переключатель по каждому Buyer'у
   // отдельно (подтверждено AskUserQuestion), актуально только для роли BUYER. Дефолт при

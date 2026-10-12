@@ -24,6 +24,11 @@ export const LANDINGS_VISIBILITY_SCOPE_LABELS: Record<LandingsVisibilityScope, s
   ALL_LANDINGS: 'Все лендинги компании',
 };
 
+// Какие лендинги сотрудник может изменять/удалять сверх прав по проектам (запрос пользователя
+// 2026-10-13) — те же три категории, что у видимости, накопительно: ALL ⊇ PROJECTS ⊇ OWN.
+// Зеркалит backend enum LandingsActionScope.
+export type LandingsActionScope = 'NONE' | 'OWN' | 'PROJECTS' | 'ALL';
+
 // "Только свои клиенты" (запрос пользователя 2026-08-03) — переключатель по каждому Buyer'у
 // отдельно (подтверждено AskUserQuestion), не жёстко для всех сразу. ALL_CLIENTS — текущее
 // поведение (все клиенты доступных проектов), дефолт.
@@ -54,6 +59,8 @@ export interface TeamMember {
   // buildPermissionsState ниже.
   permissions: { projectId: string; permission: Permission }[];
   landingsVisibilityScope: LandingsVisibilityScope;
+  landingsEditScope: LandingsActionScope;
+  landingsDeleteScope: LandingsActionScope;
   clientsVisibilityScope: ClientsVisibilityScope;
 }
 
@@ -113,6 +120,8 @@ export function usePermissionsForm(initialRole: CreatableRole) {
   const [projectPermissions, setProjectPermissions] = useState<Record<string, Permission[]>>({});
   const [domainsPermissions, setDomainsPermissions] = useState<Permission[]>([]);
   const [landingsVisibilityScope, setLandingsVisibilityScope] = useState<LandingsVisibilityScope>('PROJECT_LANDINGS');
+  const [landingsEditScope, setLandingsEditScope] = useState<LandingsActionScope>('NONE');
+  const [landingsDeleteScope, setLandingsDeleteScope] = useState<LandingsActionScope>('NONE');
   const [clientsVisibilityScope, setClientsVisibilityScope] = useState<ClientsVisibilityScope>('ALL_CLIENTS');
 
   const setRole = (r: CreatableRole) => {
@@ -167,6 +176,8 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     setProjectPermissions({});
     setDomainsPermissions([]);
     setLandingsVisibilityScope('PROJECT_LANDINGS');
+    setLandingsEditScope('NONE');
+    setLandingsDeleteScope('NONE');
     setClientsVisibilityScope('ALL_CLIENTS');
   };
 
@@ -177,12 +188,16 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     domPerms: Permission[],
     landingsScope: LandingsVisibilityScope = 'PROJECT_LANDINGS',
     clientsScope: ClientsVisibilityScope = 'ALL_CLIENTS',
+    landingsEdit: LandingsActionScope = 'NONE',
+    landingsDelete: LandingsActionScope = 'NONE',
   ) => {
     setRoleState(r);
     setProjectIds(ids);
     setProjectPermissions(projPerms);
     setDomainsPermissions(domPerms);
     setLandingsVisibilityScope(landingsScope);
+    setLandingsEditScope(landingsEdit);
+    setLandingsDeleteScope(landingsDelete);
     setClientsVisibilityScope(clientsScope);
   };
 
@@ -197,6 +212,10 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     toggleDomainsPermission,
     landingsVisibilityScope,
     setLandingsVisibilityScope,
+    landingsEditScope,
+    setLandingsEditScope,
+    landingsDeleteScope,
+    setLandingsDeleteScope,
     clientsVisibilityScope,
     setClientsVisibilityScope,
     copyToAll,
@@ -471,6 +490,90 @@ export function LandingsVisibilityScopeSection({
           </label>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Таблица "какие лендинги × что с ними можно" (запрос пользователя 2026-10-13: "3 категории:
+// все лендинги, свои, лендинги доступных проектов — и под каждую настроить может удалять или
+// нет"). Только Studio; классика по-прежнему рендерит LandingsVisibilityScopeSection выше.
+// Видимость — один вариант из трёх (как и была). Изменение/удаление — накопительная лесенка:
+// отметка в строке включает и строки над ней, поэтому хранится одним значением на действие.
+const LANDING_SCOPE_ROWS: { visibility: LandingsVisibilityScope; action: Exclude<LandingsActionScope, 'NONE'>; label: string; hint: string }[] = [
+  { visibility: 'OWN_LANDINGS', action: 'OWN', label: 'Свои лендинги', hint: 'Которые сотрудник создал сам' },
+  { visibility: 'PROJECT_LANDINGS', action: 'PROJECTS', label: 'Лендинги доступных проектов', hint: 'Все лендинги проектов, к которым у него есть доступ' },
+  { visibility: 'ALL_LANDINGS', action: 'ALL', label: 'Все лендинги компании', hint: 'Включая проекты, к которым доступа нет' },
+];
+const LANDING_SCOPE_RANK: Record<LandingsActionScope, number> = { NONE: 0, OWN: 1, PROJECTS: 2, ALL: 3 };
+const LANDING_SCOPE_BY_RANK: LandingsActionScope[] = ['NONE', 'OWN', 'PROJECTS', 'ALL'];
+
+export function LandingsAccessSection({
+  visibility,
+  onVisibilityChange,
+  editScope,
+  onEditScopeChange,
+  deleteScope,
+  onDeleteScopeChange,
+}: {
+  visibility: LandingsVisibilityScope;
+  onVisibilityChange: (v: LandingsVisibilityScope) => void;
+  editScope: LandingsActionScope;
+  onEditScopeChange: (v: LandingsActionScope) => void;
+  deleteScope: LandingsActionScope;
+  onDeleteScopeChange: (v: LandingsActionScope) => void;
+}) {
+  const ladderCell = (row: (typeof LANDING_SCOPE_ROWS)[number], current: LandingsActionScope, onChange: (v: LandingsActionScope) => void, what: string) => {
+    const rank = LANDING_SCOPE_RANK[row.action];
+    const checked = LANDING_SCOPE_RANK[current] >= rank;
+    return (
+      <Checkbox
+        checked={checked}
+        // Снятие отметки опускает область на ступень ниже этой строки, постановка — поднимает до неё.
+        onCheckedChange={() => onChange(LANDING_SCOPE_BY_RANK[checked ? rank - 1 : rank])}
+        aria-label={`${row.label}: ${what}`}
+      />
+    );
+  };
+  return (
+    <div className="space-y-2">
+      <div className="overflow-x-auto">
+        <table className="w-full max-w-3xl text-sm">
+          <thead>
+            <tr className="text-xs text-muted-foreground">
+              <th className="text-left font-medium pb-1.5 pr-3">Какие лендинги</th>
+              <th className="font-medium pb-1.5 px-3 w-28 text-center">Видит в общем списке</th>
+              <th className="font-medium pb-1.5 px-3 w-24 text-center">Изменение</th>
+              <th className="font-medium pb-1.5 pl-3 w-24 text-center">Удаление</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {LANDING_SCOPE_ROWS.map((row) => (
+              <tr key={row.action}>
+                <td className="py-2 pr-3">
+                  <div>{row.label}</div>
+                  <div className="text-xs text-muted-foreground">{row.hint}</div>
+                </td>
+                <td className="py-2 px-3 text-center">
+                  <input
+                    type="radio"
+                    name="landings-visibility-scope"
+                    checked={visibility === row.visibility}
+                    onChange={() => onVisibilityChange(row.visibility)}
+                    aria-label={`${row.label}: видит в общем списке`}
+                  />
+                </td>
+                <td className="py-2 px-3 text-center">{ladderCell(row, editScope, onEditScopeChange, 'изменение')}</td>
+                <td className="py-2 pl-3 text-center">{ladderCell(row, deleteScope, onDeleteScopeChange, 'удаление')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-muted-foreground max-w-3xl">
+        «Видит» — один вариант: что показывать на странице «Лендинги». Изменение и удаление накопительные: отметка в строке
+        включает и строки над ней. Они действуют в дополнение к правам по проектам выше — если в проекте отмечено
+        «Удаление», там сотрудник удаляет любые лендинги независимо от этой таблицы.
+      </p>
     </div>
   );
 }

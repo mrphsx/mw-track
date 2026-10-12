@@ -333,7 +333,7 @@ export default function StudioLandingsPage() {
                   isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
                   isDuplicatePending={duplicate.isPending && duplicate.variables === l.id}
                   isDeletePending={remove.isPending && remove.variables === l.id}
-                  canDelete={hasPermission(user, projectId, 'LANDINGS_DELETE')}
+                  canDelete={l.canDelete ?? hasPermission(user, projectId, 'LANDINGS_DELETE')}
                   selectable={compareMode}
                   selected={selectedIds.has(l.id)}
                   onToggleSelect={() => toggleSelected(l.id)}

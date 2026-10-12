@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { ClientsVisibilityScope, LandingsVisibilityScope, Permission, Prisma, TeamInvite, UserRole } from '@prisma/client';
+import { ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission, Prisma, TeamInvite, UserRole } from '@prisma/client';
 import { addDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -27,6 +27,8 @@ interface InvitePermissionsPayload {
   projectPermissions?: ProjectPermissionsDto[];
   domainsPermissions?: Permission[];
   landingsVisibilityScope?: LandingsVisibilityScope;
+  landingsEditScope?: LandingsActionScope;
+  landingsDeleteScope?: LandingsActionScope;
   clientsVisibilityScope?: ClientsVisibilityScope;
 }
 
@@ -75,6 +77,8 @@ export class TeamInvitesService {
       projectPermissions: dto.projectPermissions,
       domainsPermissions: dto.domainsPermissions,
       landingsVisibilityScope: dto.landingsVisibilityScope,
+      landingsEditScope: dto.landingsEditScope,
+      landingsDeleteScope: dto.landingsDeleteScope,
       clientsVisibilityScope: dto.clientsVisibilityScope,
     };
 
@@ -141,6 +145,8 @@ export class TeamInvitesService {
           lastName: dto.lastName,
           role: invite.role,
           landingsVisibilityScope: payload?.landingsVisibilityScope,
+          landingsEditScope: payload?.landingsEditScope,
+          landingsDeleteScope: payload?.landingsDeleteScope,
           clientsVisibilityScope: payload?.clientsVisibilityScope,
           buyerShortCode,
           projectAccess: invite.role !== 'ADMIN' && projectIds.length ? { create: projectIds.map((projectId) => ({ projectId })) } : undefined,
