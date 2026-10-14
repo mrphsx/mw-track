@@ -115,7 +115,7 @@ function LandingActionsMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-8 w-8')}
+        className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-8 w-8 shrink-0')}
       >
         <MoreHorizontal className="w-4 h-4" />
       </DropdownMenuTrigger>
@@ -312,8 +312,8 @@ export function LandingRow({
 
 // ---- Карточки (запрос пользователя 2026-10-14) ----
 // Альтернативный вид к списку выше, по образцу карточек конкурента, но в палитре Studio:
-// проект/лендинг, автор, домен, канал, теги (шаблон, авторедирект, фильтрация), счётчики и
-// действия. Выбор вида (список/карточки) сохраняется в persist-хранилище useUiStore.
+// проект/лендинг, автор, домен, канал, теги (шаблон, авторедирект, фильтрация) и действия;
+// статус — только цветная точка (текст в подсказке), счётчики убраны по запросу 2026-10-14. Выбор вида (список/карточки) сохраняется в persist-хранилище useUiStore.
 
 // До монтирования отдаём 'list' — сервер рендерит дефолт, а сохранённый выбор из localStorage
 // применяем только на клиенте, чтобы не ловить расхождение гидратации.
@@ -334,14 +334,13 @@ export function LandingsViewToggle({ value, onChange }: { value: LandingsView; o
       aria-label={label}
       aria-pressed={value === v}
       className={cn(
-        'inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-lg transition-colors',
+        'inline-flex items-center justify-center p-1.5 rounded-lg transition-colors',
         value === v
           ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
           : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]',
       )}
     >
       <Icon className="w-4 h-4" />
-      <span className="hidden sm:inline">{label}</span>
     </button>
   );
   return (
@@ -353,7 +352,12 @@ export function LandingsViewToggle({ value, onChange }: { value: LandingsView; o
 }
 
 export function LandingsCardGrid({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">{children}</div>;
+  // Не больше 4 в ряд (запрос пользователя 2026-10-14: "изначально 4, на маленьких экранах 3-2-1").
+  // Колонка не уже 270px — дальше сетка сама уходит на 3/2/1, в зависимости от ширины контента,
+  // а не окна (сайдбар может быть свёрнут или развёрнут).
+  return (
+    <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,max(270px,calc((100%_-_3rem)/4))),1fr))]">{children}</div>
+  );
 }
 
 const MUTED = 'text-[#5F6B7A] dark:text-[#92A0AF]';
@@ -370,13 +374,12 @@ export function LandingGridCard(
     abTestGroupLabel?: string | null;
   },
 ) {
-  const { landing, showProject, attachment, selectable, selected, onToggleSelect, abTestGroupLabel, canDelete = true } = props;
+  const { landing, attachment, selectable, selected, onToggleSelect, abTestGroupLabel, canDelete = true } = props;
   const router = useRouter();
   const statsHref = `/projects/${landing.project.id}/landings/${landing.id}`;
   const templateName = useTemplateName(landing);
   const channel = primaryChannel(landing);
   const channelTitle = channel?.tgChannelTitle || channel?.tgBotFirstName || (channel?.type === 'WEBSITE' ? 'Сайт' : null);
-  const channelHandle = channel?.tgChannelUsername || channel?.tgBotUsername || channel?.tgPersonalUsername;
   const author = landing.createdBy ? [landing.createdBy.firstName, landing.createdBy.lastName].filter(Boolean).join(' ') : null;
 
   const selectDisabled = !!selectable && !!landing.abTestGroupId;
@@ -400,16 +403,16 @@ export function LandingGridCard(
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <p className={cn('text-xs truncate', MUTED)}>{showProject ? landing.project.name : templateName ? `${TYPE_LABEL[landing.type]}: ${templateName}` : TYPE_LABEL[landing.type]}</p>
           <p className="font-semibold text-[15px] leading-snug text-[#131A24] dark:text-[#E9EDF3] truncate" title={landing.name}>
             {landing.name}
           </p>
           {author && <p className={cn('text-xs truncate', MUTED)}>Создал: {author}</p>}
         </div>
-        <span className={cn('inline-flex items-center gap-1.5 text-[11px] font-medium shrink-0 mt-0.5', MUTED)}>
-          <span className={cn('w-2 h-2 rounded-full', STATUS_DOT_CLASS[landing.status])} />
-          {STATUS_LABEL[landing.status]}
-        </span>
+        <span
+          className={cn('w-2.5 h-2.5 rounded-full shrink-0 mt-1', STATUS_DOT_CLASS[landing.status])}
+          title={STATUS_LABEL[landing.status]}
+          aria-label={STATUS_LABEL[landing.status]}
+        />
       </div>
 
       {/* Домен */}
@@ -446,49 +449,34 @@ export function LandingGridCard(
           <div className="w-8 h-8 shrink-0 [&>*]:w-8 [&>*]:h-8">
             <ChannelAvatar channelId={channel.id} hasAvatar={hasChannelAvatar(channel)} fallbackLetter={(channelTitle || landing.project.name).charAt(0).toUpperCase()} />
           </div>
-          <div className="min-w-0">
-            <p className="text-sm font-medium truncate text-[#131A24] dark:text-[#E9EDF3]">{channelTitle || landing.project.name}</p>
-            <p className={cn('text-xs truncate', MUTED)}>{channelHandle ? `@${channelHandle}` : 'Канал'}</p>
-          </div>
+          <p className="min-w-0 text-sm font-medium truncate text-[#131A24] dark:text-[#E9EDF3]">{channelTitle || landing.project.name}</p>
         </div>
       )}
 
       {/* Теги */}
       <div className="flex flex-wrap items-center gap-1.5" onClick={stop}>
-        {showProject && (
-          <span className={cn(TAG, 'bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]')}>
-            {templateName ? templateName : TYPE_LABEL[landing.type]}
+        <span className={cn(TAG, 'bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]')}>
+          {templateName ? templateName : TYPE_LABEL[landing.type]}
+        </span>
+        {landing.autoRedirect && <span className={cn(TAG, 'bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]')}>Авторедирект</span>}
+        {landing.abTestGroupId && (
+          <span className={cn(TAG, 'border border-[#E4E8EE] dark:border-white/10 max-w-full min-w-0', MUTED)} title={abTestGroupLabel || 'A/B-тест'}>
+            <span className="truncate">{abTestGroupLabel || 'A/B-тест'}</span>
           </span>
         )}
-        {landing.autoRedirect && <span className={cn(TAG, 'bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]')}>Авторедирект</span>}
-        {landing.abTestGroupId && <span className={cn(TAG, 'border border-[#E4E8EE] dark:border-white/10', MUTED)}>{abTestGroupLabel || 'A/B-тест'}</span>}
         <FilteringPill landing={landing} />
       </div>
 
-      {/* Счётчики */}
-      <div className="grid grid-cols-3 gap-2 text-center">
-        {[
-          ['Клиенты', landing._count.clients],
-          ['Ботов', landing.botVisitsCount],
-          ['Отфильтр.', landing.botsFilteredCount],
-        ].map(([label, value]) => (
-          <div key={label as string} className={cn(INSET, 'py-1.5')}>
-            <p className="text-sm font-semibold tabular-nums text-[#131A24] dark:text-[#E9EDF3]">{value}</p>
-            <p className={cn('text-[11px]', MUTED)}>{label}</p>
-          </div>
-        ))}
-      </div>
-
       {/* Действия */}
-      <div className="flex items-center gap-1.5 mt-auto pt-1" onClick={stop}>
+      <div className="flex items-center gap-1 mt-auto pt-1" onClick={stop}>
         <button
           type="button"
           onClick={props.onGetLink}
           className="flex-1 inline-flex items-center justify-center gap-1.5 h-9 rounded-lg text-sm font-medium bg-[#1F4E9C] text-white hover:bg-[#1F4E9C]/90 dark:bg-[#7BA9EE] dark:text-[#0F1620] dark:hover:bg-[#7BA9EE]/90 transition-colors"
         >
-          <Link2 className="w-4 h-4" /> Получить ссылку
+          <Link2 className="w-4 h-4 shrink-0" /> <span className="truncate">Получить ссылку</span>
         </button>
-        <Link href={statsHref} title="Открыть лендинг" className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-9 w-9')}>
+        <Link href={statsHref} title="Открыть лендинг" className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-8 w-8 shrink-0')}>
           <Pencil className="w-4 h-4" />
         </Link>
         {canDelete && (
@@ -499,7 +487,7 @@ export function LandingGridCard(
             onClick={() => {
               if (window.confirm(`Удалить лендинг «${landing.name}»?`)) props.onDelete();
             }}
-            className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-9 w-9 text-red-600 dark:text-red-400')}
+            className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'h-8 w-8 shrink-0 text-red-600 dark:text-red-400')}
           >
             <Trash2 className="w-4 h-4" />
           </button>

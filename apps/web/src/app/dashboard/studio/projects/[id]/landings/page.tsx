@@ -176,8 +176,7 @@ export default function StudioLandingsPage() {
             </button>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-            {viewMode === 'landings' && <LandingsViewToggle value={landingsView} onChange={setLandingsView} />}
+        <div className="flex flex-wrap gap-2 justify-end ml-auto">
             {viewMode === 'landings' &&
               (compareMode ? (
                 <StudioLinkButton icon={X} onClick={exitCompareMode}>
@@ -209,6 +208,13 @@ export default function StudioLandingsPage() {
               </StudioLinkButton>
             )}
         </div>
+        {/* Переключатель вида — отдельным элементом с ml-auto, чтобы при переносе строки он
+            оставался в крайнем правом углу, а не рядом с кнопками (запрос пользователя 2026-10-14). */}
+        {viewMode === 'landings' && (
+          <div className="ml-auto">
+            <LandingsViewToggle value={landingsView} onChange={setLandingsView} />
+          </div>
+        )}
       </div>
 
       {viewMode === 'groups' && (!!activeAbTestGroups.length || hasEndedAbTestGroups) && (

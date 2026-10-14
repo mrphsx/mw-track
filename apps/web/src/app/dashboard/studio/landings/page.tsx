@@ -146,8 +146,7 @@ export default function StudioAllLandingsPage() {
             </button>
           </div>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          {viewMode === 'landings' && <LandingsViewToggle value={landingsView} onChange={setLandingsView} />}
+        <div className="flex items-center gap-3 flex-wrap justify-end ml-auto">
           {viewMode === 'landings' && hasAnyPermission(user, 'LANDINGS_CREATE') && (
             <>
               <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowCreateDialog(true)}>
@@ -171,6 +170,13 @@ export default function StudioAllLandingsPage() {
             </StudioLinkButton>
           )}
         </div>
+        {/* Переключатель вида — отдельным элементом с ml-auto, чтобы при переносе строки он
+            оставался в крайнем правом углу, а не рядом с кнопками (запрос пользователя 2026-10-14). */}
+        {viewMode === 'landings' && (
+          <div className="ml-auto">
+            <LandingsViewToggle value={landingsView} onChange={setLandingsView} />
+          </div>
+        )}
       </div>
 
       {viewMode === 'groups' && !!activeAbTestGroups.length && (
