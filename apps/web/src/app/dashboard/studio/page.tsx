@@ -8,14 +8,20 @@ import { useAuthStore } from '@/store/auth.store';
 import { hasAnyPermission } from '@/lib/permissions';
 import { ChannelAvatar } from '@/components/channel-avatar';
 import { hasChannelAvatar } from '@/lib/landings';
-import { Input } from '@/components/ui/input';
-import {
-  getSubscriptionWarning,
-  usePrototypeHomeData,
-  PROTOTYPE_PERIOD_OPTIONS,
-} from '@/lib/prototype-project-data';
-import { usePeriodQueryState } from '@/lib/use-period-query-state';
+import { getSubscriptionWarning, usePrototypeHomeData } from '@/lib/prototype-project-data';
+import { toApiPeriodParams, useAudiencePeriodQueryState } from '@/lib/use-audience-period';
 import { STUDIO_HUES, StudioHueName } from './colors';
+import { StudioAudiencePeriodPicker } from './audience/period-picker';
+
+// Клиенты/диалоги/ФД/РД/сумма за выбранный период — одна форма строки для карточки проекта,
+// баера и источника (бэкенд считает все три одним хелпером, ProjectsService.aggregateByClientDimension).
+interface PeriodRow {
+  clients: number;
+  dialogues: number;
+  fd: number;
+  rd: number;
+  revenue: number;
+}
 
 interface CompanyStats {
   newClients: number;
@@ -27,6 +33,16 @@ interface CompanyStats {
   fdRevenue: number;
   rdRevenue: number;
   projectCount: number;
+  byProject: Record<string, PeriodRow>;
+  // null — нет права на рейтинг команды (или включено "только свои клиенты"), блок не показываем.
+  buyers: (PeriodRow & { buyerId: string; name: string; isDeleted: boolean })[] | null;
+  sources: (PeriodRow & { source: 'FACEBOOK' | 'TIKTOK' })[];
+}
+
+const SOURCE_LABEL: Record<'FACEBOOK' | 'TIKTOK', string> = { FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
+
+function money(value: number): string {
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function greeting(): string {
@@ -56,11 +72,11 @@ export default function StudioDashboardPage() {
   const activeBots = projects?.reduce((sum, p) => sum + (p.channel?.isActive ? 1 : 0), 0) ?? 0;
   const totalProjects = projects?.length ?? 0;
 
-  // Персистентность периода в URL (запрос пользователя 2026-08-06, вынесено в общий хук
-  // 2026-08-18 — usePeriodQueryState).
-  const [period, setPeriod] = usePeriodQueryState('today');
+  // По умолчанию "Всё время" (запрос пользователя 2026-10-14) — тот же хук с пунктом 'all', что
+  // на страницах пересечения аудиторий; при 'all' бэкенду период не передаётся вовсе.
+  const [period, setPeriod] = useAudiencePeriodQueryState('all');
   const periodReady = period.period !== 'custom' || (!!period.from && !!period.to);
-  const periodParams = period.period === 'custom' ? { period: period.period, from: period.from, to: period.to } : { period: period.period };
+  const periodParams = toApiPeriodParams(period);
 
   // Запрос пользователя 2026-08-06: "нужно на главной странице так же показать какую-то
   // статистику... кассы, клиентов, фд/рд" — см. полный комментарий в classic-версии
@@ -108,54 +124,7 @@ export default function StudioDashboardPage() {
       <div className="space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">Статистика по всем проектам</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
-              {PROTOTYPE_PERIOD_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setPeriod({ period: opt.value })}
-                  className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
-                    period.period === opt.value
-                      ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
-                      : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => setPeriod({ period: 'custom', from: period.from, to: period.to })}
-                className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
-                  period.period === 'custom'
-                    ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
-                    : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
-                }`}
-              >
-                Период
-              </button>
-            </div>
-            {period.period === 'custom' && (
-              <div className="flex items-center gap-2">
-                <Input
-                  type="date"
-                  value={period.from ?? ''}
-                  max={period.to || undefined}
-                  onChange={(e) => setPeriod({ period: 'custom', from: e.target.value, to: period.to })}
-                  className="w-auto rounded-lg bg-white dark:bg-[#171F2B] dark:border-white/10 shadow-sm"
-                />
-                <span className="text-[#5F6B7A] dark:text-[#92A0AF] text-sm">—</span>
-                <Input
-                  type="date"
-                  value={period.to ?? ''}
-                  min={period.from || undefined}
-                  onChange={(e) => setPeriod({ period: 'custom', from: period.from, to: e.target.value })}
-                  className="w-auto rounded-lg bg-white dark:bg-[#171F2B] dark:border-white/10 shadow-sm"
-                />
-              </div>
-            )}
-          </div>
+          <StudioAudiencePeriodPicker value={period} onChange={setPeriod} />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           <StatCard label="Новые клиенты" value={companyStats?.newClients ?? '—'} icon={Users} hue="amber" />
@@ -169,8 +138,46 @@ export default function StudioDashboardPage() {
         </div>
       </div>
 
+      {companyStats && (
+        <div className={`grid grid-cols-1 gap-4 ${companyStats.buyers ? 'xl:grid-cols-2' : ''}`}>
+          {companyStats.buyers && (
+            <PeriodTable
+              title="Топ-5 баеров"
+              firstColumn="Баер"
+              canViewRevenue={canViewRevenue}
+              empty="За этот период у баеров нет клиентов"
+              rows={companyStats.buyers.map((b, i) => ({
+                key: b.buyerId,
+                label: (
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="w-5 shrink-0 text-xs text-[#5F6B7A] dark:text-[#92A0AF] tabular-nums">{i + 1}</span>
+                    <span
+                      className={`truncate ${b.isDeleted ? 'text-red-600 dark:text-red-400' : ''}`}
+                      title={b.isDeleted ? 'Удалённый пользователь' : b.name}
+                    >
+                      {b.name}
+                    </span>
+                  </span>
+                ),
+                row: b,
+              }))}
+            />
+          )}
+          <PeriodTable
+            title="Источники"
+            firstColumn="Источник"
+            canViewRevenue={canViewRevenue}
+            empty=""
+            rows={companyStats.sources.map((src) => ({ key: src.source, label: SOURCE_LABEL[src.source], row: src }))}
+          />
+        </div>
+      )}
+
       <div>
-        <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3] mb-4">Проекты</h2>
+        <div className="flex items-baseline gap-2 mb-4">
+          <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">Проекты</h2>
+          <span className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">цифры за выбранный период</span>
+        </div>
         {isLoading && <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Загрузка...</p>}
         {!isLoading && projects?.length === 0 && (
           <div className="rounded-3xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-10 text-center text-[#5F6B7A] dark:text-[#92A0AF]">
@@ -202,14 +209,92 @@ export default function StudioDashboardPage() {
                     {project.status}
                   </span>
                 </div>
-                <div className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
-                  {project._count.clients} клиентов · {project._count.pushes} рассылок
-                </div>
+                <ProjectPeriodMetrics row={companyStats?.byProject[project.id]} canViewRevenue={canViewRevenue} />
               </div>
             </Link>
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Клиенты/диалоги/ФД/РД (+ сумма при праве на выручку) проекта за выбранный период.
+function ProjectPeriodMetrics({ row, canViewRevenue }: { row: PeriodRow | undefined; canViewRevenue: boolean }) {
+  const items: { label: string; value: string }[] = [
+    { label: 'Клиенты', value: row ? String(row.clients) : '—' },
+    { label: 'Диалоги', value: row ? String(row.dialogues) : '—' },
+    { label: 'ФД', value: row ? String(row.fd) : '—' },
+    { label: 'РД', value: row ? String(row.rd) : '—' },
+  ];
+  return (
+    <div className="space-y-2">
+      <dl className="grid grid-cols-4 gap-2">
+        {items.map((item) => (
+          <div key={item.label} className="min-w-0">
+            <dt className="text-[11px] text-[#5F6B7A] dark:text-[#92A0AF] truncate">{item.label}</dt>
+            <dd className="text-sm font-semibold tabular-nums text-[#131A24] dark:text-[#E9EDF3]">{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {canViewRevenue && (
+        <div className="flex items-baseline justify-between border-t border-[#DCE1E8] dark:border-white/10 pt-2">
+          <span className="text-[11px] text-[#5F6B7A] dark:text-[#92A0AF]">Сумма</span>
+          <span className="text-sm font-semibold tabular-nums text-[#131A24] dark:text-[#E9EDF3]">{row ? money(row.revenue) : '—'}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeriodTable({
+  title,
+  firstColumn,
+  rows,
+  canViewRevenue,
+  empty,
+}: {
+  title: string;
+  firstColumn: string;
+  rows: { key: string; label: React.ReactNode; row: PeriodRow }[];
+  canViewRevenue: boolean;
+  empty: string;
+}) {
+  const head = 'px-3 py-2.5 text-right font-medium';
+  const cell = 'px-3 py-2.5 text-right tabular-nums';
+  return (
+    <div className="rounded-3xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-5 min-w-0">
+      <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3] mb-3">{title}</h2>
+      {rows.length === 0 ? (
+        <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">{empty}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] border-b border-[#DCE1E8] dark:border-white/10">
+                <th className="px-3 py-2.5 text-left font-medium">{firstColumn}</th>
+                <th className={head}>Клиенты</th>
+                <th className={head}>Диалоги</th>
+                <th className={head}>ФД</th>
+                <th className={head}>РД</th>
+                {canViewRevenue && <th className={head}>Сумма</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10 text-[#131A24] dark:text-[#E9EDF3]">
+              {rows.map(({ key, label, row }) => (
+                <tr key={key}>
+                  <td className="px-3 py-2.5 max-w-[14rem]">{label}</td>
+                  <td className={cell}>{row.clients}</td>
+                  <td className={cell}>{row.dialogues}</td>
+                  <td className={cell}>{row.fd}</td>
+                  <td className={cell}>{row.rd}</td>
+                  {canViewRevenue && <td className={`${cell} font-semibold`}>{money(row.revenue)}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

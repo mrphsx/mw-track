@@ -32,8 +32,9 @@ export class ProjectsController {
   // путь до 'GET :id' (тот же приём, что уже используют 'stats/best-time' у PushesController и
   // т.п.), иначе Nest принял бы 'company-stats' за значение :id.
   @Get('company-stats')
-  getCompanyStats(@Company() companyId: string, @CurrentUser() user: AuthUser, @Query() periodQuery: StatsPeriodDto) {
-    return this.projectsService.getCompanyStats(companyId, user.userId, user.role, periodQuery);
+  async getCompanyStats(@Company() companyId: string, @CurrentUser() user: AuthUser, @Query() periodQuery: StatsPeriodDto) {
+    const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
+    return this.projectsService.getCompanyStats(companyId, user.userId, user.role, periodQuery, scopedBuyerId);
   }
 
   // Сводка для страницы-пикера журнала реквизитов (запрос пользователя 2026-08-29: "надпись

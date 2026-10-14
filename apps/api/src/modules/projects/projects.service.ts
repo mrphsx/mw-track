@@ -18,6 +18,14 @@ import { PaymentDetailsLogFiltersDto } from './dto/payment-details-log-filters.d
 
 const ELEVATED_ROLES: UserRole[] = [UserRole.OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN];
 
+export interface AggregatedRow {
+  clients: number;
+  dialogues: number;
+  fd: number;
+  rd: number;
+  revenue: number;
+}
+
 @Injectable()
 export class ProjectsService {
   private readonly logger = new Logger(ProjectsService.name);
@@ -133,35 +141,49 @@ export class ProjectsService {
   // выдан не на все проекты, где есть STATS_VIEW (тот же принцип частичного зануления денежных
   // полей, что и у ClientsController.stats — см. её комментарий). Клиентские метрики (счётчики)
   // не считаются финансовыми и не зануляются.
-  async getCompanyStats(companyId: string, userId: string, role: UserRole, periodQuery: StatsPeriodDto) {
-    const [projectIds, revenueProjectIds] = await Promise.all([
+  // Расширено 2026-10-14 (запрос пользователя: "изначально за всё время... карточки проектов за
+  // выбранный период... топ-5 баеров... блок по источникам ФБ/ТТ"): period не передан = всё
+  // время (единственный вызывающий без period — главная Studio при "Всё время"; классика всегда
+  // шлёт period). Помимо сводки отдаёт byProject (клиенты/диалоги/ФД/РД/сумма на каждый проект за
+  // тот же период), buyers (топ-5) и sources (Facebook/TikTok) — все три считает один хелпер
+  // aggregateByClientDimension, поэтому сумма по карточкам и сводка не могут разойтись по
+  // определению метрики. scopedBuyerId (переключатель "только свои клиенты" у баера) теперь
+  // сужает и всю сводку — раньше главная его игнорировала, хотя страница проекта уважала.
+  async getCompanyStats(companyId: string, userId: string, role: UserRole, periodQuery: StatsPeriodDto, scopedBuyerId?: string) {
+    const [projectIds, revenueProjectIds, leaderboardProjectIds] = await Promise.all([
       this.getAccessibleProjectIds(companyId, userId, role, Permission.STATS_VIEW),
       this.getAccessibleProjectIds(companyId, userId, role, Permission.STATS_VIEW_REVENUE),
+      this.getAccessibleProjectIds(companyId, userId, role, Permission.STATS_VIEW_TEAM_LEADERBOARDS),
     ]);
 
+    const empty = { newClients: 0, unsubscribedClients: 0, botActivatedClients: 0, totalRevenue: 0, totalFd: 0, totalRd: 0, fdRevenue: 0, rdRevenue: 0, projectCount: 0 };
     if (projectIds.length === 0) {
-      return { newClients: 0, unsubscribedClients: 0, botActivatedClients: 0, totalRevenue: 0, totalFd: 0, totalRd: 0, fdRevenue: 0, rdRevenue: 0, projectCount: 0 };
+      return { ...empty, byProject: {}, buyers: null, sources: [] };
     }
 
-    const { since, until } = await resolveStatsPeriod(this.prisma, 'UTC', periodQuery);
+    const { since, until } = periodQuery.period
+      ? await resolveStatsPeriod(this.prisma, 'UTC', periodQuery)
+      : { since: new Date(0), until: new Date('3000-01-01T00:00:00Z') };
+    const buyerScope = scopedBuyerId ? { buyerId: scopedBuyerId } : {};
+    const buyerScopeSql = scopedBuyerId ? Prisma.sql`AND "buyerId" = ${scopedBuyerId}` : Prisma.empty;
     // OURS_ONLY — тот же критерий "реальный подписчик, не холодный контакт мимо воронки", что и
     // в ClientsRepository.getProjectStats (Client.subscribedAt IS NOT NULL).
     const purchaseWhere =
       revenueProjectIds.length > 0
         ? Prisma.sql`"projectId" IN (${Prisma.join(revenueProjectIds)}) AND "clientId" IN (
-            SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL
+            SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL ${buyerScopeSql}
           )`
         : Prisma.sql`FALSE`;
 
     const [newClients, unsubscribedClients, botActivatedClients, revenueAgg, fdRdRows] = await Promise.all([
-      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, subscribedAt: { gte: since, lt: until } } }),
-      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, unsubscribedAt: { gte: since, lt: until } } }),
-      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, botActivatedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, ...buyerScope, subscribedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, ...buyerScope, unsubscribedAt: { gte: since, lt: until } } }),
+      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, ...buyerScope, botActivatedAt: { gte: since, lt: until } } }),
       this.prisma.purchase.aggregate({
         where: {
           projectId: { in: revenueProjectIds },
           createdAt: { gte: since, lt: until },
-          client: { subscribedAt: { not: null }, deletedAt: null },
+          client: { subscribedAt: { not: null }, deletedAt: null, ...buyerScope },
         },
         _sum: { amount: true },
       }),
@@ -186,18 +208,117 @@ export class ProjectsService {
       `,
     ]);
 
-    const fdRd = fdRdRows[0];
+    const window = { since, until, scopedBuyerId };
+    const sourceExpr = Prisma.sql`CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END`;
+    // Топ баеров — только проекты, где выдано STATS_VIEW_TEAM_LEADERBOARDS, и не баеру со
+    // "своими клиентами" (то же условие, что у GET .../leaderboards на странице проекта).
+    const buyerProjectIds = scopedBuyerId ? [] : leaderboardProjectIds;
+    const [byProjectMap, buyerMap, sourceMap] = await Promise.all([
+      this.aggregateByClientDimension(Prisma.sql`c."projectId"`, projectIds, revenueProjectIds, window),
+      buyerProjectIds.length
+        ? this.aggregateByClientDimension(Prisma.sql`c."buyerId"`, buyerProjectIds, revenueProjectIds.filter((id) => buyerProjectIds.includes(id)), window)
+        : Promise.resolve(null),
+      this.aggregateByClientDimension(sourceExpr, projectIds, revenueProjectIds, window),
+    ]);
+
+    let buyers: (AggregatedRow & { buyerId: string; name: string; isDeleted: boolean })[] | null = null;
+    if (buyerMap) {
+      const top = [...buyerMap.entries()]
+        .filter(([key]) => key)
+        .sort(([, a], [, b]) => b.revenue - a.revenue || b.clients - a.clients || b.dialogues - a.dialogues)
+        .slice(0, 5);
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: top.map(([key]) => key) }, companyId },
+        select: { id: true, firstName: true, lastName: true, deletedAt: true },
+      });
+      const byId = new Map(users.map((u) => [u.id, u]));
+      buyers = top.map(([buyerId, row]) => {
+        const u = byId.get(buyerId);
+        return { buyerId, name: u ? formatUserName(u) : 'Некорректный ID баера', isDeleted: !!u?.deletedAt, ...row };
+      });
+    }
+
+    const zeroRow: AggregatedRow = { clients: 0, dialogues: 0, fd: 0, rd: 0, revenue: 0 };
+    const fd = fdRdRows[0];
     return {
       newClients,
       unsubscribedClients,
       botActivatedClients,
       totalRevenue: Number(revenueAgg._sum.amount ?? 0),
-      totalFd: Number(fdRd?.fd_count ?? 0),
-      totalRd: Number(fdRd?.rd_count ?? 0),
-      fdRevenue: Number(fdRd?.fd_revenue ?? 0),
-      rdRevenue: Number(fdRd?.rd_revenue ?? 0),
+      totalFd: Number(fd?.fd_count ?? 0),
+      totalRd: Number(fd?.rd_count ?? 0),
+      fdRevenue: Number(fd?.fd_revenue ?? 0),
+      rdRevenue: Number(fd?.rd_revenue ?? 0),
       projectCount: projectIds.length,
+      byProject: Object.fromEntries(projectIds.map((id) => [id, byProjectMap.get(id) ?? zeroRow])),
+      buyers,
+      sources: (['FACEBOOK', 'TIKTOK'] as const).map((source) => ({ source, ...(sourceMap.get(source) ?? zeroRow) })),
     };
+  }
+
+  // Клиенты/диалоги/ФД/РД/сумма, сгруппированные по одному измерению клиента (проект, баер,
+  // источник). Клиенты — Client.subscribedAt в окне, диалоги — Client.firstDialogueAt в окне, оба
+  // только "наши" (subscribedAt не пуст). ФД/РД/сумма — покупки в окне только по проектам с
+  // STATS_VIEW_REVENUE, "первый/повторный" — по всей истории клиента, как в getProjectStats.
+  // dimension — статичный SQL-фрагмент из вызывающего кода, не пользовательский ввод.
+  private async aggregateByClientDimension(
+    dimension: Prisma.Sql,
+    projectIds: string[],
+    revenueProjectIds: string[],
+    window: { since: Date; until: Date; scopedBuyerId?: string },
+  ): Promise<Map<string, AggregatedRow>> {
+    const result = new Map<string, AggregatedRow>();
+    if (projectIds.length === 0) return result;
+    const { since, until, scopedBuyerId } = window;
+    const buyerSql = scopedBuyerId ? Prisma.sql`AND c."buyerId" = ${scopedBuyerId}` : Prisma.empty;
+
+    const [clientRows, purchaseRows] = await Promise.all([
+      this.prisma.$queryRaw<{ key: string | null; clients: bigint; dialogues: bigint }[]>`
+        SELECT ${dimension} as key,
+          COUNT(*) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
+          COUNT(*) FILTER (WHERE c."firstDialogueAt" >= ${since} AND c."firstDialogueAt" < ${until}) as dialogues
+        FROM "Client" c
+        WHERE c."projectId" IN (${Prisma.join(projectIds)}) AND c."deletedAt" IS NULL AND c."subscribedAt" IS NOT NULL ${buyerSql}
+          AND ((c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) OR (c."firstDialogueAt" >= ${since} AND c."firstDialogueAt" < ${until}))
+        GROUP BY ${dimension}
+      `,
+      revenueProjectIds.length
+        ? this.prisma.$queryRaw<{ key: string | null; fd: bigint; rd: bigint; revenue: string | null }[]>`
+            WITH ranked AS (
+              SELECT p.amount, p."createdAt", ${dimension} as key,
+                ROW_NUMBER() OVER (PARTITION BY p."clientId" ORDER BY p."createdAt" ASC, p.id ASC) as rn
+              FROM "Purchase" p
+              JOIN "Client" c ON c.id = p."clientId"
+              WHERE p."projectId" IN (${Prisma.join(revenueProjectIds)}) AND c."subscribedAt" IS NOT NULL AND c."deletedAt" IS NULL ${buyerSql}
+            )
+            SELECT key,
+              COUNT(*) FILTER (WHERE rn = 1) as fd,
+              COUNT(*) FILTER (WHERE rn > 1) as rd,
+              COALESCE(SUM(amount), 0) as revenue
+            FROM ranked
+            WHERE "createdAt" >= ${since} AND "createdAt" < ${until}
+            GROUP BY key
+          `
+        : Promise.resolve([]),
+    ]);
+
+    const row = (key: string) => {
+      let r = result.get(key);
+      if (!r) {
+        r = { clients: 0, dialogues: 0, fd: 0, rd: 0, revenue: 0 };
+        result.set(key, r);
+      }
+      return r;
+    };
+    for (const r of clientRows) {
+      if (!r.key) continue;
+      Object.assign(row(r.key), { clients: Number(r.clients), dialogues: Number(r.dialogues) });
+    }
+    for (const r of purchaseRows) {
+      if (!r.key) continue;
+      Object.assign(row(r.key), { fd: Number(r.fd), rd: Number(r.rd), revenue: Number(r.revenue ?? 0) });
+    }
+    return result;
   }
 
   async findAll(companyId: string, userId: string, role: UserRole) {
