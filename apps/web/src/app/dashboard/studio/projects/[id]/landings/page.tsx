@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Globe, History, Plus, SplitSquareHorizontal, UploadCloud, X } from 'lucide-react';
+import { History, Plus, SplitSquareHorizontal, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { hasPermission } from '@/lib/permissions';
@@ -24,7 +24,7 @@ import {
   AbTestGroupDialog,
   LandingDomainDialog,
 } from '@/components/landing-card';
-import { LandingGridCard, LandingRow, LandingsCardGrid, LandingsTableHeader, LandingsViewToggle, useLandingsView } from '@/components/landing-list';
+import { CreateLandingMenu, LandingGridCard, LandingRow, LandingsCardGrid, LandingsTableHeader, LandingsViewToggle, useLandingsView } from '@/components/landing-list';
 import { Table, TableBody, TableHeader } from '@/components/ui/table';
 import { GetLinkDialog, GetLinkLanding } from '@/components/get-link-dialog';
 import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dialog';
@@ -187,19 +187,6 @@ export default function StudioLandingsPage() {
                   <StudioLinkButton icon={SplitSquareHorizontal} onClick={() => setCompareMode(true)}>
                     Сравнить лендинги
                   </StudioLinkButton>
-                  {hasPermission(user, projectId, 'LANDINGS_CREATE') && (
-                    <>
-                      <StudioLinkButton icon={UploadCloud} onClick={() => setUploadTarget('new')}>
-                        Загрузить ZIP
-                      </StudioLinkButton>
-                      <StudioLinkButton icon={Globe} onClick={() => setExternalTarget('new')}>
-                        Лендинг на вашем сервере
-                      </StudioLinkButton>
-                      <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowTemplateModal(true)}>
-                        Создать из шаблона
-                      </StudioLinkButton>
-                    </>
-                  )}
                 </>
               ))}
             {viewMode === 'groups' && hasPermission(user, projectId, 'AB_TESTS_CREATE') && (
@@ -211,7 +198,10 @@ export default function StudioLandingsPage() {
         {/* Переключатель вида — отдельным элементом с ml-auto, чтобы при переносе строки он
             оставался в крайнем правом углу, а не рядом с кнопками (запрос пользователя 2026-10-14). */}
         {viewMode === 'landings' && (
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            {!compareMode && hasPermission(user, projectId, 'LANDINGS_CREATE') && (
+              <CreateLandingMenu onTemplate={() => setShowTemplateModal(true)} onZip={() => setUploadTarget('new')} onExternal={() => setExternalTarget('new')} />
+            )}
             <LandingsViewToggle value={landingsView} onChange={setLandingsView} />
           </div>
         )}

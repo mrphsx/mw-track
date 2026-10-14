@@ -18,7 +18,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Copy, Eye, Globe, LayoutGrid, Link2, List, MoreHorizontal, Pencil, Shield, SplitSquareHorizontal, Trash2, Upload } from 'lucide-react';
+import { ChevronDown, Copy, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import {
@@ -348,6 +348,31 @@ export function LandingsViewToggle({ value, onChange }: { value: LandingsView; o
       {item('list', List, 'Список')}
       {item('cards', LayoutGrid, 'Карточки')}
     </div>
+  );
+}
+
+// Одна кнопка создания вместо трёх (запрос пользователя 2026-10-14: "для экономии места... при
+// нажатии пусть покажет уже варианты создания") — стоит справа рядом с переключателем вида.
+export function CreateLandingMenu({ onTemplate, onZip, onExternal }: { onTemplate: () => void; onZip: () => void; onExternal: () => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger className="inline-flex items-center gap-1.5 rounded-lg font-medium text-sm px-4 py-2 transition-colors bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] hover:opacity-90">
+        <Plus className="w-4 h-4" />
+        Создать лендинг
+        <ChevronDown className="w-4 h-4 opacity-80" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-auto min-w-64">
+        <DropdownMenuItem onClick={onTemplate}>
+          <LayoutTemplate className="w-4 h-4 mr-2" /> Из шаблона
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onZip}>
+          <UploadCloud className="w-4 h-4 mr-2" /> Загрузить ZIP
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onExternal}>
+          <Globe className="w-4 h-4 mr-2" /> Лендинг на вашем сервере
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
