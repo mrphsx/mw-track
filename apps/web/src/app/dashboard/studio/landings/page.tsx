@@ -18,7 +18,7 @@ import {
   previewLanding,
 } from '@/lib/landings';
 import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog } from '@/components/landing-card';
-import { LandingRow, LandingsTableHeader } from '@/components/landing-list';
+import { LandingGridCard, LandingRow, LandingsCardGrid, LandingsTableHeader, LandingsViewToggle, useLandingsView } from '@/components/landing-list';
 import { Table, TableBody, TableHeader } from '@/components/ui/table';
 import { GetLinkDialog, GetLinkLanding } from '@/components/get-link-dialog';
 import { CreateLandingFromTemplateDialog } from '@/components/create-landing-dialog';
@@ -45,6 +45,8 @@ export default function StudioAllLandingsPage() {
   const [abTestTarget, setAbTestTarget] = useState<AbTestDialogTarget | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [viewMode, setViewMode] = useState<'landings' | 'groups'>('landings');
+  // Список / карточки (запрос пользователя 2026-10-14) — выбор сохраняется между перезагрузками.
+  const [landingsView, setLandingsView] = useLandingsView();
   // Кнопки загрузки ZIP / подключения внешнего лендинга (запрос пользователя 2026-09-08) — см.
   // полный комментарий в classic-версии.
   const [uploadTarget, setUploadTarget] = useState<UploadZipLandingTarget | null>(null);
@@ -145,6 +147,7 @@ export default function StudioAllLandingsPage() {
           </div>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
+          {viewMode === 'landings' && <LandingsViewToggle value={landingsView} onChange={setLandingsView} />}
           {viewMode === 'landings' && hasAnyPermission(user, 'LANDINGS_CREATE') && (
             <>
               <StudioLinkButton variant="primary" icon={Plus} onClick={() => setShowCreateDialog(true)}>
@@ -267,7 +270,7 @@ export default function StudioAllLandingsPage() {
         <div className={`${STUDIO_CARD} p-8 text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]`}>Лендингов пока нет.</div>
       )}
 
-      {viewMode === 'landings' && !!landings?.length && (
+      {viewMode === 'landings' && landingsView === 'list' && !!landings?.length && (
         <div className={`${STUDIO_CARD} overflow-hidden`}>
           <Table>
             <TableHeader>
@@ -301,6 +304,36 @@ export default function StudioAllLandingsPage() {
             </TableBody>
           </Table>
         </div>
+      )}
+
+      {viewMode === 'landings' && landingsView === 'cards' && !!landings?.length && (
+        <LandingsCardGrid>
+          {landings.map((l) => (
+              <LandingGridCard
+                key={l.id}
+                landing={l}
+                attachment={findLandingAttachment(domains, l.id)}
+                showProject
+                onPreview={() => preview(l.id)}
+                onManageDomain={() => setDomainDialogLanding(l)}
+                onGetLink={() => setGetLinkLanding(l)}
+                onReupload={l.type === 'CUSTOM' ? () => setUploadTarget({ id: l.id, name: l.name }) : undefined}
+                onManageExternal={l.type === 'EXTERNAL' ? () => setExternalTarget(l) : undefined}
+                onManageAbTest={() =>
+                  setAbTestTarget({ projectId: l.project.id, groupId: l.abTestGroupId, preselectedIds: l.abTestGroupId ? [] : [l.id] })
+                }
+                onDuplicate={() => duplicate.mutate(l.id)}
+                onPublish={() => publish.mutate(l.id)}
+                onUnpublish={() => unpublish.mutate(l.id)}
+                onDelete={() => remove.mutate(l.id)}
+                isPublishPending={(publish.isPending && publish.variables === l.id) || (unpublish.isPending && unpublish.variables === l.id)}
+                isDuplicatePending={duplicate.isPending && duplicate.variables === l.id}
+                isDeletePending={remove.isPending && remove.variables === l.id}
+                canDelete={l.canDelete ?? hasPermission(user, l.project.id, 'LANDINGS_DELETE')}
+                abTestGroupLabel={l.abTestGroupId ? abTestLabels.get(l.abTestGroupId) : null}
+              />
+          ))}
+        </LandingsCardGrid>
       )}
 
       <LandingDomainDialog landing={domainDialogLanding} domains={domains} onClose={() => setDomainDialogLanding(null)} />

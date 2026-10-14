@@ -6,9 +6,16 @@ import { persist } from 'zustand/middleware';
 // классика), т.к. localStorage всё равно строго по origin (mw-track.com/old.mw-track.com не
 // делят его между собой), дублировать store ради этого не нужно, см. тот же принцип у
 // auth.store.ts.
+// Вид списка лендингов в Studio (запрос пользователя 2026-10-14: "после переключения на
+// карточки, даже после обновления страницы у пользователя должны остаться карточки") — по
+// умолчанию список, выбор живёт в том же persist-хранилище, что и свёрнутый сайдбар.
+export type LandingsView = 'list' | 'cards';
+
 interface UiState {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
+  landingsView: LandingsView;
+  setLandingsView: (view: LandingsView) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -16,6 +23,8 @@ export const useUiStore = create<UiState>()(
     (set) => ({
       sidebarCollapsed: false,
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+      landingsView: 'list',
+      setLandingsView: (landingsView) => set({ landingsView }),
     }),
     { name: 'mwtrack-ui' },
   ),
