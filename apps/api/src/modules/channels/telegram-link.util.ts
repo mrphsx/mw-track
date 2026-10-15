@@ -38,13 +38,10 @@ export function buildTelegramLink(channel: TelegramLinkChannel | null, startCode
     case 'PERSONAL_DM': {
       if (!channel.tgPersonalUsername) return '';
       const domain = channel.tgPersonalUsername.replace(/^@/, '');
-      // &text= предзаполняет (не отправляет!) сообщение собеседнику — лучшее из возможного
-      // для атрибуции лендинга в PERSONAL_DM, т.к. tg://resolve никогда не проходит через наш
-      // сервер (в отличие от BOT_DIRECT, где &start= долетает как аргумент команды /start).
-      // Честное ограничение: код виден посетителю и может быть стёрт до отправки — тогда
-      // просто теряется атрибуция этого диалога, TelegramPersonalService всё равно заведёт
-      // клиента по первому сообщению (см. запрос пользователя 2026-07-04, диалоги).
-      return startCode ? `tg://resolve?domain=${domain}&text=${encodeURIComponent(startCode)}` : `tg://resolve?domain=${domain}`;
+      // Без &text= (запрос пользователя 2026-10-15: "убери совсем") — раньше код атрибуции
+      // предзаполнялся в поле ввода и был виден посетителю. Цена решения: у PERSONAL_DM больше
+      // нет связи диалога с лендингом/баером, клиент всё равно заводится по первому сообщению.
+      return `tg://resolve?domain=${domain}`;
     }
     case 'PRIVATE_CHANNEL_REQUEST': {
       const inviteLink = landingInviteLink || channel.tgInviteLink;
@@ -71,7 +68,7 @@ export function buildTelegramHttpsLink(channel: TelegramLinkChannel | null, star
     case 'PERSONAL_DM': {
       if (!channel.tgPersonalUsername) return '';
       const domain = channel.tgPersonalUsername.replace(/^@/, '');
-      return startCode ? `https://t.me/${domain}?text=${encodeURIComponent(startCode)}` : `https://t.me/${domain}`;
+      return `https://t.me/${domain}`;
     }
     case 'PRIVATE_CHANNEL_REQUEST': {
       // Уже https://t.me/+HASH в исходном виде — та самая ссылка, которую toTgInviteScheme
