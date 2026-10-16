@@ -454,7 +454,14 @@ export class PushesService {
       });
       if (pending.length === 0) return;
       for (const log of pending) {
-        await this.pushQueue.add('send-push-message', { pushId, pushLogId: log.id, clientId: log.clientId });
+        // jobId = pushLogId: повторная постановка (recoverStalledSending раз в минуту) того же
+        // получателя, пока его джоба ещё в очереди, — no-op, а не дубль. Без этого крон
+        // плодил миллионы копий и Redis падал по OOM (2026-10-16).
+        await this.pushQueue.add(
+          'send-push-message',
+          { pushId, pushLogId: log.id, clientId: log.clientId },
+          { jobId: `push-log-${log.id}`, removeOnComplete: true, removeOnFail: 1000 },
+        );
       }
       cursor = pending[pending.length - 1].id;
       if (pending.length < 200) return;
