@@ -19,7 +19,7 @@ export interface PlanConfig {
 // ENTERPRISE — исключение из формулы (тоже подтверждено явно): плоские 999, не масштабируется
 // по числу проектов, т.к. это премиум/индивидуальный тариф, а не расчётный шаг лестницы.
 // TRIAL: 1 × 2/день = 2 (историческое значение, см. правку ниже); STARTER: 5 × 2 = 10;
-// GROWTH: 10 × 5 = 50; ENTERPRISE: 999 (плоский sentinel). SCALE и новые PRO/ULTIMATE ниже
+// GROWTH: 10 × 5 = 50 (2026-10-17 maxProjects поднят до 12, лимит рассылок оставлен 50); ENTERPRISE: 999 (плоский sentinel). SCALE и новые PRO/ULTIMATE ниже
 // больше НЕ следуют этой формуле — их дневные лимиты заданы явно пользователем 2026-09-25, не
 // выведены расчётом.
 //
@@ -42,7 +42,7 @@ export interface PlanConfig {
 export const PLANS: Record<SubscriptionPlan, PlanConfig> = {
   TRIAL: { priceUsdt: 0, durationDays: 14, maxProjects: 1, maxClients: 100, maxPushesPerDay: 1 },
   STARTER: { priceUsdt: 49, durationDays: 30, maxProjects: 5, maxClients: 5000, maxPushesPerDay: 10 },
-  GROWTH: { priceUsdt: 149, durationDays: 30, maxProjects: 10, maxClients: 25000, maxPushesPerDay: 50 },
+  GROWTH: { priceUsdt: 149, durationDays: 30, maxProjects: 12, maxClients: 25000, maxPushesPerDay: 50 },
   SCALE: { priceUsdt: 299, durationDays: 30, maxProjects: 25, maxClients: 50000, maxPushesPerDay: 100 },
   PRO: { priceUsdt: 599, durationDays: 30, maxProjects: 50, maxClients: 120000, maxPushesPerDay: 250 },
   ULTIMATE: { priceUsdt: 1199, durationDays: 30, maxProjects: 200, maxClients: 500000, maxPushesPerDay: 1000 },

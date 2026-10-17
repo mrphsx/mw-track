@@ -15,7 +15,7 @@ export const PLAN_LIMITS: Record<
 > = {
   TRIAL: { maxProjects: 1, maxClients: 100, maxPushesPerDay: 1 },
   STARTER: { maxProjects: 5, maxClients: 5000, maxPushesPerDay: 10 },
-  GROWTH: { maxProjects: 10, maxClients: 25000, maxPushesPerDay: 50 },
+  GROWTH: { maxProjects: 12, maxClients: 25000, maxPushesPerDay: 50 },
   SCALE: { maxProjects: 25, maxClients: 50000, maxPushesPerDay: 100 },
   PRO: { maxProjects: 50, maxClients: 120000, maxPushesPerDay: 250 },
   ULTIMATE: { maxProjects: 200, maxClients: 500000, maxPushesPerDay: 1000 },
