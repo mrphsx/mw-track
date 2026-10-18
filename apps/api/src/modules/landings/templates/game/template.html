@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <title>{{META_TITLE}}</title>
+  <meta name="description" content="{{META_DESCRIPTION}}">
+  <style>
+    /* Общая вёрстка четырёх игровых шаблонов (колесо, стиралка, коробки, опрос). Одна компактная
+       карточка: шапка канала, игра, кнопка в канал. Приз открывается поверх игровой зоны, высота
+       страницы не меняется, кнопка видна без прокрутки даже на маленьких телефонах. На широком
+       экране — та же карточка в две колонки. */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #fff;
+      background: #000;
+      min-height: 100vh;
+      min-height: 100svh;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        radial-gradient(circle at 20% 20%, {{GAME_ACCENT}} 0 1.5px, transparent 2.5px),
+        radial-gradient(circle at 70% 60%, {{GAME_ACCENT}} 0 1.5px, transparent 2.5px),
+        radial-gradient(ellipse at 50% 0%, rgba(255,255,255,.06), transparent 60%);
+      background-size: 56px 56px, 72px 72px, 100% 100%;
+      opacity: .35;
+      pointer-events: none;
+      z-index: -1;
+    }
+    .page { min-height: 100vh; min-height: 100svh; display: flex; align-items: center; justify-content: center; padding: 14px 12px; }
+    .card { width: 100%; max-width: 400px; background: #1e1e1e; border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .head { display: flex; align-items: center; gap: 12px; }
+    .ava, .ava img { flex: none; width: 52px; height: 52px; border-radius: 50%; display: block; object-fit: cover; }
+    .ava-ph { background: {{GAME_ACCENT}}; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: #fff; }
+    .head-t { min-width: 0; }
+    .title { margin: 0; font-size: 18px; line-height: 22px; font-weight: 700; word-break: break-word; }
+    .subs { font-size: 13px; color: #7d7f81; }
+    .desc { font-size: 14px; line-height: 20px; color: #c9cbcd; word-break: break-word; }
+    .desc:empty { display: none; }
+    .play { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+    .game-h { margin: 0; font-size: 17px; font-weight: 700; line-height: 1.25; }
+    .game-sub { font-size: 13px; color: #9a9c9e; line-height: 1.35; }
+    .game-sub a { color: #8fd3f7; }
+    .arena { position: relative; width: 100%; height: clamp(168px, 33vh, 250px); height: clamp(168px, 33svh, 250px); margin-top: 4px; display: flex; align-items: center; justify-content: center; }
+    .result { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 8px; background: rgba(30,30,30,.95); border-radius: 14px; animation: pop .35s ease-out; }
+    .result b { font-size: 40px; font-weight: 900; line-height: 1.05; word-break: break-word; }
+    .result span { font-size: 14px; color: #c9cbcd; }
+    .result em { font-style: normal; font-size: 12px; color: #8fd3f7; margin-top: 4px; }
+    @keyframes pop { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
+    .actions { display: flex; flex-direction: column; gap: 8px; }
+    .cta {
+      display: flex; justify-content: center; align-items: center; min-height: 48px; padding: 0 20px; border-radius: 24px;
+      background-color: {{GAME_ACCENT}}; color: #fff; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: .02em;
+      text-decoration: none; text-align: center;
+      background-image: linear-gradient(270deg, rgba(255,255,255,0) 48%, rgba(255,255,255,.25) 75%, rgba(255,255,255,0) 100%);
+      background-size: 500px 100%; background-repeat: no-repeat; background-position: -500px 0; animation: shine 3s linear infinite;
+    }
+    @keyframes shine { 0% { background-position: -500px 0; } 25%, 100% { background-position: 500px 0; } }
+    .fine { font-size: 11px; color: #6b6d6f; line-height: 1.35; text-align: center; }
+
+    .wheel { position: relative; height: 100%; aspect-ratio: 1; max-width: 100%; cursor: pointer; }
+    .wheel svg { width: 100%; height: 100%; display: block; }
+    .wheel .rot { transform-origin: 150px 150px; transition: transform 4.2s cubic-bezier(.17,.67,.12,1); }
+    .pointer { position: absolute; top: -4px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 11px solid transparent; border-right: 11px solid transparent; border-top: 20px solid #fff; filter: drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
+
+    .scratch { position: relative; height: 100%; max-height: 180px; aspect-ratio: 300 / 180; max-width: 100%; border-radius: 14px; overflow: hidden; background: #262626; touch-action: none; }
+    .scratch .under { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 8px; }
+    .scratch .under b { font-size: 34px; font-weight: 900; }
+    .scratch .under span { font-size: 13px; color: #9a9c9e; }
+    .scratch canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+
+    .boxes { display: flex; gap: 14px; justify-content: center; width: 100%; }
+    .gbox { position: relative; width: 30%; max-width: 92px; aspect-ratio: 1; border: 0; background: transparent; cursor: pointer; padding: 0; }
+    .gbox span { position: absolute; display: block; }
+    .gbox .base { left: 6%; right: 6%; bottom: 0; height: 64%; background: {{GAME_ACCENT}}; border-radius: 6px; }
+    .gbox .lid { left: 0; right: 0; top: 18%; height: 22%; background: {{GAME_ACCENT}}; filter: brightness(.82); border-radius: 6px; transition: transform .45s cubic-bezier(.3,1.5,.6,1); }
+    .gbox .rib { left: 50%; top: 18%; bottom: 0; width: 14%; transform: translateX(-50%); background: #fff; opacity: .85; }
+    .gbox .bow { left: 50%; top: 4%; width: 34%; height: 18%; transform: translateX(-50%); border: 4px solid #fff; border-radius: 50% 50% 4px 4px; transition: transform .45s cubic-bezier(.3,1.5,.6,1); }
+    .gbox .val { inset: 40% 2px 0; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 15px; color: #fff; opacity: 0; transition: opacity .3s .2s; overflow: hidden; }
+    .gbox.open .lid { transform: translateY(-46%) rotate(-14deg); }
+    .gbox.open .bow { transform: translate(-80%, -70%) rotate(-14deg); }
+    .gbox.open .rib { opacity: 0; }
+    .gbox.open .val { opacity: 1; }
+    .gbox.dim { opacity: .45; }
+
+    .quiz { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 8px; }
+    .steps { display: flex; gap: 6px; justify-content: center; }
+    .steps i { width: 26px; height: 4px; border-radius: 2px; background: #3a3a3a; display: block; }
+    .steps i.on { background: {{GAME_ACCENT}}; }
+    .quiz-q { font-size: 16px; font-weight: 700; }
+    .opts { display: flex; flex-direction: column; gap: 7px; }
+    .opt { font-family: inherit; font-size: 15px; text-align: left; padding: 10px 14px; border-radius: 12px; background: #262626; color: #fff; border: 1px solid #333; cursor: pointer; }
+
+    .gbox:focus-visible, .opt:focus-visible, .wheel:focus-visible, .cta:focus-visible { outline: 2px solid #8fd3f7; outline-offset: 3px; }
+
+    @media (min-width: 760px) {
+      .page { padding: 32px; }
+      .card { max-width: 820px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto 1fr auto; column-gap: 32px; row-gap: 16px; padding: 28px; }
+      .head { grid-column: 1; grid-row: 1; }
+      .desc { grid-column: 1; grid-row: 2; font-size: 16px; line-height: 24px; align-self: start; }
+      .play { grid-column: 2; grid-row: 1 / span 3; border-left: 1px solid #2c2c2c; padding-left: 32px; justify-content: center; }
+      .actions { grid-column: 1; grid-row: 3; }
+      .ava, .ava img { width: 72px; height: 72px; }
+      .ava-ph { font-size: 30px; }
+      .title { font-size: 24px; line-height: 30px; }
+      .subs { font-size: 14px; }
+      .arena { height: 280px; }
+      .fine { text-align: left; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wheel .rot { transition-duration: .3s; }
+      .cta { animation: none; }
+      .gbox .lid, .gbox .bow, .result { transition: none; animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="card">
+      <div class="head">
+        {{#if CHANNEL_AVATAR}}
+        <span class="ava"><img src="{{CHANNEL_AVATAR}}" width="52" height="52" alt="{{CHANNEL_TITLE}}"></span>
+        {{else}}
+        <span class="ava ava-ph">{{CHANNEL_INITIAL}}</span>
+        {{/if}}
+        <div class="head-t">
+          <h1 class="title">{{CHANNEL_TITLE}}</h1>
+          {{#if SUBSCRIBERS_COUNT}}<div class="subs">{{SUBSCRIBERS_COUNT}} {{SUBSCRIBERS_LABEL}}</div>{{/if}}
+        </div>
+      </div>
+      <div class="desc">{{CHANNEL_DESCRIPTION}}</div>
+
+      <section class="play">
+        <h2 class="game-h" id="game-title">{{GAME_TITLE}}</h2>
+        <div class="game-sub" id="game-sub">{{GAME_SUBTITLE}}</div>
+        <div class="arena" id="arena"></div>
+      </section>
+
+      <div class="actions">
+        {{COUNTDOWN_BLOCK}}
+        <a class="cta" id="join" href="{{TG_REDIRECT_URL}}" rel="noopener" data-track="Lead">{{JOIN_BUTTON_TEXT}}</a>
+        <div class="fine">{{GAME_FINE_PRINT}}</div>
+      </div>
+    </div>
+  </main>
+
+  <script type="application/json" id="game-config">{{GAME_CONFIG_JSON}}</script>
+  <script>
+  (function () {
+    var cfg;
+    try { cfg = JSON.parse(document.getElementById('game-config').textContent); } catch (e) { return; }
+    var arena = document.getElementById('arena');
+    var join = document.getElementById('join');
+    var sub = document.getElementById('game-sub');
+    var won = false;
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function el(tag, cls, text) {
+      var n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    }
+
+    function win(prize) {
+      if (won) return;
+      won = true;
+      var r = el('div', 'result');
+      r.appendChild(el('b', null, prize));
+      r.appendChild(el('span', null, cfg.prizeCaption));
+      r.appendChild(el('em', null, cfg.prizeNote));
+      arena.appendChild(r);
+      join.textContent = cfg.winButtonText.split('{prize}').join(prize);
+      if (window.tcrm && typeof window.tcrm.triggerAutoRedirect === 'function') {
+        setTimeout(function () { window.tcrm.triggerAutoRedirect(); }, 900);
+      }
+    }
+
+    function wheel() {
+      var NS = 'http://www.w3.org/2000/svg';
+      var segs = cfg.segments, n = segs.length, step = 360 / n;
+      var box = el('div', 'wheel');
+      box.setAttribute('role', 'button');
+      box.setAttribute('tabindex', '0');
+      box.setAttribute('aria-label', cfg.title);
+      box.appendChild(el('div', 'pointer'));
+      var svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('viewBox', '0 0 300 300');
+      function make(tag, attrs) {
+        var e = document.createElementNS(NS, tag);
+        for (var k in attrs) e.setAttribute(k, attrs[k]);
+        return e;
+      }
+      svg.appendChild(make('circle', { cx: 150, cy: 150, r: 146, fill: '#111', stroke: cfg.accentColor, 'stroke-width': 4 }));
+      var rot = make('g', { 'class': 'rot' });
+      var fills = [[cfg.accentColor, 1], ['#2a2a2a', 1], [cfg.accentColor, .7], ['#333', 1]];
+      for (var i = 0; i < n; i++) {
+        var a0 = (i * step - 90) * Math.PI / 180, a1 = ((i + 1) * step - 90) * Math.PI / 180;
+        var d = 'M150 150 L' + (150 + 140 * Math.cos(a0)).toFixed(1) + ' ' + (150 + 140 * Math.sin(a0)).toFixed(1) +
+          ' A140 140 0 0 1 ' + (150 + 140 * Math.cos(a1)).toFixed(1) + ' ' + (150 + 140 * Math.sin(a1)).toFixed(1) + ' Z';
+        var f = fills[i % fills.length];
+        rot.appendChild(make('path', { d: d, fill: f[0], 'fill-opacity': f[1], stroke: '#000', 'stroke-width': 2 }));
+        var t = make('text', { x: 150, y: 56, fill: '#fff', 'font-size': n > 6 ? 12 : 15, 'font-weight': 700, 'text-anchor': 'middle',
+          transform: 'rotate(' + (i * step + step / 2) + ' 150 150)', 'font-family': 'Roboto, sans-serif' });
+        t.textContent = segs[i].length > 14 ? segs[i].slice(0, 13) + '…' : segs[i];
+        rot.appendChild(t);
+      }
+      svg.appendChild(rot);
+      svg.appendChild(make('circle', { cx: 150, cy: 150, r: 30, fill: '#000', stroke: cfg.accentColor, 'stroke-width': 3 }));
+      var lbl = make('text', { x: 150, y: 155, fill: '#fff', 'font-size': 13, 'font-weight': 700, 'text-anchor': 'middle', 'font-family': 'Roboto, sans-serif' });
+      lbl.textContent = cfg.spinLabel;
+      svg.appendChild(lbl);
+      box.appendChild(svg);
+      arena.appendChild(box);
+
+      var spun = false;
+      function spin() {
+        if (spun) return;
+        spun = true;
+        var target = 360 * 5 + (360 - (cfg.winIndex * step + step / 2));
+        rot.style.transform = 'rotate(' + target + 'deg)';
+        setTimeout(function () { win(segs[cfg.winIndex]); }, reduce ? 400 : 4400);
+      }
+      box.addEventListener('click', spin);
+      box.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); spin(); } });
+    }
+
+    function scratch() {
+      var all = el('a', null, cfg.revealAllText);
+      all.href = '#';
+      sub.appendChild(document.createTextNode(' · '));
+      sub.appendChild(all);
+      var box = el('div', 'scratch');
+      var under = el('div', 'under');
+      under.appendChild(el('b', null, cfg.prize));
+      under.appendChild(el('span', null, cfg.prizeCaption));
+      box.appendChild(under);
+      var cv = el('canvas');
+      box.appendChild(cv);
+      arena.appendChild(box);
+      var ctx = cv.getContext('2d'), cleared = false, down = false;
+      var r = box.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      cv.width = r.width * dpr; cv.height = r.height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var g = ctx.createLinearGradient(0, 0, r.width, r.height);
+      g.addColorStop(0, '#8a8f96'); g.addColorStop(.5, '#c5c9ce'); g.addColorStop(1, '#8a8f96');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, r.width, r.height);
+      ctx.fillStyle = '#3a3d42'; ctx.font = '700 17px Roboto, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(cfg.coverText, r.width / 2, r.height / 2);
+      function at(e) { var b = cv.getBoundingClientRect(); return [e.clientX - b.left, e.clientY - b.top]; }
+      function dot(e) {
+        if (cleared) return;
+        var p = at(e);
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.beginPath(); ctx.arc(p[0], p[1], 22, 0, 7); ctx.fill();
+      }
+      function finish() {
+        if (cleared) return;
+        cleared = true;
+        cv.style.transition = 'opacity .4s'; cv.style.opacity = '0';
+        setTimeout(function () { win(cfg.prize); }, 450);
+      }
+      function check() {
+        var d = ctx.getImageData(0, 0, cv.width, cv.height).data, c = 0, k = 0;
+        for (var i = 3; i < d.length; i += 64) { k++; if (d[i] === 0) c++; }
+        if (k && c / k > 0.45) finish();
+      }
+      cv.addEventListener('pointerdown', function (e) { down = true; try { cv.setPointerCapture(e.pointerId); } catch (x) {} dot(e); });
+      cv.addEventListener('pointermove', function (e) { if (down) dot(e); });
+      cv.addEventListener('pointerup', function () { down = false; check(); });
+      all.addEventListener('click', function (e) { e.preventDefault(); finish(); });
+    }
+
+    function boxes() {
+      var wrap = el('div', 'boxes'), list = [], picked = false;
+      cfg.boxPrizes.forEach(function (p, i) {
+        var b = el('button', 'gbox');
+        b.type = 'button';
+        b.setAttribute('aria-label', cfg.title + ' ' + (i + 1));
+        ['base', 'rib', 'lid', 'bow'].forEach(function (c) { b.appendChild(el('span', c)); });
+        b.appendChild(el('span', 'val', p));
+        b.addEventListener('click', function () {
+          if (picked) return;
+          picked = true;
+          b.classList.add('open');
+          setTimeout(function () { list.forEach(function (o) { if (o !== b) o.classList.add('open', 'dim'); }); }, 600);
+          setTimeout(function () { win(p); }, 1500);
+        });
+        list.push(b);
+        wrap.appendChild(b);
+      });
+      arena.appendChild(wrap);
+    }
+
+    function quiz() {
+      var box = el('div', 'quiz'), step = 0;
+      arena.appendChild(box);
+      function draw() {
+        box.textContent = '';
+        if (step >= cfg.questions.length) {
+          document.getElementById('game-title').textContent = cfg.resultTitle;
+          win(cfg.prize);
+          return;
+        }
+        var q = cfg.questions[step];
+        var steps = el('div', 'steps');
+        cfg.questions.forEach(function (_, i) { steps.appendChild(el('i', i <= step ? 'on' : '')); });
+        box.appendChild(steps);
+        box.appendChild(el('div', 'quiz-q', q.question));
+        var opts = el('div', 'opts');
+        q.options.forEach(function (o) {
+          var b = el('button', 'opt', o);
+          b.type = 'button';
+          b.addEventListener('click', function () { step++; draw(); });
+          opts.appendChild(b);
+        });
+        box.appendChild(opts);
+      }
+      draw();
+    }
+
+    ({ wheel: wheel, scratch: scratch, boxes: boxes, quiz: quiz })[cfg.kind]();
+  })();
+  </script>
+
+  <!-- TRACKING_PLACEHOLDER -->
+</body>
+</html>

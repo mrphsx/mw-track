@@ -12,6 +12,7 @@ import { matchDomainPath } from '../domains/domain-path.util';
 import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-link.util';
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 import { AGE_GATE_TEMPLATE_ID, renderExtraPopupHtml, resolveExtraPopup } from './extra-popup.util';
+import { GAME_TEMPLATE_FOLDER, buildGameVars, isGameTemplate } from './game.util';
 import { COUNTDOWN_PLACEHOLDER, COUNTDOWN_TEMPLATE_ID, renderCountdownHtml, resolveCountdown } from './countdown.util';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { isBotUserAgent } from '../../common/bot-user-agent.util';
@@ -388,7 +389,7 @@ export class LandingRendererService {
   async renderTemplateGalleryPreview(templateId: string): Promise<string> {
     if (!/^[a-z0-9-]+$/.test(templateId)) throw new NotFoundException('Шаблон не найден');
 
-    const templatePath = path.join(this.templatesDir, templateId, 'template.html');
+    const templatePath = path.join(this.templatesDir, this.templateFolder(templateId), 'template.html');
     let html: string;
     try {
       html = this.stripStyleComments(await fs.readFile(templatePath, 'utf-8'));
@@ -431,6 +432,7 @@ export class LandingRendererService {
       // Таймер с 2026-10-02 — опция конкретного лендинга, а не часть шаблона, поэтому в превью
       // галереи его нет; ключ нужен, чтобы плейсхолдер не остался в разметке текстом.
       COUNTDOWN_BLOCK: '',
+      ...(isGameTemplate(templateId) ? { ...buildGameVars(templateId, null), JOIN_BUTTON_TEXT: 'Unirme al canal' } : {}),
     };
 
     html = this.processConditionals(html, vars);
@@ -454,8 +456,14 @@ export class LandingRendererService {
     return renderCountdownHtml(resolveCountdown(landing.countdownConfig), accent);
   }
 
+  // Четыре игровых шаблона рендерятся из одной общей вёрстки (templates/game), игру выбирает
+  // {{GAME_KIND}} — см. game.util.ts.
+  private templateFolder(templateId: string): string {
+    return isGameTemplate(templateId) ? GAME_TEMPLATE_FOLDER : templateId;
+  }
+
   private async renderTemplate(landing: Landing & { project: ProjectWithLandingData }): Promise<string> {
-    const templatePath = path.join(this.templatesDir, landing.templateId!, 'template.html');
+    const templatePath = path.join(this.templatesDir, this.templateFolder(landing.templateId!), 'template.html');
     let html = this.stripStyleComments(await fs.readFile(templatePath, 'utf-8'));
 
     const data = (landing.templateData as Record<string, string>) || {};
@@ -520,6 +528,8 @@ export class LandingRendererService {
       // apps/api/scripts/publish-template-assets.js), не на приватном StorageService-бакете.
       CDN_URL: process.env.CDN_URL || '',
       COUNTDOWN_BLOCK: this.buildCountdownBlock(landing),
+      // Игровые шаблоны (запрос пользователя 2026-10-18) — тексты и конфиг игры из Landing.gameConfig.
+      ...(isGameTemplate(landing.templateId) ? buildGameVars(landing.templateId, landing.gameConfig) : {}),
     };
 
     html = this.processConditionals(html, vars);
@@ -787,7 +797,9 @@ export class LandingRendererService {
     // и template.html у age-gate-invite.
     const extraPopupActive = landing.extraPopupEnabled && landing.templateId !== AGE_GATE_TEMPLATE_ID;
 
-    const deferAutoRedirect = landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive;
+    // Игровые шаблоны (запрос пользователя 2026-10-18): авторедирект и подсказка TikTok ждут,
+    // пока посетитель доиграет — скрипт шаблона сам вызывает triggerAutoRedirect после выигрыша.
+    const deferAutoRedirect = landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive || isGameTemplate(landing.templateId);
 
     // Карта параметров (§ выше) прокидывается браузерному SDK тем же способом, что и
     // data-landing-id — иначе track.js не будет знать, под каким кастомным именем искать

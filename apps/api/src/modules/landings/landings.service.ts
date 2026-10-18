@@ -16,6 +16,7 @@ import { UploadCustomLandingDto } from './dto/upload-custom-landing.dto';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
+import { isGameTemplate } from './game.util';
 import { AGE_GATE_TEMPLATE_ID } from './extra-popup.util';
 import { COUNTDOWN_TEMPLATE_ID } from './countdown.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
@@ -232,6 +233,37 @@ export class LandingsService {
         customizableFields: ['LOCK_TEXT', 'SPOTS_TEXT', 'COUNTDOWN_MINUTES', 'JOIN_BUTTON_TEXT'],
         restrictedToCompanyIds: [ISABELA_COMPANY_ID],
       },
+      // Игровые лендинги с подарком (запрос пользователя 2026-10-18) — одна общая вёрстка
+      // (templates/game), отличается только игра. Все тексты и призы — в Landing.gameConfig,
+      // см. game.util.ts.
+      {
+        id: 'game-wheel',
+        name: 'Колесо подарков',
+        description: 'Посетитель крутит колесо и получает подарок — сектор выигрыша задаёте вы',
+        previewUrl: `${process.env.CDN_URL}/templates/game/preview.jpg`,
+        customizableFields: ['JOIN_BUTTON_TEXT', 'GAME_CONFIG'],
+      },
+      {
+        id: 'game-scratch',
+        name: 'Стиралка',
+        description: 'Карточка, которую стирают пальцем, под ней подарок',
+        previewUrl: `${process.env.CDN_URL}/templates/game/preview.jpg`,
+        customizableFields: ['JOIN_BUTTON_TEXT', 'GAME_CONFIG'],
+      },
+      {
+        id: 'game-boxes',
+        name: 'Три коробки',
+        description: 'Посетитель выбирает одну из трёх коробок, подарок есть в каждой',
+        previewUrl: `${process.env.CDN_URL}/templates/game/preview.jpg`,
+        customizableFields: ['JOIN_BUTTON_TEXT', 'GAME_CONFIG'],
+      },
+      {
+        id: 'game-quiz',
+        name: 'Мини-опрос',
+        description: '1–3 коротких вопроса, в конце подарок',
+        previewUrl: `${process.env.CDN_URL}/templates/game/preview.jpg`,
+        customizableFields: ['JOIN_BUTTON_TEXT', 'GAME_CONFIG'],
+      },
     ];
   }
 
@@ -271,7 +303,7 @@ export class LandingsService {
           BG_COLOR: dto.bgColor || '#f0f4f8',
           GRADIENT_FROM: dto.gradientFrom || '#667eea',
           GRADIENT_TO: dto.gradientTo || '#764ba2',
-          JOIN_BUTTON_TEXT: dto.buttonText || 'Вступить в канал',
+          JOIN_BUTTON_TEXT: dto.buttonText || (isGameTemplate(dto.templateId) ? 'Unirme al canal' : 'Вступить в канал'),
           CHANNEL_TITLE: dto.channelTitle || '',
           CHANNEL_DESCRIPTION: dto.channelDescription || '',
           CHANNEL_AVATAR: dto.channelAvatar || '',
@@ -308,6 +340,7 @@ export class LandingsService {
         extraPopupConfig: dto.extraPopupConfig === undefined ? undefined : (dto.extraPopupConfig as Prisma.InputJsonValue | null),
         countdownEnabled: dto.countdownEnabled,
         countdownConfig: dto.countdownConfig === undefined ? undefined : (dto.countdownConfig as Prisma.InputJsonValue | null),
+        gameConfig: dto.gameConfig === undefined ? undefined : dto.gameConfig === null ? Prisma.JsonNull : (dto.gameConfig as unknown as Prisma.InputJsonValue),
       },
     });
     // Автопубликация (запрос пользователя 2026-08-20: "при создании лэндинга он автоматом
@@ -690,6 +723,7 @@ export class LandingsService {
         extraPopupConfig: dto.extraPopupConfig === undefined ? undefined : (dto.extraPopupConfig as Prisma.InputJsonValue | null),
         countdownEnabled: dto.countdownEnabled,
         countdownConfig: dto.countdownConfig === undefined ? undefined : (dto.countdownConfig as Prisma.InputJsonValue | null),
+        gameConfig: dto.gameConfig === undefined ? undefined : dto.gameConfig === null ? Prisma.JsonNull : (dto.gameConfig as unknown as Prisma.InputJsonValue),
       },
     });
   }
@@ -1343,6 +1377,7 @@ export class LandingsService {
         extraPopupConfig: original.extraPopupConfig === null ? Prisma.JsonNull : (original.extraPopupConfig as Prisma.InputJsonValue),
         countdownEnabled: original.countdownEnabled,
         countdownConfig: original.countdownConfig === null ? Prisma.JsonNull : (original.countdownConfig as Prisma.InputJsonValue),
+        gameConfig: original.gameConfig === null ? Prisma.JsonNull : (original.gameConfig as Prisma.InputJsonValue),
         status: LandingStatus.DRAFT,
       },
     });

@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { GameConfig, GameConfigFields, isGameTemplateId, mergeGameConfig } from '@/components/game-config-fields';
 import {
   SUBSCRIBERS_LABEL_PRESETS,
   SUBSCRIBERS_LABEL_CUSTOM_VALUE as CUSTOM_VALUE,
@@ -57,6 +58,7 @@ interface LandingContentFull {
     SPOTS_TEXT?: string;
     COUNTDOWN_MINUTES?: string;
   } | null;
+  gameConfig?: Partial<GameConfig> | null;
 }
 
 export function LandingContentCard({
@@ -107,6 +109,7 @@ export function LandingContentCard({
   const [lockText, setLockText] = useState('');
   const [spotsText, setSpotsText] = useState('');
   const [countdownMinutes, setCountdownMinutes] = useState('');
+  const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -129,6 +132,7 @@ export function LandingContentCard({
     setLockText(d.LOCK_TEXT || '');
     setSpotsText(d.SPOTS_TEXT || '');
     setCountdownMinutes(d.COUNTDOWN_MINUTES || '');
+    setGameConfig(isGameTemplateId(landing.templateId) ? mergeGameConfig(landing.templateId, landing.gameConfig) : null);
   }, [landing]);
 
   const isAgeGate = landing?.templateId === AGE_GATE_TEMPLATE_ID;
@@ -146,6 +150,7 @@ export function LandingContentCard({
           ? { popup1Title, popup1Text, popup1YesText, popup1NoText, popup2Title, popup2Text, popup2ButtonText }
           : {}),
         ...(isCountdown ? { lockText, spotsText, countdownMinutes } : {}),
+        ...(gameConfig ? { gameConfig } : {}),
       }),
     onSuccess: () => {
       invalidate();
@@ -402,6 +407,10 @@ export function LandingContentCard({
           />
         )}
       </div>
+
+      {gameConfig && landing && isGameTemplateId(landing.templateId) && (
+        <GameConfigFields templateId={landing.templateId} value={gameConfig} onChange={setGameConfig} idPrefix="content" />
+      )}
 
       {isCountdown && (
         <>

@@ -21,6 +21,13 @@ import {
 import { DomainSelect } from '@/components/landing-card';
 import { TemplatePicker } from '@/components/template-picker';
 import {
+  GAME_DEFAULT_BUTTON_TEXT,
+  GameConfig,
+  GameConfigFields,
+  defaultGameConfig,
+  isGameTemplateId,
+} from '@/components/game-config-fields';
+import {
   LandingBehaviorFields,
   LandingBehaviorState,
   EMPTY_LANDING_BEHAVIOR,
@@ -104,6 +111,8 @@ export function CreateLandingFromTemplateDialog({
   const [lockText, setLockText] = useState('🔒 Доступ закроется через');
   const [spotsText, setSpotsText] = useState('🔥 Осталось 14 мест из 50');
   const [countdownMinutes, setCountdownMinutes] = useState('167');
+  // Игровые шаблоны (запрос пользователя 2026-10-18) — настройки игры, null у остальных шаблонов.
+  const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [templateDomainId, setTemplateDomainId] = useState(NO_DOMAIN);
   const [templateBehavior, setTemplateBehavior] =
     useState<LandingBehaviorState>(EMPTY_LANDING_BEHAVIOR);
@@ -117,6 +126,18 @@ export function CreateLandingFromTemplateDialog({
     queryFn: async () => (await api.get<ProjectChannelInfo>(`/projects/${projectId}`)).data,
     enabled: !!projectId && open,
   });
+
+  // При выборе игрового шаблона подставляем дефолты игры и испанский текст кнопки (если
+  // пользователь его ещё не менял); при уходе с игры — возвращаем обычный дефолт кнопки.
+  useEffect(() => {
+    if (isGameTemplateId(templateId)) {
+      setGameConfig(defaultGameConfig(templateId));
+      setButtonText((b) => (b === 'Вступить в канал' ? GAME_DEFAULT_BUTTON_TEXT : b));
+    } else {
+      setGameConfig(null);
+      setButtonText((b) => (b === GAME_DEFAULT_BUTTON_TEXT ? 'Вступить в канал' : b));
+    }
+  }, [templateId]);
 
   useEffect(() => {
     if (channelTitleInput || !selectedProject?.channel) return;
@@ -171,6 +192,7 @@ export function CreateLandingFromTemplateDialog({
               }
             : {}),
           ...(templateId === COUNTDOWN_TEMPLATE_ID ? { lockText, spotsText, countdownMinutes } : {}),
+          ...(gameConfig && isGameTemplateId(templateId) ? { gameConfig } : {}),
           ...behaviorStateToPayload(templateBehavior),
         })
       ).data as { id: string },
@@ -334,6 +356,9 @@ export function CreateLandingFromTemplateDialog({
                   />
                 )}
               </div>
+              {gameConfig && isGameTemplateId(templateId) && (
+                <GameConfigFields templateId={templateId} value={gameConfig} onChange={setGameConfig} idPrefix="landing" />
+              )}
               {templateId === COUNTDOWN_TEMPLATE_ID && (
                 <div className="space-y-3 border rounded-lg p-3">
                   <p className="text-xs text-muted-foreground">

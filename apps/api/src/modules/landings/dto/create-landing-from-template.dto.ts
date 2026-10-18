@@ -1,4 +1,6 @@
-import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { GAME_KINDS, GAME_LIMITS } from '../game.util';
 import { LandingBehaviorDto } from './landing-behavior.dto';
 
 // Баг-репорт пользователя 2026-07-15: "при выборе telegram тёмный или светлый пишет ошибка
@@ -9,7 +11,64 @@ import { LandingBehaviorDto } from './landing-behavior.dto';
 const TEMPLATE_IDS = [
   'minimal', 'gradient', 'dark', 'telegram-light', 'telegram-dark', 'tg-invite-dark', 'tg-invite-light',
   'age-gate-invite', 'countdown-urgency',
+  ...Object.keys(GAME_KINDS),
 ];
+
+// Игровые шаблоны (запрос пользователя 2026-10-18) — все поля необязательны, пустое = дефолт игры
+// (см. resolveGameConfig в game.util.ts). Один DTO на все четыре игры: ключи чужой игры просто
+// не используются при рендере.
+export class GameQuizQuestionDto {
+  @IsString() @MaxLength(GAME_LIMITS.text) question: string;
+
+  @IsArray()
+  @ArrayMinSize(GAME_LIMITS.minOptions)
+  @ArrayMaxSize(GAME_LIMITS.maxOptions)
+  @IsString({ each: true })
+  @MaxLength(GAME_LIMITS.text, { each: true })
+  options: string[];
+}
+
+export class GameConfigDto {
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.text) title?: string;
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.text) subtitle?: string;
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.text) prizeCaption?: string;
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.text) prizeNote?: string;
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.text) winButtonText?: string;
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.longText) finePrint?: string;
+  @IsOptional() @Matches(/^#[0-9a-fA-F]{6}$/, { message: 'Цвет — в формате #RRGGBB' }) accentColor?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(GAME_LIMITS.minSegments)
+  @ArrayMaxSize(GAME_LIMITS.maxSegments)
+  @IsString({ each: true })
+  @MaxLength(GAME_LIMITS.text, { each: true })
+  segments?: string[];
+
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) winIndex?: number;
+  @IsOptional() @IsString() @MaxLength(20) spinLabel?: string;
+  @IsOptional() @IsString() @MaxLength(40) prize?: string;
+  @IsOptional() @IsString() @MaxLength(40) coverText?: string;
+  @IsOptional() @IsString() @MaxLength(40) revealAllText?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(GAME_LIMITS.boxes)
+  @ArrayMaxSize(GAME_LIMITS.boxes)
+  @IsString({ each: true })
+  @MaxLength(40, { each: true })
+  boxPrizes?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(GAME_LIMITS.minQuestions)
+  @ArrayMaxSize(GAME_LIMITS.maxQuestions)
+  @ValidateNested({ each: true })
+  @Type(() => GameQuizQuestionDto)
+  questions?: GameQuizQuestionDto[];
+
+  @IsOptional() @IsString() @MaxLength(GAME_LIMITS.text) resultTitle?: string;
+}
 
 export class CreateLandingFromTemplateDto extends LandingBehaviorDto {
   @IsString()
@@ -50,6 +109,13 @@ export class CreateLandingFromTemplateDto extends LandingBehaviorDto {
   @IsOptional() @IsString() lockText?: string;
   @IsOptional() @IsString() spotsText?: string;
   @IsOptional() @Matches(/^\d{1,4}$/, { message: 'countdownMinutes должно быть числом от 1 до 4 цифр' }) countdownMinutes?: string;
+
+  // null — явный сброс всех настроек игры на дефолт, как у countdownConfig/extraPopupConfig.
+  @IsOptional()
+  @ValidateIf((o) => o.gameConfig !== null)
+  @ValidateNested()
+  @Type(() => GameConfigDto)
+  gameConfig?: GameConfigDto | null;
 
   @IsOptional() @IsString() metaTitle?: string;
   @IsOptional() @IsString() metaDescription?: string;
