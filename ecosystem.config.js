@@ -10,10 +10,12 @@ module.exports = {
       name: 'trafficcrm-api',
       script: 'apps/api/dist/main.js',
       cwd: '/var/www/mw-track',
-      node_args: '--enable-source-maps',
+      // Куча ограничена, чтобы V8 собирал мусор заранее: без этого на сервере с 8 ГБ он
+      // копит память почти до 2 ГБ, и PM2 убивал процесс при каждом всплеске (2026-10-19).
+      node_args: '--enable-source-maps --max-old-space-size=1280',
       autorestart: true,
       watch: false,
-      max_memory_restart: '800M',
+      max_memory_restart: '1600M',
       kill_timeout: 10000,
       env: envConfig,
       error_file: '/var/www/mw-track/logs/api-error.log',
