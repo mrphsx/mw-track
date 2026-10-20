@@ -997,7 +997,7 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."buyerId" IS NOT NULL
         GROUP BY c."buyerId"
         ORDER BY revenue DESC, clients DESC
@@ -1015,7 +1015,7 @@ requests.post(
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "TrackingPixel" tp
         LEFT JOIN "Client" c ON c."pixelId" = tp.id AND c."deletedAt" IS NULL ${buyerFilterSql}
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE tp."projectId" = ${id}
         GROUP BY tp.id, tp.label, tp.platform
         ORDER BY revenue DESC, clients DESC
@@ -1027,7 +1027,7 @@ requests.post(
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Landing" l
         LEFT JOIN "Client" c ON c."landingId" = l.id AND c."deletedAt" IS NULL ${buyerFilterSql}
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE l."projectId" = ${id} AND l."deletedAt" IS NULL
         GROUP BY l.id, l.name
         ORDER BY revenue DESC, subscribers DESC
@@ -1038,7 +1038,7 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."campaignId" IS NOT NULL
           ${buyerFilterSql}
         GROUP BY c."campaignId"
@@ -1056,7 +1056,7 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
           AND (c."fbclid" IS NOT NULL OR c."ttclid" IS NOT NULL)
           ${buyerFilterSql}
@@ -1085,6 +1085,8 @@ requests.post(
           campaignsRevenue: string | null;
           sourcesClients: bigint;
           sourcesRevenue: string | null;
+          landingsClients: bigint;
+          landingsRevenue: string | null;
         }[]
       >`
         SELECT
@@ -1095,9 +1097,11 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."campaignId" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "campaignsClients",
           COALESCE(SUM(p.amount) FILTER (WHERE c."campaignId" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "campaignsRevenue",
           COUNT(DISTINCT c.id) FILTER (WHERE c."fbclid" IS NULL AND c."ttclid" IS NULL AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "sourcesClients",
-          COALESCE(SUM(p.amount) FILTER (WHERE c."fbclid" IS NULL AND c."ttclid" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "sourcesRevenue"
+          COALESCE(SUM(p.amount) FILTER (WHERE c."fbclid" IS NULL AND c."ttclid" IS NULL AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "sourcesRevenue",
+          COUNT(DISTINCT c.id) FILTER (WHERE (c."landingId" IS NULL OR NOT EXISTS (SELECT 1 FROM "Landing" lx WHERE lx.id = c."landingId" AND lx."projectId" = ${id} AND lx."deletedAt" IS NULL)) AND c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until} ${buyerFilterSql}) as "landingsClients",
+          COALESCE(SUM(p.amount) FILTER (WHERE (c."landingId" IS NULL OR NOT EXISTS (SELECT 1 FROM "Landing" lx WHERE lx.id = c."landingId" AND lx."projectId" = ${id} AND lx."deletedAt" IS NULL)) AND p."createdAt" >= ${since} AND p."createdAt" < ${until} ${buyerFilterSql}), 0) as "landingsRevenue"
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
       `,
     ]);
@@ -1157,6 +1161,9 @@ requests.post(
       pixelsUnattributed: { clients: Number(unattributed?.pixelsClients ?? 0), revenue: Number(unattributed?.pixelsRevenue ?? 0) },
       campaignsUnattributed: { clients: Number(unattributed?.campaignsClients ?? 0), revenue: Number(unattributed?.campaignsRevenue ?? 0) },
       sourcesUnattributed: { clients: Number(unattributed?.sourcesClients ?? 0), revenue: Number(unattributed?.sourcesRevenue ?? 0) },
+      // Клиенты без лендинга или с удалённого лендинга (2026-10-21): без этой строки сумма по
+      // топу лендингов не сходилась с итогом проекта.
+      landingsUnattributed: { clients: Number(unattributed?.landingsClients ?? 0), revenue: Number(unattributed?.landingsRevenue ?? 0) },
     };
   }
 
@@ -1185,7 +1192,7 @@ requests.post(
             COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
             COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
           FROM "Client" c
-          LEFT JOIN "Purchase" p ON p."clientId" = c.id
+          LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
           WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."buyerId" IS NOT NULL
           GROUP BY c."buyerId"
           ORDER BY revenue DESC, clients DESC
@@ -1222,7 +1229,7 @@ requests.post(
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "TrackingPixel" tp
         LEFT JOIN "Client" c ON c."pixelId" = tp.id AND c."deletedAt" IS NULL ${buyerFilterSql}
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE tp."projectId" = ${id}
         GROUP BY tp.id, tp.label, tp.platform
         ORDER BY revenue DESC, clients DESC
@@ -1238,7 +1245,7 @@ requests.post(
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Landing" l
         LEFT JOIN "Client" c ON c."landingId" = l.id AND c."deletedAt" IS NULL ${buyerFilterSql}
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE l."projectId" = ${id} AND l."deletedAt" IS NULL
         GROUP BY l.id, l.name
         ORDER BY revenue DESC, subscribers DESC
@@ -1253,7 +1260,7 @@ requests.post(
           COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
           COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL AND c."campaignId" IS NOT NULL
           ${buyerFilterSql}
         GROUP BY c."campaignId"
@@ -1270,7 +1277,7 @@ requests.post(
         COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
         COALESCE(SUM(p.amount) FILTER (WHERE p."createdAt" >= ${since} AND p."createdAt" < ${until}), 0) as revenue
       FROM "Client" c
-      LEFT JOIN "Purchase" p ON p."clientId" = c.id
+      LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
       WHERE c."projectId" = ${id} AND c."deletedAt" IS NULL
         AND (c."fbclid" IS NOT NULL OR c."ttclid" IS NOT NULL)
         ${buyerFilterSql}
@@ -1348,7 +1355,7 @@ requests.post(
       this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
         SELECT c."landingId" as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
-        JOIN "Client" c ON c.id = p."clientId"
+        JOIN "Client" c ON c.id = p."clientId" AND c."subscribedAt" IS NOT NULL
         WHERE c."landingId" IN (${Prisma.join(ids)}) AND c."deletedAt" IS NULL
           AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
           ${purchaseBuyerSql}
@@ -1428,7 +1435,7 @@ requests.post(
       this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
         SELECT c.${col} as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
-        JOIN "Client" c ON c.id = p."clientId"
+        JOIN "Client" c ON c.id = p."clientId" AND c."subscribedAt" IS NOT NULL
         WHERE c.${col} IN (${Prisma.join(ids)}) AND c."projectId" = ${projectId} AND c."deletedAt" IS NULL
           AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
           ${purchaseBuyerSql}
@@ -1483,7 +1490,7 @@ requests.post(
       this.prisma.$queryRaw<{ id: string; purchases: number; revenue: string | null }[]>`
         SELECT c."buyerId" as id, COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
-        JOIN "Client" c ON c.id = p."clientId"
+        JOIN "Client" c ON c.id = p."clientId" AND c."subscribedAt" IS NOT NULL
         WHERE c."buyerId" IN (${Prisma.join(ids)}) AND c."projectId" = ${projectId} AND c."deletedAt" IS NULL
           AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
         GROUP BY c."buyerId"
@@ -1531,7 +1538,7 @@ requests.post(
           CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END as source,
           COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
         FROM "Purchase" p
-        JOIN "Client" c ON c.id = p."clientId"
+        JOIN "Client" c ON c.id = p."clientId" AND c."subscribedAt" IS NOT NULL
         WHERE c."projectId" = ${projectId} AND c."deletedAt" IS NULL
           AND ((${wantFacebook} AND c."fbclid" IS NOT NULL) OR (${wantTiktok} AND c."ttclid" IS NOT NULL))
           AND p."createdAt" >= ${since} AND p."createdAt" < ${until}

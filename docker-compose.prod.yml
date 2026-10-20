@@ -54,6 +54,10 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    # 1 ГБ разделяемой памяти вместо 64 МБ по умолчанию у Docker (2026-10-21): параллельные
+    # запросы статистики падали с «could not resize shared memory segment ... No space left on
+    # device» — 54 раза за 3 дня, каждый раз пользователь получал ошибку вместо цифр.
+    shm_size: 1gb
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}

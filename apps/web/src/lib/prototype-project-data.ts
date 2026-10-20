@@ -157,6 +157,7 @@ export interface PrototypeLeaderboards {
   pixelsUnattributed: PrototypeUnattributedBucket;
   campaignsUnattributed: PrototypeUnattributedBucket;
   sourcesUnattributed: PrototypeUnattributedBucket;
+  landingsUnattributed?: PrototypeUnattributedBucket;
 }
 
 export type PrototypePeriod = 'today' | 'yesterday' | '7d' | '30d' | 'custom';

@@ -690,6 +690,8 @@ export default function StudioProjectPage() {
               funnelById={leaderboardFunnelById}
               funnelLoading={leaderboardFunnelLoading}
               compareHref={compareHref('landings')}
+              unattributed={leaderboards.landingsUnattributed}
+              unattributedLabel="Без лендинга"
             />
           )}
           {activeLeaderboardTab === 'campaigns' && (
@@ -900,11 +902,11 @@ function LeaderboardBlock({
             </div>
           );
         })}
-        {!!unattributed?.clients && (
+        {!!(unattributed?.clients || unattributed?.revenue) && (
           <div className="flex items-center justify-between text-sm gap-2 pt-2 border-t border-dashed border-[#DCE1E8] dark:border-white/10">
             <span className="text-[#5F6B7A] dark:text-[#92A0AF] italic truncate">{unattributedLabel}</span>
             <div className="text-right shrink-0">
-              <div className="font-medium text-[#5F6B7A] dark:text-[#92A0AF]">{unattributed.clients} клиентов</div>
+              <div className="font-medium text-[#5F6B7A] dark:text-[#92A0AF]">{unattributed!.clients} клиентов</div>
               {unattributed.revenue > 0 && <div className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">${unattributed.revenue.toFixed(2)}</div>}
             </div>
           </div>
