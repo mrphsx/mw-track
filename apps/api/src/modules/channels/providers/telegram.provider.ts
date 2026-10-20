@@ -157,6 +157,9 @@ function stripCardQuestion(text: string | undefined): string {
   return text.endsWith(`\n\n${MANAGER_CARD_QUESTION}`) ? text.slice(0, -(MANAGER_CARD_QUESTION.length + 2)) : text;
 }
 
+// file_id в Telegram долгоживущий; 7 дней с запасом покрывают любую рассылку.
+const TG_FILE_ID_TTL_SECONDS = 7 * 24 * 60 * 60;
+
 @Injectable()
 export class TelegramProvider implements ChannelProvider {
   private readonly logger = new Logger(TelegramProvider.name);
@@ -1483,15 +1486,31 @@ export class TelegramProvider implements ChannelProvider {
         // "WEBPAGE_MEDIA_EMPTY") — у fetch-по-ссылке подсистемы Telegram есть свой лимит
         // размера/поведения, заметно строже нашего собственного (см. также одиночный photo/
         // video ниже — тот же класс проблемы, тот же фикс).
-        const mediaFiles = await Promise.all(options.mediaGroup.map((item) => this.fetchAsInputFile(item.url)));
-        await bot.api.sendMediaGroup(
-          channelUserId,
-          options.mediaGroup.map((item, i) => ({
-            type: item.type,
-            media: mediaFiles[i],
-            ...(i === 0 && options.text ? { caption: options.text, parse_mode } : {}),
-          })),
-        );
+        const group = options.mediaGroup;
+        const sendAlbum = (media: (string | InputFile)[]) =>
+          bot.api.sendMediaGroup(
+            channelUserId,
+            group.map((item, i) => ({
+              type: item.type,
+              media: media[i],
+              ...(i === 0 && options.text ? { caption: options.text, parse_mode } : {}),
+            })),
+          );
+        const uploadAll = () => Promise.all(group.map((item) => this.fetchAsInputFile(item.url)));
+        const cachedIds = await Promise.all(group.map((item) => this.getCachedFileId(channel, item.url)));
+        let sent: Awaited<ReturnType<typeof sendAlbum>>;
+        if (cachedIds.every((id): id is string => !!id)) {
+          try {
+            sent = await sendAlbum(cachedIds);
+          } catch (error) {
+            if (!this.isStaleFileIdError(error)) throw error;
+            await Promise.all(group.map((item) => this.forgetFileId(channel, item.url)));
+            sent = await sendAlbum(await uploadAll());
+          }
+        } else {
+          sent = await sendAlbum(await uploadAll());
+        }
+        await Promise.all(group.map((item, i) => this.rememberFileId(channel, item.url, this.extractFileId(sent[i]))));
         if (reply_markup) {
           // Отдельный try/catch — если это follow-up сообщение упадёт, альбом (уже
           // реально доставленный) не должен задним числом считаться неотправленным
@@ -1511,23 +1530,43 @@ export class TelegramProvider implements ChannelProvider {
             // ("failed to get HTTP URL content" / "wrong type of the web page content" —
             // оба это внутренний webpage-фетчер Telegram, у него более жёсткий лимит, чем
             // у нашего собственного 50MB), а через реальную загрузку байт — проходят.
-            const file = await this.fetchAsInputFile(options.mediaUrl);
-            await bot.api.sendPhoto(channelUserId, file, { caption: options.text, parse_mode, reply_markup });
+            const mediaUrl = options.mediaUrl;
+            await this.sendWithFileIdCache(
+              channel,
+              mediaUrl,
+              (media) => bot.api.sendPhoto(channelUserId, media, { caption: options.text, parse_mode, reply_markup }),
+              () => this.fetchAsInputFile(mediaUrl),
+            );
             break;
           }
           case 'video': {
-            const file = await this.fetchAsInputFile(options.mediaUrl);
-            await bot.api.sendVideo(channelUserId, file, { caption: options.text, parse_mode, reply_markup });
+            const mediaUrl = options.mediaUrl;
+            await this.sendWithFileIdCache(
+              channel,
+              mediaUrl,
+              (media) => bot.api.sendVideo(channelUserId, media, { caption: options.text, parse_mode, reply_markup }),
+              () => this.fetchAsInputFile(mediaUrl),
+            );
             break;
           }
           case 'voice': {
-            const file = await this.fetchAsInputFile(options.mediaUrl);
-            await bot.api.sendVoice(channelUserId, file, { caption: options.text, parse_mode, reply_markup });
+            const mediaUrl = options.mediaUrl;
+            await this.sendWithFileIdCache(
+              channel,
+              mediaUrl,
+              (media) => bot.api.sendVoice(channelUserId, media, { caption: options.text, parse_mode, reply_markup }),
+              () => this.fetchAsInputFile(mediaUrl),
+            );
             break;
           }
           case 'document': {
-            const file = await this.fetchAsInputFile(options.mediaUrl);
-            await bot.api.sendDocument(channelUserId, file, { caption: options.text, parse_mode, reply_markup });
+            const mediaUrl = options.mediaUrl;
+            await this.sendWithFileIdCache(
+              channel,
+              mediaUrl,
+              (media) => bot.api.sendDocument(channelUserId, media, { caption: options.text, parse_mode, reply_markup }),
+              () => this.fetchAsInputFile(mediaUrl),
+            );
             break;
           }
           case 'video_note': {
@@ -1545,15 +1584,21 @@ export class TelegramProvider implements ChannelProvider {
             // приёма файла — хуже, чем просто дать Telegram определить самому. Урок:
             // добавление необязательного API-параметра "на всякий случай" без воспроизводимого
             // подтверждения, что он решает проблему, может сломать то, что уже работало.
-            let videoNoteFile: InputFile;
-            try {
-              const probed = await this.videoProcessing.fetchAndProbe(options.mediaUrl);
-              videoNoteFile = new InputFile(probed.buffer);
-            } catch (probeError) {
-              this.logger.warn(`video_note fetchAndProbe failed for channel ${channel.id}, falling back to direct URL fetch: ${(probeError as Error).message}`);
-              videoNoteFile = new InputFile(new URL(options.mediaUrl));
-            }
-            await bot.api.sendVideoNote(channelUserId, videoNoteFile, { reply_markup });
+            const noteUrl = options.mediaUrl;
+            await this.sendWithFileIdCache(
+              channel,
+              noteUrl,
+              (media) => bot.api.sendVideoNote(channelUserId, media, { reply_markup }),
+              async () => {
+                try {
+                  const probed = await this.videoProcessing.fetchAndProbe(noteUrl);
+                  return new InputFile(probed.buffer);
+                } catch (probeError) {
+                  this.logger.warn(`video_note fetchAndProbe failed for channel ${channel.id}, falling back to direct URL fetch: ${(probeError as Error).message}`);
+                  return new InputFile(new URL(noteUrl));
+                }
+              },
+            );
             if (options.text) {
               // Отдельный try/catch — невалидный HTML в тексте (несбалансированные теги)
               // не должен задним числом считать уже доставленный кружок неотправленным
@@ -1604,6 +1649,77 @@ export class TelegramProvider implements ChannelProvider {
   // же внутренней проблемы: собственный webpage-фетчер Telegram у него заметно капризнее и
   // строже по лимитам, чем наш собственный 50MB). При ошибке фетча пробрасываем исходную
   // ошибку — пусть внешний catch классифицирует как обычную неудачную отправку.
+  // Кеш file_id медиа (2026-10-20). Раньше каждое сообщение рассылки заново скачивало файл с
+  // нашего API и заново загружало его байтами в Telegram — рассылка с фото на 3 тыс. человек
+  // означала 3 тыс. загрузок одной картинки и ~2 с на сообщение. Telegram после первой загрузки
+  // отдаёт file_id, по которому тот же файл отправляется мгновенно. file_id привязан к боту,
+  // поэтому ключ включает id бота (первая часть токена).
+  private fileIdKey(channel: Channel, url: string): string {
+    const botId = channel.tgBotToken?.split(':')[0] ?? channel.id;
+    return `tg-file-id:${botId}:${url}`;
+  }
+
+  private async getCachedFileId(channel: Channel, url: string): Promise<string | null> {
+    try {
+      return await this.redis.get(this.fileIdKey(channel, url));
+    } catch {
+      return null;
+    }
+  }
+
+  private async rememberFileId(channel: Channel, url: string, fileId: string | undefined): Promise<void> {
+    if (!fileId) return;
+    try {
+      await this.redis.set(this.fileIdKey(channel, url), fileId, 'EX', TG_FILE_ID_TTL_SECONDS);
+    } catch {
+      // кеш — только ускорение, без него отправка всё равно работает
+    }
+  }
+
+  private async forgetFileId(channel: Channel, url: string): Promise<void> {
+    try {
+      await this.redis.del(this.fileIdKey(channel, url));
+    } catch {
+      // см. rememberFileId
+    }
+  }
+
+  // 400 на сохранённый file_id (бот сменили, Telegram отозвал id) — повторяем загрузкой файла.
+  private isStaleFileIdError(error: unknown): boolean {
+    return error instanceof GrammyError && error.error_code === 400 && /file|identifier|wrong type/i.test(error.description);
+  }
+
+  private extractFileId(message: unknown): string | undefined {
+    const m = message as {
+      photo?: { file_id: string }[];
+      video?: { file_id: string };
+      voice?: { file_id: string };
+      document?: { file_id: string };
+      video_note?: { file_id: string };
+    };
+    return m?.photo?.[m.photo.length - 1]?.file_id ?? m?.video?.file_id ?? m?.voice?.file_id ?? m?.document?.file_id ?? m?.video_note?.file_id;
+  }
+
+  private async sendWithFileIdCache(
+    channel: Channel,
+    url: string,
+    send: (media: string | InputFile) => Promise<unknown>,
+    upload: () => Promise<InputFile>,
+  ): Promise<void> {
+    const cached = await this.getCachedFileId(channel, url);
+    if (cached) {
+      try {
+        await send(cached);
+        return;
+      } catch (error) {
+        if (!this.isStaleFileIdError(error)) throw error;
+        await this.forgetFileId(channel, url);
+      }
+    }
+    const message = await send(await upload());
+    await this.rememberFileId(channel, url, this.extractFileId(message));
+  }
+
   private async fetchAsInputFile(url: string): Promise<InputFile> {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`fetchAsInputFile: ${res.status} ${res.statusText} for ${url}`);

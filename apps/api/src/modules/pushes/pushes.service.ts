@@ -414,9 +414,19 @@ export class PushesService {
     // функции идемпотентны и переиспользуются PushesCron.recoverStalledSending для восстановления
     // после падения процесса ровно в этом месте.
     await this.ensureLedger(updated);
+    // audienceReachable считался превью-запросом до отправки; список получателей (PushLog)
+    // строится заново и может отличаться на несколько человек (кто-то отписался/подписался).
+    // Завершение рассылки сверяется с audienceReachable, поэтому приводим его к реальному
+    // размеру списка — иначе рассылка, у которой получателей оказалось меньше, никогда не
+    // становилась SENT (2026-10-20).
+    const ledgerSize = await this.prisma.pushLog.count({ where: { pushId: id } });
+    const synced = await this.prisma.push.update({ where: { id }, data: { audienceReachable: ledgerSize } });
+    if (ledgerSize === 0) {
+      return this.prisma.push.update({ where: { id }, data: { status: PushStatus.SENT } });
+    }
     await this.enqueuePendingLogs(id);
 
-    return updated;
+    return synced;
   }
 
   // Создаёт PushLog-строки СРАЗУ на всю аудиторию (status:'pending'), ДО постановки единой
@@ -470,10 +480,64 @@ export class PushesService {
 
   // Вызывается PushesCron.recoverStalledSending — тот же ensureLedger+enqueuePendingLogs, что и
   // при первом send(), просто под публичным именем для крона (запрос пользователя 2026-09-01).
+  // Список получателей строится один раз, при send(). Раньше resumeSending пересчитывал аудиторию
+  // при каждом вызове (крон — раз в минуту) и дописывал в старую рассылку тех, кто подписался
+  // уже после неё: сентябрьские рассылки уходили новым подписчикам спустя недели, а 55 зависших
+  // пушей давали 55 полных выборок аудитории каждую минуту (2026-10-20). Теперь аудитория
+  // достраивается, только если список пуст — процесс упал до того, как успел его записать.
   async resumeSending(pushId: string): Promise<void> {
     const push = await this.prisma.push.findUniqueOrThrow({ where: { id: pushId } });
-    await this.ensureLedger(push);
+    const ledgerSize = await this.prisma.pushLog.count({ where: { pushId } });
+    if (ledgerSize === 0) {
+      await this.ensureLedger(push);
+      const rebuilt = await this.prisma.pushLog.count({ where: { pushId } });
+      await this.prisma.push.update({ where: { id: pushId }, data: { audienceReachable: rebuilt } });
+    }
     await this.enqueuePendingLogs(pushId);
+  }
+
+  // Закрывает рассылку, когда в её списке не осталось ни 'pending', ни 'sending': статус SENT,
+  // счётчики пересчитываются по самому списку (он — источник правды, счётчики на Push могли
+  // разойтись при падениях посреди отправки). Возвращает true, если рассылка закрыта.
+  async finalizeIfDone(pushId: string): Promise<boolean> {
+    const groups = await this.prisma.pushLog.groupBy({ by: ['status'], where: { pushId }, _count: { _all: true } });
+    const n = (st: string) => groups.find((g) => g.status === st)?._count._all ?? 0;
+    if (n('pending') > 0 || n('sending') > 0) return false;
+    const total = groups.reduce((acc, g) => acc + g._count._all, 0);
+    const closed = await this.prisma.push.updateMany({
+      where: { id: pushId, status: PushStatus.SENDING },
+      data: { status: PushStatus.SENT, sentCount: n('sent'), failedCount: total - n('sent'), audienceReachable: total },
+    });
+    return closed.count > 0;
+  }
+
+  // Ограничитель Bull (limiter: 30/с) держит множество "<queue>:limiter:limited" с id задач,
+  // которые он отложил, и считает задержку каждой новой задачи пропорционально его размеру.
+  // Задача, удалённая из Redis не через сам Bull (чистка 2026-10-16), навсегда остаётся в этом
+  // множестве: 2.6 млн таких хвостов давали ~27 часов задержки каждой новой рассылке
+  // (2026-10-20). Удаляем из множества id, у которых уже нет самой задачи. За один вызов
+  // смотрим не больше maxScan элементов, чтобы не нагружать Redis.
+  async pruneStaleLimiterEntries(maxScan = 20000): Promise<number> {
+    const client = this.pushQueue.client;
+    const limitedKey = `${this.pushQueue.toKey('limiter')}:limited`;
+    const indexKey = `${this.pushQueue.toKey('limiter')}:index`;
+    let cursor = '0';
+    let scanned = 0;
+    let removed = 0;
+    do {
+      const [next, ids] = await client.sscan(limitedKey, cursor, 'COUNT', 500);
+      cursor = next;
+      scanned += ids.length;
+      if (ids.length === 0) continue;
+      const exists = await client.pipeline(ids.map((jobId) => ['exists', this.pushQueue.toKey(jobId)])).exec();
+      const stale = ids.filter((_, i) => exists?.[i]?.[1] === 0);
+      if (stale.length > 0) {
+        await client.srem(limitedKey, ...stale);
+        await client.hdel(indexKey, ...stale);
+        removed += stale.length;
+      }
+    } while (cursor !== '0' && scanned < maxScan);
+    return removed;
   }
 
   async cancel(id: string, projectId: string): Promise<Push> {

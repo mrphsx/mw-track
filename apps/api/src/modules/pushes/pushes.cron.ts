@@ -24,9 +24,16 @@ const SCHEDULED_PUSH_GRACE_MS = 24 * 60 * 60 * 1000;
 // отправка либо закончилась (и просто не хватило джоб на оставшихся), либо процесс упал.
 const SENDING_STALL_THRESHOLD_MS = 5 * 60 * 1000;
 
+// Строка в статусе 'sending' у рассылки без активности дольше этого — брошена перезапуском.
+const ORPHAN_SENDING_THRESHOLD_MS = 15 * 60 * 1000;
+
+// Рассылки старше этого (от начала отправки) не досылаются — см. recoverOne.
+const SENDING_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
 @Injectable()
 export class PushesCron {
   private readonly logger = new Logger(PushesCron.name);
+  private recovering = false;
 
   constructor(
     private prisma: PrismaService,
@@ -89,22 +96,66 @@ export class PushesCron {
   // дважды, даже если старая джоба этого получателя на самом деле ещё жива.
   @Cron('*/1 * * * *')
   async recoverStalledSending() {
-    const stallThreshold = new Date(Date.now() - SENDING_STALL_THRESHOLD_MS);
-    const stuck = await this.prisma.push.findMany({
-      where: { status: PushStatus.SENDING, updatedAt: { lte: stallThreshold } },
-      select: { id: true, sentCount: true, failedCount: true, audienceReachable: true },
-    });
+    if (this.recovering) return; // предыдущий тик ещё идёт — не накладываемся
+    this.recovering = true;
+    try {
+      const stallThreshold = new Date(Date.now() - SENDING_STALL_THRESHOLD_MS);
+      const stuck = await this.prisma.push.findMany({
+        where: { status: PushStatus.SENDING, updatedAt: { lte: stallThreshold } },
+        select: { id: true, sentAt: true, updatedAt: true },
+      });
 
-    for (const push of stuck) {
-      if (push.sentCount + push.failedCount >= push.audienceReachable) continue; // процессор вот-вот сам переключит в SENT
-
-      const pendingCount = await this.prisma.pushLog.count({ where: { pushId: push.id, status: 'pending' } });
-      this.logger.warn(`recoverStalledSending: push ${push.id} stalled (${push.sentCount + push.failedCount}/${push.audienceReachable}, ${pendingCount} pending) — resuming`);
-      try {
-        await this.pushesService.resumeSending(push.id);
-      } catch (error) {
-        this.logger.warn(`recoverStalledSending: resumeSending(${push.id}) failed: ${(error as Error).message}`);
+      for (const push of stuck) {
+        try {
+          await this.recoverOne(push);
+        } catch (error) {
+          this.logger.warn(`recoverStalledSending: push ${push.id} failed: ${(error as Error).message}`);
+        }
       }
+    } finally {
+      this.recovering = false;
+    }
+  }
+
+  private async recoverOne(push: { id: string; sentAt: Date | null; updatedAt: Date }) {
+    // 'sending' — строку захватила задача, но отправка не дошла до записи итога: процесс
+    // перезапустился посреди отправки. Повторить нельзя (сообщение могло уже уйти), а пока
+    // такая строка висит, рассылка никогда не закроется. Ждём дольше обычного порога, чтобы
+    // не задеть отправку, которая идёт прямо сейчас.
+    if (push.updatedAt.getTime() <= Date.now() - ORPHAN_SENDING_THRESHOLD_MS) {
+      const orphaned = await this.prisma.pushLog.updateMany({
+        where: { pushId: push.id, status: 'sending' },
+        data: { status: 'failed', error: 'Отправка прервана перезапуском сервера' },
+      });
+      if (orphaned.count > 0) this.logger.warn(`recoverStalledSending: push ${push.id}: ${orphaned.count} прерванных отправок помечены как ошибка`);
+    }
+
+    // Рассылку, начатую больше 48 часов назад, не досылаем: её текст (акции, сроки) уже
+    // неактуален. Оставшихся получателей закрываем с причиной, рассылку можно повторить
+    // копированием.
+    if (push.sentAt && push.sentAt.getTime() <= Date.now() - SENDING_MAX_AGE_MS) {
+      const expired = await this.prisma.pushLog.updateMany({
+        where: { pushId: push.id, status: 'pending' },
+        data: { status: 'failed', error: 'Не отправлено: рассылка устарела (прошло больше 48 часов)' },
+      });
+      if (expired.count > 0) this.logger.warn(`recoverStalledSending: push ${push.id}: ${expired.count} получателей не отправлено — рассылка старше 48 ч`);
+    }
+
+    if (await this.pushesService.finalizeIfDone(push.id)) {
+      this.logger.log(`recoverStalledSending: push ${push.id} закрыт как SENT`);
+      return;
+    }
+    await this.pushesService.resumeSending(push.id);
+  }
+
+  // Самоочистка служебного множества ограничителя очереди — см. PushesService.pruneStaleLimiterEntries.
+  @Cron('*/10 * * * *')
+  async pruneLimiter() {
+    try {
+      const removed = await this.pushesService.pruneStaleLimiterEntries();
+      if (removed > 0) this.logger.warn(`pruneLimiter: удалено ${removed} устаревших записей ограничителя`);
+    } catch (error) {
+      this.logger.warn(`pruneLimiter failed: ${(error as Error).message}`);
     }
   }
 

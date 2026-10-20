@@ -19,7 +19,9 @@ export class PushesProcessor {
   // см. подробный разбор в комментарии у PushLog.status в schema.prisma). Раньше строка
   // создавалась реактивно прямо здесь (`pushLog.create`), из-за чего для получателей, чья джоба
   // так и не была поставлена в очередь до падения процесса, не оставалось вообще никакого следа.
-  @Process('send-push-message')
+  // concurrency 10: по одной задаче выходило 3-5 сообщений/с при лимите очереди 30/с, и большие
+  // рассылки шли часами (2026-10-20). Общий потолок по-прежнему держит limiter очереди.
+  @Process({ name: 'send-push-message', concurrency: 10 })
   async sendPushMessage(job: Job<{ pushId: string; pushLogId: string; clientId: string }>) {
     const { pushId, pushLogId, clientId } = job.data;
 
@@ -51,6 +53,12 @@ export class PushesProcessor {
           await this.prisma.push.update({ where: { id: push.id }, data: { status: PushStatus.SENT } });
         }
       }
+      return;
+    }
+
+    // Рассылку отменили (FAILED) или уже закрыли, пока задачи ждали в очереди, — не отправляем.
+    if (push.status !== PushStatus.SENDING) {
+      await this.prisma.pushLog.update({ where: { id: pushLogId }, data: { status: 'failed', error: 'Рассылка отменена или завершена' } });
       return;
     }
 

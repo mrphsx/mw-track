@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { GrammyError, HttpError } from 'grammy';
 import { Cron } from '@nestjs/schedule';
 import { Response } from 'express';
 import { BotScenarioTrigger, Channel, ChannelType, Client } from '@prisma/client';
@@ -13,6 +14,15 @@ import { UpdateChannelDto } from './dto/update-channel.dto';
 import { TestMessageDto } from './dto/test-message.dto';
 import { renderMessagePlaceholders } from '../../common/message-placeholders.util';
 import { assertPublicHost } from '../../common/ssrf-guard.util';
+
+// Признаки сбоя связи с Telegram (а не проблемы самого бота): сетевые ошибки fetch, 5xx, 429.
+const TRANSIENT_ERROR_PATTERN = /Network request|Gateway Timeout|Bad Gateway|Service Unavailable|Too Many Requests|Internal Server Error|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|\((429|50\d)\b/i;
+
+function isTransientTelegramError(error: unknown): boolean {
+  if (error instanceof HttpError) return true; // grammY: запрос не дошёл / не вернулся
+  if (error instanceof GrammyError) return error.error_code === 429 || error.error_code >= 500;
+  return TRANSIENT_ERROR_PATTERN.test((error as Error)?.message ?? '');
+}
 
 @Injectable()
 export class ChannelsService implements OnModuleInit {
@@ -386,6 +396,13 @@ export class ChannelsService implements OnModuleInit {
           await new Promise((resolve) => setTimeout(resolve, 3000));
           continue;
         }
+        // Сеть/5xx/429 — сбой связи с Telegram, а не проблема бота. Раньше такой сбой отключал
+        // бота навсегда: 17 живых ботов (вебхуки у них приходили до последней минуты) висели
+        // выключенными, рассылки по ним падали целиком (2026-10-20). Канал не трогаем.
+        if (isTransientTelegramError(error)) {
+          this.logger.warn(`Channel ${channel.id}: временный сбой связи с Telegram, канал не отключаем: ${(error as Error).message}`);
+          return { healthy: true };
+        }
         return { healthy: false, message: `Ошибка канала: ${(error as Error).message}` };
       }
     }
@@ -410,6 +427,25 @@ export class ChannelsService implements OnModuleInit {
           data: { isActive: false, lastError: result.message || 'Канал недоступен' },
         });
       }
+    }
+
+    await this.recoverTransientlyDisabledChannels();
+  }
+
+  // Боты, отключённые из-за сетевого сбоя (до 2026-10-20 так отключался любой бот при разовой
+  // ошибке связи), переподключаются тем же tryInitialize, что и кнопка «Переподключить». Только
+  // Telegram-каналы живых проектов, у которых причина отключения — именно сбой связи; каналы,
+  // отключённые вручную, архивом проекта или окончанием подписки, сюда не попадают (у них
+  // другая или пустая lastError).
+  private async recoverTransientlyDisabledChannels() {
+    const candidates = await this.prisma.channel.findMany({
+      where: { isActive: false, type: 'TELEGRAM', lastError: { not: null }, project: { deletedAt: null } },
+      take: 50,
+    });
+    for (const channel of candidates) {
+      if (!channel.lastError || !TRANSIENT_ERROR_PATTERN.test(channel.lastError)) continue;
+      const result = await this.tryInitialize(channel);
+      this.logger.warn(`Channel ${channel.id}: автопереподключение после сбоя связи — ${result.isActive ? 'успешно' : `не удалось: ${result.lastError}`}`);
     }
   }
 
