@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT, validateTelegramMessage } from '@/lib/telegram-html-validate';
 import { useMutation } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { Mic, Plus, Upload, X } from 'lucide-react';
@@ -68,6 +69,10 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
   const [dragOver, setDragOver] = useState(false);
 
   const hasVideoNote = value.media.some((m) => m.type === 'video_note');
+  // Та же проверка, что на сервере (PushesService.assertSendableText): сломанная разметка или
+  // слишком длинная подпись падали у каждого получателя уже после запуска (2026-10-20).
+  const hasCaption = value.media.length > 0 && value.media[0].type !== 'video_note';
+  const textError = value.messageText.trim() ? validateTelegramMessage(value.messageText, hasCaption) : null;
   // video_note и voice — оба "одиночные" типы у Bot API (sendMediaGroup не принимает ни то, ни
   // другое) — тот же принцип, что и на бэкенде (PushesService.assertValidMedia).
   const hasSoloMedia = value.media.some((m) => m.type === 'video_note' || m.type === 'voice');
@@ -213,7 +218,13 @@ export function PushContentStep({ projectId, value, onChange, onUploadingChange 
             placeholder="Поддерживаются HTML-теги Telegram: <b>, <i>, <u>, <code>"
           />
           <MessagePlaceholdersHint onInsert={(token) => update({ messageText: value.messageText + token })} />
-          <div className="text-xs text-muted-foreground text-right">{value.messageText.length} / 4096</div>
+          {textError ? (
+            <p className="text-xs text-red-600 dark:text-red-400">{textError}</p>
+          ) : (
+            <div className="text-xs text-muted-foreground text-right">
+              {value.messageText.length} / {hasCaption ? TELEGRAM_CAPTION_LIMIT : TELEGRAM_TEXT_LIMIT}
+            </div>
+          )}
           {hasVideoNote && (
             <p className="text-xs text-amber-600">
               Кружок не поддерживает подпись — текст уйдёт отдельным сообщением сразу следом.

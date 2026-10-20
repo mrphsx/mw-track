@@ -1,4 +1,5 @@
 import { InjectQueue } from '@nestjs/bull';
+import { escapeTelegramHtml } from '../../common/telegram-html.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { Channel } from '@prisma/client';
@@ -162,7 +163,7 @@ export class BotScenarioEngineService {
       ? await this.prisma.client.findUnique({ where: { id: clientId }, select: { tgFirstName: true, tgLastName: true, tgUsername: true } })
       : null;
     const source = { firstName: client?.tgFirstName, lastName: client?.tgLastName, username: client?.tgUsername };
-    const text = renderMessagePlaceholders(step.messageText || '', source);
+    const text = renderMessagePlaceholders(step.messageText || '', source, escapeTelegramHtml);
     const buttons = (step.buttons as Array<{ text: string; url: string }> | null)?.map((b) => ({ ...b, text: renderMessagePlaceholders(b.text, source) }));
 
     try {

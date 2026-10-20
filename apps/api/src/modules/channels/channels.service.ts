@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { Response } from 'express';
 import { BotScenarioTrigger, Channel, ChannelType, Client } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { escapeTelegramHtml } from '../../common/telegram-html.util';
 import { ChannelProvider, SendMessageOptions, SendMessageResult } from './providers/channel.provider.interface';
 import { TelegramProvider } from './providers/telegram.provider';
 import { TelegramPersonalService } from './providers/telegram-personal.service';
@@ -122,7 +123,7 @@ export class ChannelsService implements OnModuleInit {
     }
 
     const provider = this.getProvider(client.channelType);
-    return provider.sendMessage(channelUserId, this.applyPlaceholders(options, client), channel);
+    return provider.sendMessage(channelUserId, this.applyPlaceholders(options, client, channel.type === 'TELEGRAM'), channel);
   }
 
   // Персонализация {first_name}/{last_name}/{full_name}/{username} (запрос пользователя
@@ -130,7 +131,7 @@ export class ChannelsService implements OnModuleInit {
   // (AutomationEngineService), оба зовут этот sendMessage с уже известным Client. У сценариев
   // бота (BotScenarioEngineService) свой отдельный вызов sendMessage — Client там не всегда
   // есть (холодные контакты), см. bot-scenario-engine.service.ts.
-  private applyPlaceholders(options: SendMessageOptions, client: Client): SendMessageOptions {
+  private applyPlaceholders(options: SendMessageOptions, client: Client, htmlText = false): SendMessageOptions {
     // WhatsApp/Instagram не дают отдельных first/last name полей (только общее имя профиля/
     // юзернейм) — берём то, что реально есть у клиента, независимо от channelType.
     const source = {
@@ -140,7 +141,7 @@ export class ChannelsService implements OnModuleInit {
     };
     return {
       ...options,
-      text: renderMessagePlaceholders(options.text, source),
+      text: renderMessagePlaceholders(options.text, source, htmlText ? escapeTelegramHtml : undefined),
       buttons: options.buttons?.map((b) => ({ ...b, text: renderMessagePlaceholders(b.text, source) })),
     };
   }

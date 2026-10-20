@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { ConfigService } from '@nestjs/config';
 import { Prisma, Push, PushStatus } from '@prisma/client';
 import { Queue } from 'bull';
+import { validateTelegramMessage } from '../../common/telegram-html.util';
 import { subDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import type { Readable } from 'stream';
@@ -190,6 +191,15 @@ export class PushesService {
   // sendVideoNote) — при 2+ элементах ни один не может быть кружком.
   // video_note и voice — оба "одиночные" типы у Bot API: sendMediaGroup не принимает ни кружок,
   // ни голосовое сообщение (запрос пользователя 2026-08-05 добавил voice как второй такой тип).
+  // Текст должен разбираться Telegram'ом (HTML-разметка, лимит длины): иначе рассылка уходит в
+  // очередь и падает у каждого получателя (2026-10-20, «can't parse entities»). Подпись к фото/
+  // видео/голосовому — до 1024 символов; у кружка подписи нет, текст идёт отдельным сообщением.
+  private assertSendableText(text: string, media?: { type: string }[] | null) {
+    const hasCaption = !!media && media.length > 0 && media[0].type !== 'video_note';
+    const error = validateTelegramMessage(text ?? '', hasCaption);
+    if (error) throw new BadRequestException(`Рассылку нельзя отправить: ${error}`);
+  }
+
   private assertValidMedia(media?: { type: string; url: string }[]) {
     if (media && media.length > 1 && media.some((m) => m.type === 'video_note' || m.type === 'voice')) {
       throw new BadRequestException('Кружок и голосовое нельзя отправить вместе с другими медиафайлами в одной рассылке');
@@ -198,6 +208,7 @@ export class PushesService {
 
   async create(projectId: string, dto: CreatePushDto): Promise<Push> {
     this.assertValidMedia(dto.messageMedia);
+    this.assertSendableText(dto.messageText, dto.messageMedia);
     const { audienceTotal, audienceReachable } = await this.previewAudience(projectId, dto.filter);
 
     return this.prisma.push.create({
@@ -247,6 +258,12 @@ export class PushesService {
     this.assertValidMedia(dto.messageMedia);
     const push = await this.findOne(id, projectId);
     this.assertEditable(push);
+    if (dto.messageText !== undefined || dto.messageMedia !== undefined) {
+      this.assertSendableText(
+        dto.messageText ?? push.messageText,
+        dto.messageMedia !== undefined ? dto.messageMedia : (push.messageMedia as { type: string }[] | null),
+      );
+    }
 
     const filterChanged = !!dto.filter;
     const recalculated = filterChanged ? await this.previewAudience(projectId, dto.filter!) : {};
@@ -383,6 +400,8 @@ export class PushesService {
   // срок ПРЯМО в момент захвата, а не по устаревшему снимку.
   async send(id: string, projectId: string, companyId: string, requireDueBy?: Date): Promise<Push> {
     const push = await this.findOne(id, projectId);
+    // Последний рубеж: черновики и запланированные рассылки, сохранённые до появления проверки.
+    this.assertSendableText(push.messageText, push.messageMedia as { type: string }[] | null);
 
     const claimed = await this.prisma.push.updateMany({
       where: {

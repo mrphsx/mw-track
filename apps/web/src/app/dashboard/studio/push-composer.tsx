@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { validateTelegramMessage } from '@/lib/telegram-html-validate';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
@@ -243,6 +244,7 @@ export function StudioPushComposer({
     selectedIds.length > 0 &&
     content.name.trim() &&
     content.messageText.trim() &&
+    !validateTelegramMessage(content.messageText, content.media.length > 0 && content.media[0].type !== 'video_note') &&
     !isUploading &&
     (sendMode === 'now' || (dateStr && timeStr));
 

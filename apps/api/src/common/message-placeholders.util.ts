@@ -30,7 +30,14 @@ export const MESSAGE_PLACEHOLDERS: MessagePlaceholderInfo[] = [
 // Если source не передан (холодный контакт без строки Client) или поле не заполнено —
 // плейсхолдер заменяется на пустую строку, а не оставляется как есть: незаполненный текст
 // вида "Привет, !" считается меньшим злом, чем видимый клиенту "Привет, {first_name}!".
-export function renderMessagePlaceholders(text: string, source?: MessagePlaceholderSource | null): string {
+// escapeValue — для текста, который уйдёт с parse_mode HTML (Telegram): подставляемое имя
+// экранируется, иначе «Ana <3» ломает разбор сообщения у этого получателя (2026-10-20). Текст
+// кнопок Telegram показывает как есть — для него escapeValue не передаётся.
+export function renderMessagePlaceholders(
+  text: string,
+  source?: MessagePlaceholderSource | null,
+  escapeValue: (value: string) => string = (v) => v,
+): string {
   const firstName = source?.firstName?.trim() || '';
   const lastName = source?.lastName?.trim() || '';
   const values: Record<string, string> = {
@@ -40,5 +47,5 @@ export function renderMessagePlaceholders(text: string, source?: MessagePlacehol
     username: source?.username?.trim() || '',
   };
 
-  return text.replace(/\{(\w+)\}/g, (match, key: string) => (key in values ? values[key] : match));
+  return text.replace(/\{(\w+)\}/g, (match, key: string) => (key in values ? escapeValue(values[key]) : match));
 }

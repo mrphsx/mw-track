@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PushStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -81,6 +81,13 @@ export class PushesCron {
         // на случай если пользователь успел перенести дату между findMany выше и этим вызовом.
         await this.pushesService.send(push.id, push.project.id, push.project.companyId, push.scheduledAt!);
       } catch (error) {
+        // Текст не проходит проверку Telegram-разметки (PushesService.assertSendableText) —
+        // повторять каждую минуту бессмысленно: помечаем FAILED, никому ничего не уходит.
+        if (error instanceof BadRequestException) {
+          this.logger.warn(`fireScheduledPushes: push ${push.id} не отправлен, текст не проходит проверку: ${(error as Error).message}`);
+          await this.prisma.push.updateMany({ where: { id: push.id, status: PushStatus.SCHEDULED }, data: { status: PushStatus.FAILED } });
+          continue;
+        }
         // Захват не удался (count===0) — скорее всего кто-то уже отправил пуш вручную
         // в этом же промежутке, не настоящая ошибка.
         this.logger.warn(`fireScheduledPushes: send() skipped for push ${push.id}: ${(error as Error).message}`);
