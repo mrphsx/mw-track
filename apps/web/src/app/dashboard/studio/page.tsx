@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Bot, DollarSign, FolderOpen, Repeat, Send, UserX, Users, Wallet, LucideIcon } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -65,6 +66,7 @@ export default function StudioDashboardPage() {
   const user = useAuthStore((s) => s.user);
   const canViewRevenue = hasAnyPermission(user, 'STATS_VIEW_REVENUE');
   const { projects, isLoading, usage } = usePrototypeHomeData();
+  const now = useMinuteClock();
   const warning = getSubscriptionWarning(usage);
 
   const totalClients = projects?.reduce((sum, p) => sum + p._count.clients, 0) ?? 0;
@@ -210,10 +212,55 @@ export default function StudioDashboardPage() {
                   </span>
                 </div>
                 <ProjectPeriodMetrics row={companyStats?.byProject[project.id]} canViewRevenue={canViewRevenue} />
+                {project.timezone && <ProjectDayProgress timezone={project.timezone} now={now} />}
               </div>
             </Link>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Текущее время, обновляемое раз в минуту — один таймер на всю страницу, а не на каждую
+// карточку. До монтирования null, чтобы серверный рендер и гидрация совпадали.
+function useMinuteClock(): Date | null {
+  const [now, setNow] = useState<Date | null>(null);
+  useEffect(() => {
+    setNow(new Date());
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+// Сколько прошло текущих суток в часовом поясе проекта (запрос пользователя 2026-10-20):
+// «Сегодня» в статистике проекта считается от полуночи по его времени, и полоса показывает,
+// какую часть этих суток уже видно в цифрах.
+function ProjectDayProgress({ timezone, now }: { timezone: string; now: Date | null }) {
+  if (!now) return null;
+  let hours: number;
+  let minutes: number;
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(now);
+    hours = Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
+    minutes = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+  } catch {
+    return null; // неизвестный пояс — просто не показываем полосу
+  }
+  const percent = Math.round(((hours * 60 + minutes) / 1440) * 100);
+  const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  return (
+    <div
+      className="mt-3"
+      title={`Сейчас у проекта ${time} (${timezone}). «Сегодня» в статистике считается с полуночи по его времени — прошло ${percent}% суток.`}
+    >
+      <div className="flex items-baseline justify-between text-[10px] leading-none text-[#5F6B7A] dark:text-[#92A0AF] mb-1">
+        <span>У проекта {time}</span>
+        <span className="tabular-nums">день прошёл на {percent}%</span>
+      </div>
+      <div className="h-1 rounded-full bg-[#DCE1E8] dark:bg-white/10 overflow-hidden">
+        <div className="h-full rounded-full bg-[#7BA9EE]/70 dark:bg-[#7BA9EE]/60" style={{ width: `${percent}%` }} />
       </div>
     </div>
   );

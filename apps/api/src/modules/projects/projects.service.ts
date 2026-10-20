@@ -3,7 +3,7 @@ import { Permission, Prisma, UserRole } from '@prisma/client';
 import { subDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
-import { dailyBucketSql, resolveStatsPeriod } from '../../common/timezone.util';
+import { dailyBucketSql, resolveStatsPeriod, projectPeriodWindowsSql } from '../../common/timezone.util';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { formatUserName } from '../../common/user-name.util';
@@ -161,54 +161,51 @@ export class ProjectsService {
       return { ...empty, byProject: {}, buyers: null, sources: [] };
     }
 
-    const { since, until } = periodQuery.period
-      ? await resolveStatsPeriod(this.prisma, 'UTC', periodQuery)
-      : { since: new Date(0), until: new Date('3000-01-01T00:00:00Z') };
-    const buyerScope = scopedBuyerId ? { buyerId: scopedBuyerId } : {};
-    const buyerScopeSql = scopedBuyerId ? Prisma.sql`AND "buyerId" = ${scopedBuyerId}` : Prisma.empty;
-    // OURS_ONLY — тот же критерий "реальный подписчик, не холодный контакт мимо воронки", что и
-    // в ClientsRepository.getProjectStats (Client.subscribedAt IS NOT NULL).
-    const purchaseWhere =
-      revenueProjectIds.length > 0
-        ? Prisma.sql`"projectId" IN (${Prisma.join(revenueProjectIds)}) AND "clientId" IN (
-            SELECT id FROM "Client" WHERE "subscribedAt" IS NOT NULL AND "deletedAt" IS NULL ${buyerScopeSql}
-          )`
-        : Prisma.sql`FALSE`;
+    // Каждый проект — в своём часовом поясе (запрос пользователя 2026-10-20): окно периода
+    // строится на проект и джойнится по projectId, итог — сумма проектов. Раньше все проекты
+    // считались одними сутками по UTC, и «вчера» на главной расходилось со страницей проекта
+    // на десятки клиентов у латиноамериканских проектов.
+    const windows = projectPeriodWindowsSql(projectIds, periodQuery);
+    const buyerScopeSql = scopedBuyerId ? Prisma.sql`AND c."buyerId" = ${scopedBuyerId}` : Prisma.empty;
 
-    const [newClients, unsubscribedClients, botActivatedClients, revenueAgg, fdRdRows] = await Promise.all([
-      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, ...buyerScope, subscribedAt: { gte: since, lt: until } } }),
-      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, ...buyerScope, unsubscribedAt: { gte: since, lt: until } } }),
-      this.prisma.client.count({ where: { projectId: { in: projectIds }, deletedAt: null, ...buyerScope, botActivatedAt: { gte: since, lt: until } } }),
-      this.prisma.purchase.aggregate({
-        where: {
-          projectId: { in: revenueProjectIds },
-          createdAt: { gte: since, lt: until },
-          client: { subscribedAt: { not: null }, deletedAt: null, ...buyerScope },
-        },
-        _sum: { amount: true },
-      }),
+    const [clientCounts, fdRdRows] = await Promise.all([
+      this.prisma.$queryRaw<{ new_clients: bigint; unsubscribed: bigint; bot_activated: bigint }[]>`
+        WITH w AS (${windows})
+        SELECT
+          COUNT(*) FILTER (WHERE c."subscribedAt" >= w.since AND c."subscribedAt" < w.until) as new_clients,
+          COUNT(*) FILTER (WHERE c."unsubscribedAt" >= w.since AND c."unsubscribedAt" < w.until) as unsubscribed,
+          COUNT(*) FILTER (WHERE c."botActivatedAt" >= w.since AND c."botActivatedAt" < w.until) as bot_activated
+        FROM "Client" c
+        JOIN w ON w.pid = c."projectId"
+        WHERE c."deletedAt" IS NULL ${buyerScopeSql}
+      `,
       // ФД/РД по той же ROW_NUMBER()-идиоме, что и ClientsRepository.getProjectStats — "первый/
       // повторный" считается по ВСЕЙ истории покупок клиента (не только за окно), окно
-      // применяется уже снаружи. Client привязан к ровно одному проекту (Client.projectId),
-      // поэтому PARTITION BY "clientId" не смешивает покупки разных проектов даже при IN(...).
-      this.prisma.$queryRaw<{ fd_count: bigint; rd_count: bigint; fd_revenue: string | null; rd_revenue: string | null }[]>`
-        WITH ranked AS (
-          SELECT id, "createdAt", amount,
-            ROW_NUMBER() OVER (PARTITION BY "clientId" ORDER BY "createdAt" ASC, id ASC) as rn
-          FROM "Purchase"
-          WHERE ${purchaseWhere}
-        )
-        SELECT
-          COUNT(*) FILTER (WHERE rn = 1) as fd_count,
-          COUNT(*) FILTER (WHERE rn > 1) as rd_count,
-          COALESCE(SUM(amount) FILTER (WHERE rn = 1), 0) as fd_revenue,
-          COALESCE(SUM(amount) FILTER (WHERE rn > 1), 0) as rd_revenue
-        FROM ranked
-        WHERE "createdAt" >= ${since} AND "createdAt" < ${until}
-      `,
+      // применяется уже снаружи. OURS_ONLY — клиент прошёл воронку (subscribedAt не пуст).
+      // Выручка = ФД + РД: это то же множество покупок, отдельный aggregate не нужен.
+      revenueProjectIds.length > 0
+        ? this.prisma.$queryRaw<{ fd_count: bigint; rd_count: bigint; fd_revenue: string | null; rd_revenue: string | null }[]>`
+            WITH w AS (${projectPeriodWindowsSql(revenueProjectIds, periodQuery)}),
+            ranked AS (
+              SELECT pu."projectId", pu."createdAt", pu.amount,
+                ROW_NUMBER() OVER (PARTITION BY pu."clientId" ORDER BY pu."createdAt" ASC, pu.id ASC) as rn
+              FROM "Purchase" pu
+              JOIN "Client" c ON c.id = pu."clientId"
+              WHERE pu."projectId" IN (${Prisma.join(revenueProjectIds)}) AND c."subscribedAt" IS NOT NULL AND c."deletedAt" IS NULL ${buyerScopeSql}
+            )
+            SELECT
+              COUNT(*) FILTER (WHERE rn = 1) as fd_count,
+              COUNT(*) FILTER (WHERE rn > 1) as rd_count,
+              COALESCE(SUM(amount) FILTER (WHERE rn = 1), 0) as fd_revenue,
+              COALESCE(SUM(amount) FILTER (WHERE rn > 1), 0) as rd_revenue
+            FROM ranked
+            JOIN w ON w.pid = ranked."projectId"
+            WHERE ranked."createdAt" >= w.since AND ranked."createdAt" < w.until
+          `
+        : Promise.resolve([]),
     ]);
 
-    const window = { since, until, scopedBuyerId };
+    const window = { periodQuery, scopedBuyerId };
     const sourceExpr = Prisma.sql`CASE WHEN c."fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN c."ttclid" IS NOT NULL THEN 'TIKTOK' END`;
     // Топ баеров — только проекты, где выдано STATS_VIEW_TEAM_LEADERBOARDS, и не баеру со
     // "своими клиентами" (то же условие, что у GET .../leaderboards на странице проекта).
@@ -240,11 +237,12 @@ export class ProjectsService {
 
     const zeroRow: AggregatedRow = { clients: 0, dialogues: 0, fd: 0, rd: 0, revenue: 0 };
     const fd = fdRdRows[0];
+    const counts = clientCounts[0];
     return {
-      newClients,
-      unsubscribedClients,
-      botActivatedClients,
-      totalRevenue: Number(revenueAgg._sum.amount ?? 0),
+      newClients: Number(counts?.new_clients ?? 0),
+      unsubscribedClients: Number(counts?.unsubscribed ?? 0),
+      botActivatedClients: Number(counts?.bot_activated ?? 0),
+      totalRevenue: Number(fd?.fd_revenue ?? 0) + Number(fd?.rd_revenue ?? 0),
       totalFd: Number(fd?.fd_count ?? 0),
       totalRd: Number(fd?.rd_count ?? 0),
       fdRevenue: Number(fd?.fd_revenue ?? 0),
@@ -265,38 +263,42 @@ export class ProjectsService {
     dimension: Prisma.Sql,
     projectIds: string[],
     revenueProjectIds: string[],
-    window: { since: Date; until: Date; scopedBuyerId?: string },
+    window: { periodQuery: StatsPeriodDto; scopedBuyerId?: string },
   ): Promise<Map<string, AggregatedRow>> {
     const result = new Map<string, AggregatedRow>();
     if (projectIds.length === 0) return result;
-    const { since, until, scopedBuyerId } = window;
+    const { periodQuery, scopedBuyerId } = window;
     const buyerSql = scopedBuyerId ? Prisma.sql`AND c."buyerId" = ${scopedBuyerId}` : Prisma.empty;
 
     const [clientRows, purchaseRows] = await Promise.all([
       this.prisma.$queryRaw<{ key: string | null; clients: bigint; dialogues: bigint }[]>`
+        WITH w AS (${projectPeriodWindowsSql(projectIds, periodQuery)})
         SELECT ${dimension} as key,
-          COUNT(*) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) as clients,
-          COUNT(*) FILTER (WHERE c."firstDialogueAt" >= ${since} AND c."firstDialogueAt" < ${until}) as dialogues
+          COUNT(*) FILTER (WHERE c."subscribedAt" >= w.since AND c."subscribedAt" < w.until) as clients,
+          COUNT(*) FILTER (WHERE c."firstDialogueAt" >= w.since AND c."firstDialogueAt" < w.until) as dialogues
         FROM "Client" c
-        WHERE c."projectId" IN (${Prisma.join(projectIds)}) AND c."deletedAt" IS NULL AND c."subscribedAt" IS NOT NULL ${buyerSql}
-          AND ((c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until}) OR (c."firstDialogueAt" >= ${since} AND c."firstDialogueAt" < ${until}))
+        JOIN w ON w.pid = c."projectId"
+        WHERE c."deletedAt" IS NULL AND c."subscribedAt" IS NOT NULL ${buyerSql}
+          AND ((c."subscribedAt" >= w.since AND c."subscribedAt" < w.until) OR (c."firstDialogueAt" >= w.since AND c."firstDialogueAt" < w.until))
         GROUP BY ${dimension}
       `,
       revenueProjectIds.length
         ? this.prisma.$queryRaw<{ key: string | null; fd: bigint; rd: bigint; revenue: string | null }[]>`
-            WITH ranked AS (
-              SELECT p.amount, p."createdAt", ${dimension} as key,
-                ROW_NUMBER() OVER (PARTITION BY p."clientId" ORDER BY p."createdAt" ASC, p.id ASC) as rn
-              FROM "Purchase" p
-              JOIN "Client" c ON c.id = p."clientId"
-              WHERE p."projectId" IN (${Prisma.join(revenueProjectIds)}) AND c."subscribedAt" IS NOT NULL AND c."deletedAt" IS NULL ${buyerSql}
+            WITH w AS (${projectPeriodWindowsSql(revenueProjectIds, periodQuery)}),
+            ranked AS (
+              SELECT pu.amount, pu."createdAt", pu."projectId", ${dimension} as key,
+                ROW_NUMBER() OVER (PARTITION BY pu."clientId" ORDER BY pu."createdAt" ASC, pu.id ASC) as rn
+              FROM "Purchase" pu
+              JOIN "Client" c ON c.id = pu."clientId"
+              WHERE pu."projectId" IN (${Prisma.join(revenueProjectIds)}) AND c."subscribedAt" IS NOT NULL AND c."deletedAt" IS NULL ${buyerSql}
             )
             SELECT key,
               COUNT(*) FILTER (WHERE rn = 1) as fd,
               COUNT(*) FILTER (WHERE rn > 1) as rd,
               COALESCE(SUM(amount), 0) as revenue
             FROM ranked
-            WHERE "createdAt" >= ${since} AND "createdAt" < ${until}
+            JOIN w ON w.pid = ranked."projectId"
+            WHERE ranked."createdAt" >= w.since AND ranked."createdAt" < w.until
             GROUP BY key
           `
         : Promise.resolve([]),

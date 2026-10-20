@@ -17,6 +17,7 @@ export interface PrototypeProjectSummary {
   id: string;
   name: string;
   status: string;
+  timezone?: string;
   channel: { id: string; type: string; isActive: boolean; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null } | null;
   _count: { clients: number; pushes: number };
 }
@@ -55,6 +56,8 @@ export interface PrototypeProject {
   id: string;
   name: string;
   status: string;
+  // IANA-пояс проекта (Project.timezone) — сутки статистики проекта считаются в нём.
+  timezone?: string;
   channel: {
     id: string;
     type: string;

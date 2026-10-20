@@ -36,55 +36,64 @@ export function hourBucketSql(columnName: string, timezone: string, tableAlias?:
 // сторону. "7d"/"30d" были чистым скользящим окном 168ч/720ч от текущего момента без выравнивания
 // по суткам — переведены на календарное выравнивание 2026-08-18 (см. комментарий у самого
 // вызова ниже), чтобы не расходиться с today/yesterday/custom.
+// Границы периода как SQL-выражения от часового пояса tz. tz — либо параметр (одна зона,
+// resolveStatsPeriod), либо колонка (у каждого проекта своя, projectPeriodWindowsSql) — так
+// страница проекта и общая статистика считают сутки строго одной и той же формулой.
+// period не задан — "всё время" (только для общей статистики; resolveStatsPeriod подставляет 30d).
+function periodBoundsSql(tz: Prisma.Sql, query: StatsPeriodDto): { since: Prisma.Sql; until: Prisma.Sql } {
+  const today = Prisma.sql`date_trunc('day', now() AT TIME ZONE ${tz})`;
+  switch (query.period) {
+    case undefined:
+      return { since: Prisma.sql`'-infinity'::timestamptz`, until: Prisma.sql`'infinity'::timestamptz` };
+    // 7d/30d — было чистое скользящее окно от new Date() (168ч/720ч), без привязки к суткам и
+    // без зоны проекта; с 2026-08-18 это N календарных суток в зоне, включая весь сегодняшний день.
+    case '7d':
+    case '30d': {
+      const days = query.period === '7d' ? 7 : 30;
+      return {
+        since: Prisma.sql`(${today} - make_interval(days => ${days - 1}::int)) AT TIME ZONE ${tz}`,
+        until: Prisma.sql`(${today} + make_interval(days => 1)) AT TIME ZONE ${tz}`,
+      };
+    }
+    case 'today':
+    case 'yesterday': {
+      const offset = query.period === 'yesterday' ? -1 : 0;
+      return {
+        since: Prisma.sql`(${today} + make_interval(days => ${offset}::int)) AT TIME ZONE ${tz}`,
+        until: Prisma.sql`(${today} + make_interval(days => ${offset + 1}::int)) AT TIME ZONE ${tz}`,
+      };
+    }
+    case 'custom': {
+      if (!query.from || !query.to) {
+        throw new BadRequestException('Для кастомного периода нужны from и to');
+      }
+      // ::timestamp обязателен: `date AT TIME ZONE tz` в PostgreSQL сначала трактует дату как
+      // полночь по UTC и переводит её В локальное время — обратное направление. Начало периода
+      // уезжало на удвоенный часовой пояс (Колумбия −10 ч, Коста-Рика −12 ч), и «14.10» считало
+      // 34 часа вместо 24 (2026-10-20).
+      return {
+        since: Prisma.sql`(${query.from}::date::timestamp) AT TIME ZONE ${tz}`,
+        until: Prisma.sql`(${query.to}::date::timestamp + interval '1 day') AT TIME ZONE ${tz}`,
+      };
+    }
+  }
+}
+
 export async function resolveStatsPeriod(
   prisma: PrismaService,
   timezone: string,
   query: StatsPeriodDto,
 ): Promise<{ since: Date; until: Date }> {
-  const period = query.period ?? '30d';
-
-  // 7d/30d — было чистое скользящее окно от new Date() (168ч/720ч назад от текущего момента),
-  // без привязки к границам суток и без учёта часового пояса проекта, в отличие от today/
-  // yesterday/custom рядом (все три считают "сутки" в зоне проекта). Баг-репорт пользователя
-  // 2026-08-18 ("период неправильно посчитал") — это ровно тот класс несостыковки: одно и то же
-  // значение "сегодня" в today и в последнем дне окна 7d могло не совпадать (7d включало кусок
-  // "позавчера" по зоне проекта, если запрос пришёл не в полночь), из-за чего сумма 7 отдельных
-  // "дневных" чисел не сходилась с агрегатом "7 дней". Теперь 7d/30d — те же N календарных суток
-  // в зоне проекта, что и today (N=1), выровненные по полуночи: since = начало суток N-1 дней
-  // назад, until = начало ЗАВТРАШНИХ суток (т.е. включает весь сегодняшний день целиком, не
-  // только часть до текущего момента) — тот же принцип, что уже применяется в dailyBucketSql.
-  if (period === '7d' || period === '30d') {
-    const days = period === '7d' ? 7 : 30;
-    const [row] = await prisma.$queryRaw<{ since: Date; until: Date }[]>`
-      SELECT
-        (date_trunc('day', now() AT TIME ZONE ${timezone}) - make_interval(days => ${days - 1}::int)) AT TIME ZONE ${timezone} as since,
-        (date_trunc('day', now() AT TIME ZONE ${timezone}) + make_interval(days => 1)) AT TIME ZONE ${timezone} as until
-    `;
-    return row;
-  }
-
-  if (period === 'today' || period === 'yesterday') {
-    const dayOffset = period === 'yesterday' ? -1 : 0;
-    const [row] = await prisma.$queryRaw<{ since: Date; until: Date }[]>`
-      SELECT
-        (date_trunc('day', now() AT TIME ZONE ${timezone}) + make_interval(days => ${dayOffset}::int)) AT TIME ZONE ${timezone} as since,
-        (date_trunc('day', now() AT TIME ZONE ${timezone}) + make_interval(days => ${dayOffset + 1}::int)) AT TIME ZONE ${timezone} as until
-    `;
-    return row;
-  }
-
-  // custom
-  if (!query.from || !query.to) {
-    throw new BadRequestException('Для кастомного периода нужны from и to');
-  }
-  // ::timestamp обязателен: `date AT TIME ZONE tz` в PostgreSQL сначала трактует дату как
-  // полночь по UTC и переводит её В локальное время — обратное направление. Начало периода
-  // уезжало на удвоенный часовой пояс (Колумбия −10 ч, Коста-Рика −12 ч), и «14.10» считало
-  // 34 часа вместо 24 (2026-10-20). Конец периода был верным: date + interval уже timestamp.
-  const [row] = await prisma.$queryRaw<{ since: Date; until: Date }[]>`
-    SELECT
-      (${query.from}::date::timestamp) AT TIME ZONE ${timezone} as since,
-      (${query.to}::date + interval '1 day') AT TIME ZONE ${timezone} as until
-  `;
+  const { since, until } = periodBoundsSql(Prisma.sql`${timezone}`, { ...query, period: query.period ?? '30d' });
+  const [row] = await prisma.$queryRaw<{ since: Date; until: Date }[]>`SELECT ${since} as since, ${until} as until`;
   return row;
+}
+
+// Окно периода для каждого проекта в его собственном часовом поясе: подзапрос со строками
+// (pid, since, until). Общая статистика компании (запрос пользователя 2026-10-20: «каждый проект
+// в своём поясе») джойнит его по projectId, поэтому карточка проекта на главной совпадает со
+// страницей проекта, а итог — сумма проектов. Раньше всё считалось одними сутками по UTC.
+export function projectPeriodWindowsSql(projectIds: string[], query: StatsPeriodDto): Prisma.Sql {
+  const { since, until } = periodBoundsSql(Prisma.sql`p."timezone"`, query);
+  return Prisma.sql`SELECT p.id AS pid, ${since} AS since, ${until} AS until FROM "Project" p WHERE p.id IN (${Prisma.join(projectIds)})`;
 }
