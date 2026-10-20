@@ -77,9 +77,13 @@ export async function resolveStatsPeriod(
   if (!query.from || !query.to) {
     throw new BadRequestException('Для кастомного периода нужны from и to');
   }
+  // ::timestamp обязателен: `date AT TIME ZONE tz` в PostgreSQL сначала трактует дату как
+  // полночь по UTC и переводит её В локальное время — обратное направление. Начало периода
+  // уезжало на удвоенный часовой пояс (Колумбия −10 ч, Коста-Рика −12 ч), и «14.10» считало
+  // 34 часа вместо 24 (2026-10-20). Конец периода был верным: date + interval уже timestamp.
   const [row] = await prisma.$queryRaw<{ since: Date; until: Date }[]>`
     SELECT
-      (${query.from}::date) AT TIME ZONE ${timezone} as since,
+      (${query.from}::date::timestamp) AT TIME ZONE ${timezone} as since,
       (${query.to}::date + interval '1 day') AT TIME ZONE ${timezone} as until
   `;
   return row;

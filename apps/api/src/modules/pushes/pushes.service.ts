@@ -305,7 +305,7 @@ export class PushesService {
       FROM "Push"
       WHERE "projectId" = ${projectId}
         AND status = 'SCHEDULED'
-        AND "scheduledAt" >= (${monthStart}::date) AT TIME ZONE ${project.timezone}
+        AND "scheduledAt" >= (${monthStart}::date::timestamp) AT TIME ZONE ${project.timezone}
         AND "scheduledAt" < (${monthStart}::date + interval '1 month') AT TIME ZONE ${project.timezone}
       GROUP BY date
       ORDER BY date ASC
