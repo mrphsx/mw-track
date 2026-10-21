@@ -25,6 +25,7 @@ import { GetLinkDialog } from '@/components/get-link-dialog';
 import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog, LandingDomainRef } from '@/components/landing-card';
 import { AbTestComparisonCard, AbTestMemberStats, LandingVariantStats } from '@/components/landings/ab-test-comparison-card';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../../../../ui';
+import { StudioClientsSummary } from '../../../../clients-summary';
 import { useAuthStore } from '@/store/auth.store';
 
 // Приглушённый текст Studio (запрос пользователя 2026-08-03: "карточки просмотров, кликов итд
@@ -404,6 +405,11 @@ export default function StudioLandingStatsPage() {
             </StudioLinkButton>
           )}
         </div>
+        {!!clients?.items.length && (
+          <div className="mb-3">
+            <StudioClientsSummary projectId={projectId} params={{ landingId }} />
+          </div>
+        )}
         {!clients?.items.length ? (
           <div className={`${STUDIO_CARD} p-8 text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]`}>
             Пока нет подписчиков, привязанных именно к этому лендингу.

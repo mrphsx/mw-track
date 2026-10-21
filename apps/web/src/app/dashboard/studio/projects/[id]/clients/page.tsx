@@ -17,6 +17,7 @@ import {
 } from '@/components/clients/clients-filter';
 import { ClientRow } from '@/components/clients/clients-table';
 import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
+import { StudioClientsSummary } from '../../../clients-summary';
 import { StudioClientsTable } from '../../../clients-table';
 import { STUDIO_CARD, StudioClientsPeriodPicker, StudioLinkButton } from '../../../ui';
 import { useAuthStore } from '@/store/auth.store';
@@ -123,36 +124,38 @@ export default function StudioClientsPage() {
     downloadBlob(res.data as Blob, `clients_${id}.csv`);
   };
 
+  // Параметры фильтра списка — общие для таблицы и сводки над ней (2026-10-21).
+  const listParams = {
+    origin,
+    channelType: filters.channelType,
+    hasPurchase: filters.hasPurchase,
+    hasDialogue: filters.hasDialogue,
+    country: filters.country,
+    minSpent: filters.minSpent,
+    landingId: filters.landingId,
+    buyerId: filters.buyerId,
+    pixelId: filters.pixelId,
+    campaignName: filters.campaignName,
+    adName: filters.adName,
+    adsetName: filters.adsetName,
+    siteSourceName: filters.siteSourceName,
+    utmSource: filters.utmSource,
+    utmMedium: filters.utmMedium,
+    utmCampaign: filters.utmCampaign,
+    utmContent: filters.utmContent,
+    adSource: filters.adSource,
+    search: search || undefined,
+    period: periodValue?.period,
+    from: periodValue?.period === 'custom' ? periodValue.from : undefined,
+    to: periodValue?.period === 'custom' ? periodValue.to : undefined,
+  };
+
   const { data } = useQuery({
     queryKey: ['clients', id, origin, filters, search, page, periodValue],
     queryFn: async () =>
       (
         await api.get<ClientsResponse>(`/projects/${id}/clients`, {
-          params: {
-            page,
-            origin,
-            channelType: filters.channelType,
-            hasPurchase: filters.hasPurchase,
-            hasDialogue: filters.hasDialogue,
-            country: filters.country,
-            minSpent: filters.minSpent,
-            landingId: filters.landingId,
-            buyerId: filters.buyerId,
-            pixelId: filters.pixelId,
-            campaignName: filters.campaignName,
-            adName: filters.adName,
-            adsetName: filters.adsetName,
-            siteSourceName: filters.siteSourceName,
-            utmSource: filters.utmSource,
-            utmMedium: filters.utmMedium,
-            utmCampaign: filters.utmCampaign,
-            utmContent: filters.utmContent,
-            adSource: filters.adSource,
-            search: search || undefined,
-            period: periodValue?.period,
-            from: periodValue?.period === 'custom' ? periodValue.from : undefined,
-            to: periodValue?.period === 'custom' ? periodValue.to : undefined,
-          },
+          params: { page, ...listParams },
         })
       ).data,
     enabled: periodReady,
@@ -233,6 +236,8 @@ export default function StudioClientsPage() {
       </div>
 
       <ClientsFilter projectId={id} value={filters} onChange={(v) => { setFilters(v); setPage(1); }} containerClassName={STUDIO_CARD} />
+
+      <StudioClientsSummary projectId={id} params={listParams} enabled={periodReady} />
 
       <StudioClientsTable
         projectId={id}

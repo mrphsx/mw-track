@@ -78,7 +78,11 @@ export function writeClientsFiltersToSearchParams(filters: ClientsFilterState, p
   }
 }
 
+// Подпись роли рядом с именем, если баером у клиентов записан не баер (админ по своей ссылке).
+const ROLE_HINT: Record<string, string> = { OWNER: 'владелец', ADMIN: 'админ', SUPER_ADMIN: 'суперадмин', OPERATOR: 'оператор', OPERATOR_ADMIN: 'админ операторов' };
+
 interface FilterOptions {
+  buyers?: { id: string; name: string; role: string; isDeleted: boolean }[];
   campaignNames: string[];
   adsetNames: string[];
   adNames: string[];
@@ -127,11 +131,6 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
   // Баер/пиксель — реальные выпадающие списки (запрос пользователя 2026-07-24), а не
   // свободный текст: id известен заранее, в отличие от кампании/объявления, которые заводятся
   // на стороне рекламной площадки и существуют только как текст на Client (см. поля ниже).
-  const { data: team } = useQuery({
-    queryKey: ['team'],
-    queryFn: async () => (await api.get<{ id: string; firstName: string; lastName: string | null }[]>('/team')).data,
-    enabled: open,
-  });
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId, 'pixels'],
@@ -273,7 +272,12 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
               onChange={(v) => update({ buyerId: v.length ? v : undefined })}
               options={[
                 { value: 'none', label: 'Без баера' },
-                ...(team?.map((u) => ({ value: u.id, label: `${u.firstName} ${u.lastName || ''}`.trim() })) ?? []),
+                // Только баеры (+ те, кто реально стоит баером у клиентов проекта) — с сервера,
+                // а не весь /team (2026-10-21: там были владелец, админы и операторы).
+                ...(options?.buyers ?? []).map((b) => ({
+                  value: b.id,
+                  label: `${b.name}${b.role !== 'BUYER' ? ` (${ROLE_HINT[b.role] ?? b.role})` : ''}${b.isDeleted ? ' — удалён' : ''}`,
+                })),
               ]}
             />
           </div>

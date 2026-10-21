@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ChannelType, Client, DialogueSource, Prisma } from '@prisma/client';
+import { ChannelType, Client, DialogueSource, Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveStatsPeriod } from '../../common/timezone.util';
 import { formatUserName } from '../../common/user-name.util';
@@ -645,7 +645,7 @@ export class ClientsService {
   async getFilterOptions(projectId: string, scopedBuyerId?: string, canViewTrafficSource = true) {
     // Тот же критерий, что и у findMany/exportClientsCsv: оператор не видит рекламную атрибуцию
     // ни в списке, ни в карточке, ни в экспорте — значит и подсказок для неё быть не должно.
-    if (!canViewTrafficSource) return { campaignNames: [], adsetNames: [], adNames: [] };
+    if (!canViewTrafficSource) return { campaignNames: [], adsetNames: [], adNames: [], buyers: [] };
 
     const base: Prisma.ClientWhereInput = {
       projectId,
@@ -675,10 +675,68 @@ export class ClientsService {
       }),
     ]);
 
+    // Баеры для фильтра (2026-10-21: раньше фронт брал весь /team, и в списке были владелец,
+    // админы и операторы). Теперь — действующие сотрудники с ролью BUYER плюс любой, кто реально
+    // записан баером у клиентов этого проекта (удалённый баер, админ по своей ссылке), чтобы
+    // таких клиентов тоже можно было отфильтровать. Удалённые помечаются isDeleted.
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { companyId: true } });
+    const usedBuyerIds = (
+      await this.prisma.client.groupBy({ by: ['buyerId'], where: { ...base, buyerId: { not: null } } })
+    ).map((r) => r.buyerId as string);
+    const buyerUsers = await this.prisma.user.findMany({
+      where: scopedBuyerId
+        ? { id: scopedBuyerId, companyId: project.companyId }
+        : { companyId: project.companyId, OR: [{ role: UserRole.BUYER, deletedAt: null }, { id: { in: usedBuyerIds } }] },
+      select: { id: true, firstName: true, lastName: true, role: true, deletedAt: true },
+    });
+    const buyers = buyerUsers
+      .map((u) => ({ id: u.id, name: formatUserName(u), role: u.role, isDeleted: !!u.deletedAt }))
+      .sort((a, b) => Number(a.isDeleted) - Number(b.isDeleted) || a.name.localeCompare(b.name, 'ru'));
+
     return {
+      buyers,
       campaignNames: campaigns.map((r) => r.campaignName).filter((v): v is string => !!v),
       adsetNames: adsets.map((r) => r.adsetName).filter((v): v is string => !!v),
       adNames: ads.map((r) => r.adName).filter((v): v is string => !!v),
+    };
+  }
+
+  // Сводка по выбранным в списке клиентам (запрос пользователя 2026-10-21): тот же фильтр и та
+  // же видимость, что у findMany, поэтому цифры всегда про то, что видно в таблице. Статусы —
+  // те же, что в колонках «Статус» и «Бот». Покупки — за всё время этих клиентов (как колонка
+  // «Сумма» в строке): ФД — клиенты хотя бы с одной покупкой, РД — все покупки сверх первой.
+  async getListSummary(projectId: string, filters: ClientFiltersDto, scopedBuyerId?: string) {
+    let period: { since: Date; until: Date } | undefined;
+    if (filters.period) {
+      const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timezone: true } });
+      period = await resolveStatsPeriod(this.prisma, project.timezone, filters);
+    }
+    const where = this.buildClientFilterWhere(projectId, filters, scopedBuyerId, period);
+    const count = (extra: Prisma.ClientWhereInput) => this.prisma.client.count({ where: { AND: [where, extra] } });
+
+    const [total, subscribed, unsubscribed, external, dialogues, botActive, botBlocked, botNever, fd, sums] = await Promise.all([
+      this.prisma.client.count({ where }),
+      count({ subscribedAt: { not: null }, unsubscribedAt: null }),
+      count({ subscribedAt: { not: null }, unsubscribedAt: { not: null } }),
+      count({ subscribedAt: null }),
+      count({ firstDialogueAt: { not: null } }),
+      count({ botActivatedAt: { not: null }, isBotActive: true }),
+      count({ botActivatedAt: { not: null }, isBotActive: false }),
+      count({ botActivatedAt: null }),
+      count({ purchasesCount: { gte: 1 } }),
+      this.prisma.client.aggregate({ where, _sum: { purchasesCount: true, totalSpent: true } }),
+    ]);
+    const purchases = sums._sum.purchasesCount ?? 0;
+    return {
+      total,
+      subscribed,
+      unsubscribed,
+      external,
+      dialogues,
+      bot: { active: botActive, blocked: botBlocked, notActivated: botNever },
+      fd,
+      rd: Math.max(purchases - fd, 0),
+      revenue: Number(sums._sum.totalSpent ?? 0),
     };
   }
 
