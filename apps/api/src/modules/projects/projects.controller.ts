@@ -143,6 +143,7 @@ export class ProjectsController {
       data.pixelsUnattributed.revenue = 0;
       data.campaignsUnattributed.revenue = 0;
       data.sourcesUnattributed.revenue = 0;
+      data.landingsUnattributed.revenue = 0;
     }
 
     return data;

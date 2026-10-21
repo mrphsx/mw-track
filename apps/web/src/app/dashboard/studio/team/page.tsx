@@ -314,6 +314,7 @@ interface BuyerAnalyticsRow {
   role: TeamMember['role'];
   clients: number;
   revenue: number;
+  isDeleted?: boolean;
 }
 
 interface BuyerAnalytics {
@@ -347,7 +348,7 @@ function TeamAnalyticsSection() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3] mb-3">Статистика по рекламщикам</h2>
+        <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3] mb-3">Статистика по рекламщикам <span className="text-sm font-normal text-[#5F6B7A] dark:text-[#92A0AF]">за всё время</span></h2>
         <div className={`${STUDIO_CARD} overflow-x-auto`}>
           <table className="w-full text-sm">
             <thead>
@@ -361,7 +362,12 @@ function TeamAnalyticsSection() {
             <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
               {buyerStats?.buyers.map((b) => (
                 <tr key={b.userId}>
-                  <td className="px-5 py-3 font-medium text-[#131A24] dark:text-[#E9EDF3]">{b.name}</td>
+                  <td
+                    className={`px-5 py-3 font-medium ${b.isDeleted ? 'text-red-600 dark:text-red-400' : 'text-[#131A24] dark:text-[#E9EDF3]'}`}
+                    title={b.isDeleted ? 'Удалённый пользователь' : undefined}
+                  >
+                    {b.name}
+                  </td>
                   <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF]">{ROLE_LABELS[b.role]}</td>
                   <td className="px-5 py-3 text-right font-mono tabular-nums text-[#131A24] dark:text-[#E9EDF3]">{b.clients}</td>
                   <td className="px-5 py-3 text-right font-mono tabular-nums text-[#131A24] dark:text-[#E9EDF3]">{formatMoney(b.revenue)}</td>

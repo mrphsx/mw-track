@@ -88,6 +88,14 @@ function LeaderboardFunnelMini({ row }: { row: LeaderboardFunnelRow }) {
 // (запрос пользователя 2026-08-19). Логика 1:1 с classic (apps/web/.../(dashboard)/projects/[id]/
 // leaderboards/[category]/page.tsx), период-пилюли скопированы из самой страницы проекта (та же
 // причина, что и там — не вынесено в общий компонент, страница проекта уже рабочая).
+const UNATTRIBUTED_LABEL: Record<Category, string> = {
+  buyers: 'Без баера',
+  pixels: 'Без пикселя',
+  landings: 'Без лендинга',
+  campaigns: 'Без кампании',
+  sources: 'Без источника',
+};
+
 export default function StudioLeaderboardFullPage() {
   const { id, category } = useParams<{ id: string; category: string }>();
   const [period, setPeriod] = usePeriodQueryState('today');
@@ -106,7 +114,8 @@ export default function StudioLeaderboardFullPage() {
 
   // Воронка для ВСЕХ строк полного списка сразу (не только top-5) — тот же эндпоинт .../funnel,
   // потолок ids поднят там же с 10 до 200 под этот кейс.
-  const ids = (data ?? []).map((item) => item.id);
+  // Воронка — для первых 200 строк (столько принимает эндпоинт .../funnel за раз).
+  const ids = (data ?? []).slice(0, 200).map((item) => item.id);
   const { data: funnel } = useQuery({
     queryKey: ['project', id, 'leaderboards', category, 'full-funnel', periodParams, ids.join(',')],
     queryFn: async () =>
@@ -118,6 +127,17 @@ export default function StudioLeaderboardFullPage() {
     enabled: periodReady && isValidCategory && ids.length > 0,
   });
   const funnelById = new Map((funnel ?? []).map((r) => [r.id, r]));
+
+  // Остаток без атрибуции (без баера / пикселя / лендинга / кампании / источника) — тот же,
+  // что под топ-5 на странице проекта, чтобы сумма строк сходилась с итогом проекта.
+  const { data: unattributed } = useQuery({
+    queryKey: ['project', id, 'leaderboards', 'unattributed', category, periodParams],
+    queryFn: async () => {
+      const res = (await api.get<Record<string, { clients: number; revenue: number } | null>>(`/projects/${id}/leaderboards`, { params: periodParams })).data;
+      return res[`${category}Unattributed`] ?? null;
+    },
+    enabled: periodReady && isValidCategory,
+  });
 
   if (!isValidCategory) return <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Неизвестная категория.</p>;
   const cat = category as Category;
@@ -232,6 +252,17 @@ export default function StudioLeaderboardFullPage() {
               </div>
             );
           })}
+          {!!unattributed && (unattributed.clients > 0 || unattributed.revenue > 0) && (
+            <div className="flex items-center justify-between text-sm gap-2 pt-2 border-t border-dashed border-[#DCE1E8] dark:border-white/10">
+              <span className="text-[#5F6B7A] dark:text-[#92A0AF] italic truncate">{UNATTRIBUTED_LABEL[cat]}</span>
+              <div className="text-right shrink-0">
+                <div className="font-medium text-[#5F6B7A] dark:text-[#92A0AF]">${unattributed.revenue.toFixed(2)}</div>
+                <div className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">
+                  {unattributed.clients} {CLIENTS_COLUMN_LABEL[cat]}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -97,6 +97,38 @@ export interface FindOrCreateClientInput {
 // Сам выпадающий список на фронте ещё и ищет по вводу, так что показывать больше незачем.
 const FILTER_OPTIONS_CAP = 1000;
 
+// Поля, описывающие один визит (откуда человек пришёл).
+const ATTRIBUTION_FIELDS = [
+  'utmSource', 'utmMedium', 'utmCampaign', 'utmContent', 'utmTerm',
+  'fbclid', 'ttclid', 'landingId', 'abTestGroupId', 'pixelId',
+  'adId', 'adName', 'adsetId', 'adsetName', 'campaignId', 'campaignName',
+  'placement', 'siteSourceName', 'buyerId',
+] as const;
+
+type AttributionField = (typeof ATTRIBUTION_FIELDS)[number];
+type AttributionValues = Partial<Record<AttributionField, string | null | undefined>>;
+
+function clickPlatform(v: AttributionValues): 'FACEBOOK' | 'TIKTOK' | null {
+  if (v.fbclid) return 'FACEBOOK';
+  if (v.ttclid) return 'TIKTOK';
+  return null;
+}
+
+// Слияние атрибуции существующего клиента с новым визитом (2026-10-21). Остаётся правило
+// «первое известное значение»: пустые поля дополняются. Но если клиент уже пришёл с одной
+// рекламной платформы, а новый визит — с другой (был fbclid, пришёл ttclid или наоборот),
+// новый визит игнорируется целиком. Раньше такой человек получал баера и ttclid из TikTok-
+// визита при fbclid/пикселе/кампании из Facebook, и топ баеров переставал сходиться с топом
+// источников (живой случай ROLANDO ACUNA, 12–18.10: $166 FB-клиента у TikTok-баера).
+function mergeAttribution(existing: AttributionValues, incoming: AttributionValues): Record<AttributionField, string | null> {
+  const was = clickPlatform(existing);
+  const now = clickPlatform(incoming);
+  const crossPlatform = !!was && !!now && was !== now;
+  return Object.fromEntries(
+    ATTRIBUTION_FIELDS.map((f) => [f, crossPlatform ? (existing[f] ?? null) : (existing[f] ?? incoming[f] ?? null)]),
+  ) as Record<AttributionField, string | null>;
+}
+
 @Injectable()
 export class ClientsService {
   private readonly logger = new Logger(ClientsService.name);
@@ -119,6 +151,8 @@ export class ClientsService {
       // findByTgId). Теперь появился второй вызывающий с markSubscribed:false, который МОЖЕТ
       // найти existing — не должен превращать внешний контакт в настоящую подписку воронки.
       const shouldMarkSubscribed = data.markSubscribed !== false;
+      // Атрибуция — см. mergeAttribution: визит с другой рекламной платформы не смешивается с первым.
+      const attribution = mergeAttribution(existing, data);
       return this.prisma.client.update({
         where: { id: existing.id },
         data: {
@@ -133,29 +167,12 @@ export class ClientsService {
           tgIsPremium: data.tgIsPremium ?? existing.tgIsPremium,
           tgPhotoUrl: data.tgPhotoUrl ?? existing.tgPhotoUrl,
           country: existing.country ?? data.country,
-          utmSource: existing.utmSource ?? data.utmSource,
-          utmMedium: existing.utmMedium ?? data.utmMedium,
-          utmCampaign: existing.utmCampaign ?? data.utmCampaign,
-          utmContent: existing.utmContent ?? data.utmContent,
-          fbclid: existing.fbclid ?? data.fbclid,
-          ttclid: existing.ttclid ?? data.ttclid,
+          ...attribution,
           fbp: existing.fbp ?? data.fbp,
           ipAddress: existing.ipAddress ?? data.ipAddress,
           userAgent: existing.userAgent ?? data.userAgent,
           countryCode: existing.countryCode ?? data.countryCode,
-          landingId: existing.landingId ?? data.landingId,
-          abTestGroupId: existing.abTestGroupId ?? data.abTestGroupId,
           tgInviteLink: existing.tgInviteLink ?? data.tgInviteLink,
-          pixelId: existing.pixelId ?? data.pixelId,
-          adId: existing.adId ?? data.adId,
-          adName: existing.adName ?? data.adName,
-          adsetId: existing.adsetId ?? data.adsetId,
-          adsetName: existing.adsetName ?? data.adsetName,
-          campaignId: existing.campaignId ?? data.campaignId,
-          campaignName: existing.campaignName ?? data.campaignName,
-          placement: existing.placement ?? data.placement,
-          siteSourceName: existing.siteSourceName ?? data.siteSourceName,
-          buyerId: existing.buyerId ?? data.buyerId,
           externalSubscribedAt: existing.externalSubscribedAt ?? data.externalSubscribedAt,
           visitorId: existing.visitorId ?? data.visitorId,
         },
@@ -269,27 +286,18 @@ export class ClientsService {
     const client = await this.prisma.client.findFirst({ where: { projectId, tgUserId } });
     if (!client) return null;
 
+    // Раньше новые значения перезаписывали старые по одному полю — теперь общее правило
+    // mergeAttribution (первое известное значение, без смешивания платформ), как в findOrCreate.
+    const attribution = mergeAttribution(client, data);
+
     return this.prisma.client.update({
       where: { id: client.id },
       data: {
-        fbclid: data.fbclid ?? client.fbclid,
-        ttclid: data.ttclid ?? client.ttclid,
+        ...attribution,
         ipAddress: data.ipAddress ?? client.ipAddress,
         userAgent: data.userAgent ?? client.userAgent,
         fbp: data.fbp ?? client.fbp,
         countryCode: data.countryCode ?? client.countryCode,
-        utmSource: data.utmSource ?? client.utmSource,
-        utmCampaign: data.utmCampaign ?? client.utmCampaign,
-        pixelId: data.pixelId ?? client.pixelId,
-        adId: data.adId ?? client.adId,
-        adName: data.adName ?? client.adName,
-        adsetId: data.adsetId ?? client.adsetId,
-        adsetName: data.adsetName ?? client.adsetName,
-        campaignId: data.campaignId ?? client.campaignId,
-        campaignName: data.campaignName ?? client.campaignName,
-        placement: data.placement ?? client.placement,
-        siteSourceName: data.siteSourceName ?? client.siteSourceName,
-        buyerId: data.buyerId ?? client.buyerId,
       },
     });
   }

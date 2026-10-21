@@ -38,6 +38,9 @@ interface CompanyStats {
   // null — нет права на рейтинг команды (или включено "только свои клиенты"), блок не показываем.
   buyers: (PeriodRow & { buyerId: string; name: string; isDeleted: boolean })[] | null;
   sources: (PeriodRow & { source: 'FACEBOOK' | 'TIKTOK' })[];
+  // Клиенты и покупки без баера / без метки источника — отдельной строкой под таблицей.
+  buyersUnattributed?: PeriodRow | null;
+  sourcesUnattributed?: PeriodRow | null;
 }
 
 const SOURCE_LABEL: Record<'FACEBOOK' | 'TIKTOK', string> = { FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
@@ -163,6 +166,7 @@ export default function StudioDashboardPage() {
                 ),
                 row: b,
               }))}
+              footer={companyStats.buyersUnattributed ? { label: 'Без баера', row: companyStats.buyersUnattributed } : undefined}
             />
           )}
           <PeriodTable
@@ -171,6 +175,7 @@ export default function StudioDashboardPage() {
             canViewRevenue={canViewRevenue}
             empty=""
             rows={companyStats.sources.map((src) => ({ key: src.source, label: SOURCE_LABEL[src.source], row: src }))}
+            footer={companyStats.sourcesUnattributed ? { label: 'Без источника', row: companyStats.sourcesUnattributed } : undefined}
           />
         </div>
       )}
@@ -300,19 +305,24 @@ function PeriodTable({
   rows,
   canViewRevenue,
   empty,
+  footer,
 }: {
   title: string;
   firstColumn: string;
   rows: { key: string; label: React.ReactNode; row: PeriodRow }[];
   canViewRevenue: boolean;
   empty: string;
+  // Остаток без метки (без баера / без источника) — не участвует в рейтинге, показывается,
+  // только если в нём что-то есть.
+  footer?: { label: string; row: PeriodRow };
 }) {
+  const showFooter = !!footer && (footer.row.clients > 0 || footer.row.dialogues > 0 || footer.row.fd > 0 || footer.row.rd > 0 || footer.row.revenue > 0);
   const head = 'px-3 py-2.5 text-right font-medium';
   const cell = 'px-3 py-2.5 text-right tabular-nums';
   return (
     <div className="rounded-3xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-5 min-w-0">
       <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3] mb-3">{title}</h2>
-      {rows.length === 0 ? (
+      {rows.length === 0 && !showFooter ? (
         <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">{empty}</p>
       ) : (
         <div className="overflow-x-auto">
@@ -338,6 +348,16 @@ function PeriodTable({
                   {canViewRevenue && <td className={`${cell} font-semibold`}>{money(row.revenue)}</td>}
                 </tr>
               ))}
+              {showFooter && footer && (
+                <tr className="text-[#5F6B7A] dark:text-[#92A0AF] border-t border-dashed border-[#DCE1E8] dark:border-white/10">
+                  <td className="px-3 py-2.5 italic">{footer.label}</td>
+                  <td className={cell}>{footer.row.clients}</td>
+                  <td className={cell}>{footer.row.dialogues}</td>
+                  <td className={cell}>{footer.row.fd}</td>
+                  <td className={cell}>{footer.row.rd}</td>
+                  {canViewRevenue && <td className={`${cell} font-semibold`}>{money(footer.row.revenue)}</td>}
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

@@ -26,6 +26,8 @@ export interface AggregatedRow {
   revenue: number;
 }
 
+const UNATTRIBUTED_KEY = '__none__';
+
 @Injectable()
 export class ProjectsService {
   private readonly logger = new Logger(ProjectsService.name);
@@ -158,7 +160,7 @@ export class ProjectsService {
 
     const empty = { newClients: 0, unsubscribedClients: 0, botActivatedClients: 0, totalRevenue: 0, totalFd: 0, totalRd: 0, fdRevenue: 0, rdRevenue: 0, projectCount: 0 };
     if (projectIds.length === 0) {
-      return { ...empty, byProject: {}, buyers: null, sources: [] };
+      return { ...empty, byProject: {}, buyers: null, buyersUnattributed: null, sources: [], sourcesUnattributed: null };
     }
 
     // Каждый проект — в своём часовом поясе (запрос пользователя 2026-10-20): окно периода
@@ -221,7 +223,7 @@ export class ProjectsService {
     let buyers: (AggregatedRow & { buyerId: string; name: string; isDeleted: boolean })[] | null = null;
     if (buyerMap) {
       const top = [...buyerMap.entries()]
-        .filter(([key]) => key)
+        .filter(([key]) => key !== UNATTRIBUTED_KEY)
         .sort(([, a], [, b]) => b.revenue - a.revenue || b.clients - a.clients || b.dialogues - a.dialogues)
         .slice(0, 5);
       const users = await this.prisma.user.findMany({
@@ -250,10 +252,17 @@ export class ProjectsService {
       projectCount: projectIds.length,
       byProject: Object.fromEntries(projectIds.map((id) => [id, byProjectMap.get(id) ?? zeroRow])),
       buyers,
+      // «Без баера» / «Без источника» (2026-10-21) — клиенты и покупки без этих меток раньше на
+      // главной не показывались нигде, и сумма таблиц не сходилась с итогом.
+      buyersUnattributed: buyerMap ? (buyerMap.get(UNATTRIBUTED_KEY) ?? zeroRow) : null,
       sources: (['FACEBOOK', 'TIKTOK'] as const).map((source) => ({ source, ...(sourceMap.get(source) ?? zeroRow) })),
+      sourcesUnattributed: sourceMap.get(UNATTRIBUTED_KEY) ?? zeroRow,
     };
   }
 
+  // Диалог считается так же, как карточка «Диалоги» на странице проекта (totalCrmDialogues):
+  // «наш» клиент, подписался не позже первого диалога, первый диалог — в периоде. То же правило
+  // во всех воронках топов (2026-10-21).
   // Клиенты/диалоги/ФД/РД/сумма, сгруппированные по одному измерению клиента (проект, баер,
   // источник). Клиенты — Client.subscribedAt в окне, диалоги — Client.firstDialogueAt в окне, оба
   // только "наши" (subscribedAt не пуст). ФД/РД/сумма — покупки в окне только по проектам с
@@ -275,7 +284,7 @@ export class ProjectsService {
         WITH w AS (${projectPeriodWindowsSql(projectIds, periodQuery)})
         SELECT ${dimension} as key,
           COUNT(*) FILTER (WHERE c."subscribedAt" >= w.since AND c."subscribedAt" < w.until) as clients,
-          COUNT(*) FILTER (WHERE c."firstDialogueAt" >= w.since AND c."firstDialogueAt" < w.until) as dialogues
+          COUNT(*) FILTER (WHERE c."firstDialogueAt" >= w.since AND c."firstDialogueAt" < w.until AND c."subscribedAt" <= c."firstDialogueAt") as dialogues
         FROM "Client" c
         JOIN w ON w.pid = c."projectId"
         WHERE c."deletedAt" IS NULL AND c."subscribedAt" IS NOT NULL ${buyerSql}
@@ -312,13 +321,13 @@ export class ProjectsService {
       }
       return r;
     };
+    // Клиенты без значения измерения (без баера, без источника) — под ключом UNATTRIBUTED_KEY,
+    // а не выбрасываются: вызывающий показывает их отдельной строкой.
     for (const r of clientRows) {
-      if (!r.key) continue;
-      Object.assign(row(r.key), { clients: Number(r.clients), dialogues: Number(r.dialogues) });
+      Object.assign(row(r.key ?? UNATTRIBUTED_KEY), { clients: Number(r.clients), dialogues: Number(r.dialogues) });
     }
     for (const r of purchaseRows) {
-      if (!r.key) continue;
-      Object.assign(row(r.key), { fd: Number(r.fd), rd: Number(r.rd), revenue: Number(r.revenue ?? 0) });
+      Object.assign(row(r.key ?? UNATTRIBUTED_KEY), { fd: Number(r.fd), rd: Number(r.rd), revenue: Number(r.revenue ?? 0) });
     }
     return result;
   }
@@ -941,7 +950,8 @@ requests.post(
             where: {
               projectId: id,
               createdAt: { gte: since, lt: until },
-              client: { campaignId: campaign.campaignId, deletedAt: null, ...buyerWhere },
+              // Только «наши» клиенты — как итог проекта и топы (2026-10-21).
+              client: { campaignId: campaign.campaignId, deletedAt: null, subscribedAt: { not: null }, ...buyerWhere },
             },
           }),
         ]);
@@ -1183,7 +1193,8 @@ requests.post(
     const project = await this.findOne(id, companyId); // проверка владения + 404
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
     const buyerFilterSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
-    const FULL_LIST_CAP = 200;
+    // 2000 (было 200): у крупных проектов кампаний за 30 дней уже ровно 200, хвост терялся.
+    const FULL_LIST_CAP = 2000;
 
     if (category === 'buyers') {
       const [buyerRows, users] = await Promise.all([
@@ -1342,7 +1353,7 @@ requests.post(
       this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
         SELECT "landingId" as id,
           COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
-          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until} AND "subscribedAt" IS NOT NULL AND "subscribedAt" <= "firstDialogueAt")::int as dialogues
         FROM "Client"
         WHERE "landingId" IN (${Prisma.join(ids)}) AND "deletedAt" IS NULL
           ${clientBuyerSql}
@@ -1419,7 +1430,7 @@ requests.post(
       this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
         SELECT ${col} as id,
           COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
-          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until} AND "subscribedAt" IS NOT NULL AND "subscribedAt" <= "firstDialogueAt")::int as dialogues
         FROM "Client"
         WHERE ${col} IN (${Prisma.join(ids)}) AND "projectId" = ${projectId} AND "deletedAt" IS NULL
           ${clientBuyerSql}
@@ -1478,7 +1489,7 @@ requests.post(
       this.prisma.$queryRaw<{ id: string; subscribes: number; dialogues: number }[]>`
         SELECT "buyerId" as id,
           COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
-          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until} AND "subscribedAt" IS NOT NULL AND "subscribedAt" <= "firstDialogueAt")::int as dialogues
         FROM "Client"
         WHERE "buyerId" IN (${Prisma.join(ids)}) AND "projectId" = ${projectId} AND "deletedAt" IS NULL
         GROUP BY "buyerId"
@@ -1526,7 +1537,7 @@ requests.post(
         SELECT
           CASE WHEN "fbclid" IS NOT NULL THEN 'FACEBOOK' WHEN "ttclid" IS NOT NULL THEN 'TIKTOK' END as source,
           COUNT(*) FILTER (WHERE "subscribedAt" >= ${since} AND "subscribedAt" < ${until})::int as subscribes,
-          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until})::int as dialogues
+          COUNT(*) FILTER (WHERE "firstDialogueAt" >= ${since} AND "firstDialogueAt" < ${until} AND "subscribedAt" IS NOT NULL AND "subscribedAt" <= "firstDialogueAt")::int as dialogues
         FROM "Client"
         WHERE "projectId" = ${projectId} AND "deletedAt" IS NULL
           AND ((${wantFacebook} AND "fbclid" IS NOT NULL) OR (${wantTiktok} AND "ttclid" IS NOT NULL))

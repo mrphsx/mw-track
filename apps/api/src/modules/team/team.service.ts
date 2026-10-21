@@ -1,3 +1,4 @@
+import { projectPeriodWindowsSql } from '../../common/timezone.util';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { User, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -249,23 +250,32 @@ export class TeamService {
   // Team Analytics (Фаза 3.6, запрос пользователя 2026-07-15) — атрибуция клиента к баеру
   // через скрытый параметр трекинг-ссылки (Client.buyerId, см. link-params.ts/GetLinkDialog),
   // не через привязку к лендингу (лендинг и пиксель могут использовать несколько баеров).
+  // Аналитика команды за всё время. С 2026-10-21 считается по тем же правилам, что главная и
+  // страница проекта: только активные (не архивные) проекты, клиенты — «наши» (прошли воронку,
+  // subscribedAt не пуст), выручка — покупки только таких клиентов. Раньше сюда попадали
+  // внешние контакты и архивные проекты, и цифры не сходились с главной за «Всё время».
+  // Удалённый баер показывается со своим именем и флагом isDeleted (фронт красит красным),
+  // а не «Удалённый пользователь» — история баера из системы не пропадает.
   async getBuyerAnalytics(companyId: string) {
     const [rows, users] = await Promise.all([
       this.prisma.$queryRaw<{ buyerId: string | null; clients: number; revenue: string }[]>`
-        SELECT c."buyerId", COUNT(DISTINCT c.id)::int as clients, COALESCE(SUM(p.amount), 0) as revenue
+        SELECT c."buyerId",
+          COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" IS NOT NULL)::int as clients,
+          COALESCE(SUM(p.amount), 0) as revenue
         FROM "Client" c
-        LEFT JOIN "Purchase" p ON p."clientId" = c.id
+        JOIN "Project" pr ON pr.id = c."projectId" AND pr."deletedAt" IS NULL
+        LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
         WHERE c."companyId" = ${companyId} AND c."deletedAt" IS NULL
         GROUP BY c."buyerId"
       `,
       this.prisma.user.findMany({
-        where: { companyId, deletedAt: null },
-        select: { id: true, firstName: true, lastName: true, role: true },
+        where: { companyId },
+        select: { id: true, firstName: true, lastName: true, role: true, deletedAt: true },
       }),
     ]);
 
     const usersById = new Map(users.map((u) => [u.id, u]));
-    const buyers: { userId: string; name: string; role: UserRole; clients: number; revenue: number }[] = [];
+    const buyers: { userId: string; name: string; role: UserRole; clients: number; revenue: number; isDeleted: boolean }[] = [];
     let unattributed = { clients: 0, revenue: 0 };
 
     for (const row of rows) {
@@ -274,38 +284,39 @@ export class TeamService {
         unattributed = { clients: row.clients, revenue };
         continue;
       }
+      if (row.clients === 0 && revenue === 0) continue;
       const user = usersById.get(row.buyerId);
       buyers.push({
         userId: row.buyerId,
-        // Пользователь мог быть отключён (User.deletedAt) — данные о нём как о баере всё
-        // равно показываем (это история, не текущий доступ), но findMany выше отфильтровал
-        // deletedAt:null, так что для уже удалённых участников имени не будет — честно
-        // подписываем как "Удалённый пользователь", а не молча теряем строку.
-        name: user ? formatUserName(user) : 'Удалённый пользователь',
+        name: user ? formatUserName(user) : 'Некорректный ID баера',
         role: user?.role ?? UserRole.BUYER,
         clients: row.clients,
         revenue,
+        isDeleted: !!user?.deletedAt,
       });
     }
 
+    buyers.sort((a, b) => b.revenue - a.revenue || b.clients - a.clients);
     return { buyers, unattributed };
   }
 
+  // «Клиентов всего» / «Новых за 30 дней» / «Выручка» по проектам — те же правила, что выше;
+  // 30 дней — календарные сутки в часовом поясе каждого проекта (как пресет «30 дней» на
+  // странице проекта), чтобы цифры совпадали.
   async getProjectComparison(companyId: string) {
-    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    // totalRevenue — Postgres NUMERIC (SUM of Decimal(10,2)), node-postgres отдаёт его строкой
-    // (не float, чтобы не терять точность неявно) — конвертируем явно, иначе фронтенд получит
-    // строку там, где ждёт number (тот же класс бага, что уже чинили в ProjectsService.
-    // getOverview с BigInt из COUNT(*) — здесь конвертация нужна на стороне API, не ::int).
+    const projects = await this.prisma.project.findMany({ where: { companyId, deletedAt: null }, select: { id: true } });
+    if (projects.length === 0) return [];
+    const windows = projectPeriodWindowsSql(projects.map((p) => p.id), { period: '30d' });
     const rows = await this.prisma.$queryRaw<{ id: string; name: string; totalClients: number; newClients: number; totalRevenue: string }[]>`
+      WITH w AS (${windows})
       SELECT pr.id, pr.name,
-        COUNT(DISTINCT c.id)::int as "totalClients",
-        COUNT(DISTINCT c.id) FILTER (WHERE c."createdAt" >= ${since})::int as "newClients",
+        COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" IS NOT NULL)::int as "totalClients",
+        COUNT(DISTINCT c.id) FILTER (WHERE c."subscribedAt" >= w.since AND c."subscribedAt" < w.until)::int as "newClients",
         COALESCE(SUM(p.amount), 0) as "totalRevenue"
       FROM "Project" pr
+      JOIN w ON w.pid = pr.id
       LEFT JOIN "Client" c ON c."projectId" = pr.id AND c."deletedAt" IS NULL
-      LEFT JOIN "Purchase" p ON p."clientId" = c.id
-      WHERE pr."companyId" = ${companyId} AND pr."deletedAt" IS NULL
+      LEFT JOIN "Purchase" p ON p."clientId" = c.id AND c."subscribedAt" IS NOT NULL
       GROUP BY pr.id, pr.name
       ORDER BY pr.name ASC
     `;
