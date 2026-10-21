@@ -29,6 +29,7 @@ import { withDefaults } from '@/components/puck/puck-data';
 import { renderPuckHtml } from '@/components/puck/puck-export';
 import { PUCK_DICTIONARY_RU } from '@/components/puck/puck-dictionary';
 import { PUCK_STARTERS } from '@/components/puck/puck-starters';
+import type { UploadedAsset } from '@/components/puck/puck-fields';
 
 export const PUCK_TEMPLATE_ID = 'puck';
 
@@ -138,14 +139,14 @@ export function LandingPuckEditor({ landingId, initialProjectId }: { landingId?:
       if (landingId) fd.append('landingId', landingId);
       else fd.append('projectId', projectId);
       try {
-        return (await api.post<{ url: string }>('/landings/puck-assets', fd)).data.url;
+        return (await api.post<UploadedAsset>('/landings/puck-assets', fd, { timeout: 120_000 })).data;
       } catch (err) {
-        throw new Error(errorMessage(err, 'Не удалось загрузить картинку'));
+        throw new Error(errorMessage(err, 'Не удалось загрузить файл'));
       }
     },
     [landingId, projectId],
   );
-  const config = useMemo(() => buildPuckConfig({ upload }), [upload]);
+  const config = useMemo(() => buildPuckConfig({ uploadAsset: upload }), [upload]);
 
   const initialData = useMemo<Data | null>(() => {
     if (landingId) return content ? withDefaults(content.data ?? PUCK_STARTERS[3].build(), config) : null;

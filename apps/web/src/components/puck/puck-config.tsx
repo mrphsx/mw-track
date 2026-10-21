@@ -14,7 +14,7 @@
 import type { ComponentConfig, Config, Slot } from '@puckeditor/core';
 import type { CSSProperties, ReactNode } from 'react';
 import { BASE_CSS, FONTS, SHADOWS, fontCss, fontHref, isSafeUrl, withAlpha } from './puck-styles';
-import { ImageUploader, colorField, imageField, num, radio, select, text, textarea, yesNo } from './puck-fields';
+import { AssetUploader, ImageUploader, colorField, imageField, num, radio, select, text, textarea, videoField, yesNo } from './puck-fields';
 
 export interface PuckMeta {
   mode?: 'edit' | 'export';
@@ -415,7 +415,8 @@ function formatTimer(minutes: number): string {
   return `${h > 0 ? `${p(h)}:` : ''}${p(m)}:${p(s)}`;
 }
 
-export function buildPuckConfig({ upload }: { upload?: ImageUploader } = {}): PuckLandingConfig {
+export function buildPuckConfig({ uploadAsset }: { uploadAsset?: AssetUploader } = {}): PuckLandingConfig {
+  const upload: ImageUploader | undefined = uploadAsset ? async (file) => (await uploadAsset(file)).url : undefined;
   const Section: ComponentConfig<SectionProps> = {
     label: 'Секция',
     fields: {
@@ -978,7 +979,7 @@ export function buildPuckConfig({ upload }: { upload?: ImageUploader } = {}): Pu
   const Video: ComponentConfig<VideoProps> = {
     label: 'Видео',
     fields: {
-      url: text('Ссылка на YouTube или прямая ссылка на .mp4', 'https://'),
+      url: videoField('Видео', uploadAsset),
       ratio: select('Пропорции', { '16/9': '16 : 9', '9/16': '9 : 16 (вертикальное)', '1/1': 'Квадрат', '4/5': '4 : 5' }),
       radius: num('Скругление, px', 0, 60),
       autoplay: yesNo('Автозапуск без звука (только .mp4)'),
@@ -999,9 +1000,12 @@ export function buildPuckConfig({ upload }: { upload?: ImageUploader } = {}): Pu
           <img src={`https://i.ytimg.com/vi/${yt}/hqdefault.jpg`} alt="" style={{ ...frame, objectFit: 'cover' }} />
         );
       } else if (isSafeUrl(p.url)) {
-        body = <video src={p.url.trim()} style={frame} playsInline controls={p.controls} autoPlay={p.autoplay} muted={p.autoplay} loop={p.autoplay} preload="metadata" />;
+        const src = p.url.trim();
+        // У загруженных видео обложка лежит рядом под тем же именем (.jpg) — см. LandingsService.uploadPuckAsset.
+        const poster = /\/landings\/puck-assets\/[^?]+\.mp4$/.test(src) ? src.replace(/\.mp4$/, '.jpg') : undefined;
+        body = <video src={src} poster={poster} style={frame} playsInline controls={p.controls} autoPlay={p.autoplay} muted={p.autoplay} loop={p.autoplay} preload="metadata" />;
       } else if (!exporting) {
-        body = <div style={{ ...frame, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#aaa', font: '500 13px system-ui' }}>Вставьте ссылку на видео справа</div>;
+        body = <div style={{ ...frame, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#aaa', font: '500 13px system-ui' }}>Загрузите видео или вставьте ссылку справа</div>;
       }
       if (!body) return <></>;
       return (

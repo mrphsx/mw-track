@@ -1768,7 +1768,8 @@ export class LandingsService {
       await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${videoName}`, video, 'video/mp4');
       let posterUrl: string | null = null;
       if (poster) {
-        const posterName = name('jpg');
+        // Обложка под тем же именем, что и видео: блок «Видео» визуального редактора находит её сам.
+        const posterName = videoName.replace(/\.mp4$/, '.jpg');
         await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${posterName}`, poster, 'image/jpeg');
         posterUrl = `${base}/${posterName}`;
       }

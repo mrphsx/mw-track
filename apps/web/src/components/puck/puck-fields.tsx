@@ -54,6 +54,12 @@ export function colorField(label: string, allowEmpty = true): CustomField<string
   };
 }
 
+export interface UploadedAsset {
+  url: string;
+  type: 'image' | 'video';
+  posterUrl: string | null;
+}
+export type AssetUploader = (file: File) => Promise<UploadedAsset>;
 export type ImageUploader = (file: File) => Promise<string>;
 
 function ImageEditor({ value, onChange, upload }: { value: string; onChange: (v: string) => void; upload?: ImageUploader }) {
@@ -124,6 +130,85 @@ export function imageField(label: string, upload?: ImageUploader): CustomField<s
       <div>
         <div className="mb-1.5 text-xs font-medium text-neutral-600">{label}</div>
         <ImageEditor value={value || ''} onChange={onChange} upload={upload} />
+      </div>
+    ),
+  };
+}
+
+// Видео: загрузка файла (сервер перекодирует в mp4 для телефонов) или ссылка на YouTube / .mp4.
+function VideoEditor({ value, onChange, upload }: { value: string; onChange: (v: string) => void; upload?: AssetUploader }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const isFile = /\.mp4($|\?)/i.test(value);
+  return (
+    <div className="space-y-2">
+      {value && isFile ? (
+        <video src={value} muted playsInline preload="metadata" className="max-h-32 w-full rounded border border-neutral-200 bg-black object-contain" />
+      ) : value ? (
+        <div className="truncate rounded border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-xs text-neutral-700">{value}</div>
+      ) : (
+        <div className="flex h-20 items-center justify-center rounded border border-dashed border-neutral-300 text-xs text-neutral-500">Видео не выбрано</div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {upload && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => input.current?.click()}
+            className="rounded border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-800 hover:bg-neutral-50 disabled:opacity-50"
+          >
+            {busy ? 'Обрабатываем…' : 'Загрузить видео'}
+          </button>
+        )}
+        {value && (
+          <button type="button" onClick={() => onChange('')} className="text-xs text-red-600 hover:underline">
+            Убрать
+          </button>
+        )}
+      </div>
+      <input
+        value={value || ''}
+        placeholder="или ссылка на YouTube / .mp4"
+        onChange={(e) => onChange(e.target.value.trim())}
+        className="h-8 w-full rounded border border-neutral-300 bg-white px-2 text-xs text-neutral-900"
+      />
+      {busy && <p className="text-xs text-neutral-500">Видео обрабатывается для телефонов — обычно до минуты.</p>}
+      {!busy && <p className="text-xs text-neutral-500">Файл до 50 МБ и до 2 минут, любой формат.</p>}
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      <input
+        ref={input}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file || !upload) return;
+          setBusy(true);
+          setError('');
+          try {
+            const res = await upload(file);
+            onChange(res.url);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Не удалось загрузить');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+    </div>
+  );
+}
+
+export function videoField(label: string, upload?: AssetUploader): CustomField<string> {
+  return {
+    type: 'custom',
+    label,
+    render: ({ value, onChange }) => (
+      <div>
+        <div className="mb-1.5 text-xs font-medium text-neutral-600">{label}</div>
+        <VideoEditor value={value || ''} onChange={onChange} upload={upload} />
       </div>
     ),
   };
