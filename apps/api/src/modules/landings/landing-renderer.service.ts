@@ -14,6 +14,7 @@ import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 import { AGE_GATE_TEMPLATE_ID, renderExtraPopupHtml, resolveExtraPopup } from './extra-popup.util';
 import { GAME_TEMPLATE_FOLDER, buildGameVars, isGameTemplate } from './game.util';
 import { BUILDER_TEMPLATE_ID, buildBuilderVars, resolveBuilderConfig } from './builder.util';
+import { PUCK_TEMPLATE_ID, escapeHtmlText, formatSubscribersCount, puckNeedsDeferredRedirect, puckPageTitle } from './puck.util';
 import { COUNTDOWN_PLACEHOLDER, COUNTDOWN_TEMPLATE_ID, renderCountdownHtml, resolveCountdown } from './countdown.util';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { isBotUserAgent } from '../../common/bot-user-agent.util';
@@ -505,6 +506,15 @@ export class LandingRendererService {
     return html;
   }
 
+  private async puckVarsFor(landingId: string, data: Record<string, string>): Promise<Record<string, string>> {
+    const content = await this.prisma.landingPuckContent.findUnique({ where: { landingId } });
+    return {
+      PUCK_HTML: content?.html ?? '',
+      PUCK_TITLE: content ? escapeHtmlText(puckPageTitle(content.data)) : '',
+      PUCK_SUBSCRIBERS: formatSubscribersCount(data.SUBSCRIBERS_COUNT),
+    };
+  }
+
   // Четыре игровых шаблона рендерятся из одной общей вёрстки (templates/game), игру выбирает
   // {{GAME_KIND}} — см. game.util.ts.
   private templateFolder(templateId: string): string {
@@ -552,15 +562,19 @@ export class LandingRendererService {
     // {{TG_REDIRECT_URL}}, и подстановка ниже идёт в порядке ключей — экраны должны оказаться в
     // HTML раньше, чем заменяется ссылка.
     const builderVars = landing.templateId === BUILDER_TEMPLATE_ID ? this.builderVarsFor(landing, channelAvatar || null, data) : null;
+    // Лендинг из Puck: разметка страницы собрана браузером при сохранении (см. puck.util.ts). Тоже
+    // первой — внутри неё {{TG_REDIRECT_URL}}, {{CHANNEL_TITLE}}, {{CHANNEL_AVATAR}} и т.п.
+    const puckVars = landing.templateId === PUCK_TEMPLATE_ID ? await this.puckVarsFor(landing.id, data) : null;
 
     const vars: Record<string, string> = {
       ...(builderVars ?? {}),
+      ...(puckVars ?? {}),
       ...data,
       // Фолбэк для лендингов, созданных до этого поля (запрос пользователя 2026-07-21) —
       // templateData ещё не содержит SUBSCRIBERS_LABEL.
       SUBSCRIBERS_LABEL: data.SUBSCRIBERS_LABEL || 'подписчиков',
       CHANNEL_AVATAR: channelAvatar,
-      META_TITLE: landing.metaTitle || builderVars?.BUILDER_TITLE || data.CHANNEL_TITLE || 'Закрытый канал',
+      META_TITLE: landing.metaTitle || builderVars?.BUILDER_TITLE || puckVars?.PUCK_TITLE || data.CHANNEL_TITLE || 'Закрытый канал',
       META_DESCRIPTION: landing.metaDescription || data.CHANNEL_DESCRIPTION || '',
       // landingId — чтобы редирект-эндпоинт мог найти персональную invite-ссылку ИМЕННО
       // этого лендинга (Landing.tgInviteLink) для точной пер-лендинговой атрибуции, а не
@@ -850,14 +864,21 @@ export class LandingRendererService {
     // посетителя унесло бы в Telegram, не дав ответить на вопрос. Сам попап (см. ниже) вызывает
     // window.tcrm.triggerAutoRedirect() при нажатии кнопки "следующий шаг" — тем же вызовом, что
     // и template.html у age-gate-invite.
-    const extraPopupActive = landing.extraPopupEnabled && landing.templateId !== AGE_GATE_TEMPLATE_ID && landing.templateId !== BUILDER_TEMPLATE_ID;
+    const extraPopupActive =
+      landing.extraPopupEnabled &&
+      landing.templateId !== AGE_GATE_TEMPLATE_ID &&
+      landing.templateId !== BUILDER_TEMPLATE_ID &&
+      landing.templateId !== PUCK_TEMPLATE_ID;
 
     // Игровые шаблоны (запрос пользователя 2026-10-18): авторедирект и подсказка TikTok ждут,
     // пока посетитель доиграет — скрипт шаблона сам вызывает triggerAutoRedirect после выигрыша.
     // Конструктор с несколькими экранами: авторедирект ждёт, пока посетитель дойдёт до последнего
     // вопроса (скрипт шаблона сам зовёт triggerAutoRedirect).
     const builderMultiStep = landing.templateId === BUILDER_TEMPLATE_ID && resolveBuilderConfig(landing.builderConfig).screens.length > 1;
-    const deferAutoRedirect = landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive || isGameTemplate(landing.templateId) || builderMultiStep;
+    // Puck: несколько шагов или попап — скрипт шаблона сам зовёт triggerAutoRedirect в конце.
+    const puckDeferred = landing.templateId === PUCK_TEMPLATE_ID && puckNeedsDeferredRedirect(html);
+    const deferAutoRedirect =
+      landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive || isGameTemplate(landing.templateId) || builderMultiStep || puckDeferred;
 
     // Карта параметров (§ выше) прокидывается браузерному SDK тем же способом, что и
     // data-landing-id — иначе track.js не будет знать, под каким кастомным именем искать

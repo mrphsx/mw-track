@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import AdmZip from 'adm-zip';
@@ -18,6 +19,7 @@ import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './d
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
 import { isGameTemplate } from './game.util';
 import { BUILDER_TEMPLATE_ID, resolveBuilderConfig, validateBuilderConfig } from './builder.util';
+import { PUCK_TEMPLATE_ID, validatePuckContent } from './puck.util';
 import { AGE_GATE_TEMPLATE_ID } from './extra-popup.util';
 import { COUNTDOWN_TEMPLATE_ID } from './countdown.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
@@ -28,6 +30,13 @@ import { resolveParamMap } from '../tracking/link-params.const';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
+const PUCK_ASSET_TYPES: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/svg+xml': 'svg',
+};
 
 // Суммирует несколько дневных рядов ({date, count}[], уже сгруппированных по дню в часовом
 // поясе проекта — см. dailyBucketSql) в один общий ряд по группе A/B-теста (LandingsService.
@@ -286,6 +295,15 @@ export class LandingsService {
         previewUrl: '',
         customizableFields: ['BUILDER_CONFIG'],
       },
+      // Визуальный редактор Puck (2026-10-21) — страница целиком собирается из блоков, см. puck.util.ts.
+      // В галерее шаблонов не показывается: у него своя страница редактора.
+      {
+        id: PUCK_TEMPLATE_ID,
+        name: 'Визуальный редактор',
+        description: 'Страница из блоков: секции, колонки, шаги, попапы, кнопки',
+        previewUrl: '',
+        customizableFields: ['PUCK'],
+      },
     ];
   }
 
@@ -299,6 +317,7 @@ export class LandingsService {
     this.assertExtraPopupAllowed(dto.templateId, dto.extraPopupEnabled);
     this.assertBuilderConfigValid(dto.builderConfig);
     this.assertCountdownAllowed(dto.templateId, dto.countdownEnabled);
+    if (dto.templateId === PUCK_TEMPLATE_ID) this.assertPuckContentValid(dto.puckData, dto.puckHtml);
 
     // "Изначально стоит как в канале" (запрос пользователя 2026-07-04) — если пользователь не
     // указал число подписчиков вручную, подставляем реальное текущее число участников канала
@@ -372,6 +391,7 @@ export class LandingsService {
     // пока пользователь не нажмёт "Опубликовать" отдельно; через publish(), а не голое
     // status: PUBLISHED в create() выше, чтобы не терять существующую логику первой публикации
     // (создание персональной invite-ссылки для PRIVATE_CHANNEL_REQUEST-атрибуции, см. publish()).
+    if (dto.templateId === PUCK_TEMPLATE_ID) await this.savePuckContent(created.id, dto.puckData!, dto.puckHtml!);
     return this.publish(created.id, companyId);
   }
 
@@ -707,6 +727,12 @@ export class LandingsService {
     this.assertExtraPopupAllowed(landing.templateId, dto.extraPopupEnabled);
     this.assertBuilderConfigValid(dto.builderConfig);
     this.assertCountdownAllowed(landing.templateId, dto.countdownEnabled);
+    const puckTouched = dto.puckData !== undefined || dto.puckHtml !== undefined;
+    if (puckTouched) {
+      if (landing.templateId !== PUCK_TEMPLATE_ID) throw new BadRequestException('Этот лендинг создан не в визуальном редакторе');
+      this.assertPuckContentValid(dto.puckData, dto.puckHtml);
+      await this.savePuckContent(landing.id, dto.puckData!, dto.puckHtml!);
+    }
 
     const existingData = (landing.templateData as Record<string, string>) || {};
     const templateDataPatch: Record<string, string> = {};
@@ -764,6 +790,27 @@ export class LandingsService {
   // age-gate-invite: у него такой попап уже встроен в собственный template.html, и второй поверх
   // него был бы дублем того же вопроса. Отказ, а не молчаливое игнорирование: иначе переключатель
   // в UI выглядел бы включённым, а на странице ничего бы не менялось.
+  private assertPuckContentValid(data: unknown, html: unknown): void {
+    const error = validatePuckContent(data, html);
+    if (error) throw new BadRequestException(error);
+  }
+
+  private async savePuckContent(landingId: string, data: Record<string, unknown>, html: string): Promise<void> {
+    await this.prisma.landingPuckContent.upsert({
+      where: { landingId },
+      create: { landingId, data: data as Prisma.InputJsonValue, html },
+      update: { data: data as Prisma.InputJsonValue, html },
+    });
+  }
+
+  // Состояние редактора — только для страницы редактора, в списки и GET :id не попадает.
+  async getPuckContent(id: string, companyId: string): Promise<{ data: unknown }> {
+    const landing = await this.findOne(id, companyId);
+    if (landing.templateId !== PUCK_TEMPLATE_ID) throw new BadRequestException('Этот лендинг создан не в визуальном редакторе');
+    const content = await this.prisma.landingPuckContent.findUnique({ where: { landingId: id }, select: { data: true } });
+    return { data: content?.data ?? null };
+  }
+
   private assertBuilderConfigValid(config: unknown): void {
     if (config === undefined || config === null) return;
     const error = validateBuilderConfig(config);
@@ -777,6 +824,9 @@ export class LandingsService {
     if (extraPopupEnabled && templateId === BUILDER_TEMPLATE_ID) {
       throw new BadRequestException('В конструкторе вопросы настраиваются в самом лендинге — дополнительный попап не нужен');
     }
+    if (extraPopupEnabled && templateId === PUCK_TEMPLATE_ID) {
+      throw new BadRequestException('В визуальном редакторе попап добавляется блоком «Попап»');
+    }
   }
 
   // Таймер обратного отсчёта (запрос пользователя 2026-10-02) доступен любому лендингу, КРОМЕ
@@ -788,6 +838,9 @@ export class LandingsService {
     }
     if (countdownEnabled && templateId === BUILDER_TEMPLATE_ID) {
       throw new BadRequestException('Таймер в конструкторе пока недоступен');
+    }
+    if (countdownEnabled && templateId === PUCK_TEMPLATE_ID) {
+      throw new BadRequestException('В визуальном редакторе таймер добавляется блоком «Таймер»');
     }
   }
 
@@ -1428,6 +1481,14 @@ export class LandingsService {
       },
     });
 
+    // Картинки Puck лежат в общей папке компании (puck-assets) — у копии те же адреса, копировать нечего.
+    const puckContent = await this.prisma.landingPuckContent.findUnique({ where: { landingId: id } });
+    if (puckContent) {
+      await this.prisma.landingPuckContent.create({
+        data: { landingId: created.id, data: puckContent.data as Prisma.InputJsonValue, html: puckContent.html },
+      });
+    }
+
     if (original.customBasePath) {
       const newBasePath = `landings/${created.id}`;
       await this.storage.copyPrefix(original.customBasePath, newBasePath);
@@ -1684,6 +1745,41 @@ export class LandingsService {
     const landing = await this.findOne(id, companyId);
     if (landing.avatarKey) await this.storage.removeObject(landing.avatarKey);
     return this.prisma.landing.update({ where: { id }, data: { avatarKey: null } });
+  }
+
+  // Картинки визуального редактора Puck (2026-10-21): папка компании, имя случайное, файл неизменяем —
+  // поэтому кэш на год. Удаляются только вместе с бакетом: страница может ссылаться на картинку и
+  // из копии лендинга, и из старой версии, которую ещё не пересохранили.
+  async uploadPuckAsset(companyId: string, file: Express.Multer.File): Promise<{ url: string }> {
+    if (!file) throw new BadRequestException('Файл не передан');
+    if (file.size > MAX_AVATAR_SIZE) throw new BadRequestException('Максимальный размер файла — 5MB');
+    const ext = PUCK_ASSET_TYPES[file.mimetype || ''];
+    if (!ext) throw new BadRequestException('Нужна картинка: JPG, PNG, WEBP, GIF или SVG');
+    const name = `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
+    await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${name}`, file.buffer, file.mimetype);
+    return { url: `${process.env.API_URL}/api/v1/landings/puck-assets/${companyId}/${name}` };
+  }
+
+  async streamPuckAsset(companyId: string, file: string, res: Response): Promise<void> {
+    const ext = /^[0-9]+-[0-9a-f]{12}\.([a-z]+)$/.exec(file)?.[1];
+    const type = ext && Object.entries(PUCK_ASSET_TYPES).find(([, e]) => e === ext)?.[0];
+    if (!/^[a-z0-9]{10,40}$/.test(companyId) || !type) {
+      res.status(404).end();
+      return;
+    }
+    try {
+      const stream = await this.storage.getObjectStream(`landing-puck-assets/${companyId}/${file}`);
+      res.setHeader('Content-Type', type);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      // SVG может содержать скрипт — пусть открывается только как картинка, не как страница.
+      if (ext === 'svg') res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(404).end();
+      });
+      stream.pipe(res);
+    } catch {
+      if (!res.headersSent) res.status(404).end();
+    }
   }
 
   // Фото фона конструктора (2026-10-20). Ключ ставит только эта загрузка — PATCH с builderConfig

@@ -24,7 +24,7 @@ export function TemplatePicker({ value, onChange }: { value: string; onChange: (
     queryKey: ['landing-templates'],
     // Конструктор создаётся на отдельной странице (пункт «Конструктор» в меню «Создать лендинг»),
     // в обычном списке шаблонов его нет.
-    queryFn: async () => (await api.get<TemplateInfo[]>('/landings/templates')).data.filter((t) => t.id !== 'builder'),
+    queryFn: async () => (await api.get<TemplateInfo[]>('/landings/templates')).data.filter((t) => t.id !== 'builder' && t.id !== 'puck'),
     staleTime: 5 * 60 * 1000,
   });
 

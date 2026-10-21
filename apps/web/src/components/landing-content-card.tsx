@@ -140,7 +140,9 @@ export function LandingContentCard({
   const isAgeGate = landing?.templateId === AGE_GATE_TEMPLATE_ID;
   const isCountdown = landing?.templateId === COUNTDOWN_TEMPLATE_ID;
   // Конструктор редактируется на своей странице (2026-10-21), здесь — только ссылка на неё.
-  const isBuilder = landing?.templateId === 'builder';
+  // Конструктор и визуальный редактор Puck — содержимое меняется на их собственных страницах.
+  const isPuck = landing?.templateId === 'puck';
+  const isBuilder = landing?.templateId === 'builder' || isPuck;
 
   const save = useMutation({
     mutationFn: () =>
@@ -250,13 +252,15 @@ export function LandingContentCard({
       {isBuilder && (
         <div className="space-y-3">
           <p className={`text-sm ${muted}`}>
-            Этот лендинг собран в конструкторе: шаги, тексты, кнопки и оформление меняются на отдельной странице.
+            {isPuck
+              ? 'Этот лендинг собран в визуальном редакторе: блоки, тексты и оформление меняются на отдельной странице.'
+              : 'Этот лендинг собран в конструкторе: шаги, тексты, кнопки и оформление меняются на отдельной странице.'}
           </p>
           <Link
-            href={`/projects/${landing?.projectId}/landings/${landingId}/builder`}
+            href={`/projects/${landing?.projectId}/landings/${landingId}/${isPuck ? 'puck' : 'builder'}`}
             className="inline-flex items-center rounded-lg bg-[#1F4E9C] px-4 py-2 text-sm font-medium text-white hover:opacity-90 dark:bg-[#7BA9EE] dark:text-[#0F1620]"
           >
-            Открыть конструктор
+            {isPuck ? 'Открыть редактор' : 'Открыть конструктор'}
           </Link>
         </div>
       )}

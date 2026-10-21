@@ -263,6 +263,24 @@ The server is the authority on this config. `resolveBuilderConfig` (`builder.uti
 
 A new landing's background photo and avatar are held in the browser until the landing is created, then uploaded to the existing `/landings/:id/builder-background` and `/landings/:id/avatar` routes, and the domain is attached. Verified with offline render checks (v1 output unchanged, escaping, blocked `javascript:` URL, placeholders filled) and a headless-Chromium pass on the demo account: create via the menu, add a channel card, save, edit, and the edit persists after reload. The test landing was deleted. Next step requested: Puck as a further, separate landing type, not a replacement for this builder.
 
+On 2026-10-21, Puck (`@puckeditor/core` 0.23.0, MIT, pinned exactly) shipped as a further, separate landing creation type, «Визуальный редактор» in Studio's «Создать лендинг» menu, next to the builder and not replacing it. The editor page is `/landings/puck?projectId=`; existing pages open at `/projects/:id/landings/:landingId/puck` (`dashboard/studio/landing-puck/editor.tsx`, loaded with `ssr:false`). The landing is TEMPLATE with templateId `puck`. Its content lives in a separate table, `LandingPuckContent(landingId, data Json, html Text)` (migration `20261021120000_landing_puck_content`), so the large page JSON stays out of the landing lists, which return whole `Landing` rows. Save sends both the editor state (`puckData`) and the markup the browser built from it (`puckHtml`) through the normal create/PATCH routes. The markup comes from the same block config via `renderToStaticMarkup(<Render>)` in `components/puck/puck-export.tsx`, in mode `'export'`: channel data become `{{CHANNEL_TITLE}}`/`{{CHANNEL_AVATAR}}`/`{{CHANNEL_INITIAL}}`/`{{PUCK_SUBSCRIBERS}}`, and the «в канал» button gets `href="{{TG_REDIRECT_URL}}" data-track="Lead"`. The server inserts it into `templates/puck/template.html` as `{{PUCK_HTML}}` (puck vars first in the key order, as with the builder) and substitutes the placeholders exactly as for other templates. The markup is trusted at the same level as a CUSTOM ZIP, since it is the tenant's own page on the tenant's own domain; the server checks only shape and size (`puck.util.ts`: 400 KB data, 600 KB html).
+
+Blocks are in `components/puck/puck-config.tsx`, in four categories:
+- structure: section, columns, card, spacer, line;
+- steps and popups: step, popup;
+- channel and action: channel avatar+title, button, timer, badge;
+- content: heading, rich text, image, list, video, HTML code.
+
+Every block has margins, show on phone/desktop only, and an entrance animation. Page settings cover the tab title, font (browser-safe plus Google fonts with Cyrillic), text/accent colours, and a colour/gradient/photo background. Button actions are channel, next step, close popup, URL (http(s) only) and nothing. `BASE_CSS` is rendered by the page root, so the editor and the live page share one stylesheet. Behaviour lives in the template script on `data-pk-*` attributes: steps are shown one at a time (with a CSS rule so that without JS, crawlers included, only the first step is visible), popups support a delay, close button and backdrop dismiss, and the timer restarts on every open. Several steps or any popup defer auto-redirect until the end. The extra popup and the countdown option are refused for `puck`.
+
+Supporting pieces:
+- Images upload to `POST /landings/puck-assets` (a company folder in MinIO, served publicly with a one-year cache; SVG gets a sandbox CSP).
+- Editor state is read via `GET /landings/:id/puck`.
+- `withDefaults` (`puck-data.ts`) fills block defaults on load and export, because `Render` does not apply them.
+- The UI is in Russian via Puck's `dictionary`, opens in the phone viewport, and offers 4 starters.
+
+Verified on prod with the demo account: creation through the menu, save and reload; a full serve with tracking (real visit code in the link, no leftover placeholders); step switching; a delayed popup that closes; the timer; image upload and serving; the rejections; a duplicate copying the content; and the defer attribute when auto-redirect is on. Test landings were deleted; one test image remains in the demo company's asset folder.
+
 ## Before doing anything
 
 Read [00_MASTER_OVERVIEW.md](00_MASTER_OVERVIEW.md) first, then the numbered doc matching the area you're touching (01-15, listed in 00's file map). Each numbered doc beyond 00 is currently a TODO stub with section headers only — fill them in as that part of the system gets built, don't let them go stale.

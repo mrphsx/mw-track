@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { ArrowLeft, Eye, Wand2, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
+import { ArrowLeft, Eye, Wand2, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users, Layers } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
@@ -294,6 +294,11 @@ export default function StudioLandingStatsPage() {
             {landingTemplateId === 'builder' && (
               <StudioLinkButton icon={Wand2} href={`/projects/${projectId}/landings/${landingId}/builder`}>
                 Конструктор
+              </StudioLinkButton>
+            )}
+            {landingTemplateId === 'puck' && (
+              <StudioLinkButton icon={Layers} href={`/projects/${projectId}/landings/${landingId}/puck`}>
+                Редактор
               </StudioLinkButton>
             )}
             <StudioLinkButton icon={Eye} onClick={preview}>

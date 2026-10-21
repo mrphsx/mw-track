@@ -211,13 +211,13 @@ model User {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  company         Company          @relation(fields: [companyId], references: [id])
+  company         Company           @relation(fields: [companyId], references: [id])
   projectAccess   ProjectAccess[]
   refreshTokens   RefreshToken[]
   permissions     UserPermission[]
   adminActions    AdminActionLog[]
-  createdLandings Landing[]        @relation("LandingCreatedBy")
-  createdPixels   TrackingPixel[]  @relation("PixelCreatedBy")
+  createdLandings Landing[]         @relation("LandingCreatedBy")
+  createdPixels   TrackingPixel[]   @relation("PixelCreatedBy")
   sentNotices     AdminNotice[]     @relation("AdminNoticeCreatedBy")
   noticeReads     AdminNoticeRead[]
   domainAccess    DomainAccess[]
@@ -744,8 +744,8 @@ model Domain {
   // CreateDomainDto). OWNER/ADMIN/SUPER_ADMIN видят все домены всегда, минуя оба поля.
   sharedWithAllBuyers Boolean @default(true)
 
-  company Company       @relation(fields: [companyId], references: [id])
-  project Project?      @relation(fields: [projectId], references: [id])
+  company Company        @relation(fields: [companyId], references: [id])
+  project Project?       @relation(fields: [projectId], references: [id])
   paths   DomainPath[]
   access  DomainAccess[]
 
@@ -1000,7 +1000,23 @@ model Landing {
   cloakingRules CloakingRule[]
   cloakingLogs  CloakingLog[]
 
+  // Визуальный редактор Puck (2026-10-21) — содержимое в отдельной таблице, чтобы большой JSON
+  // страницы не попадал в каждый список лендингов (они отдают строки Landing целиком).
+  puckContent LandingPuckContent?
+
   @@index([companyId, projectId])
+}
+
+// Лендинг, собранный в Puck (templateId 'puck'): data — состояние редактора для повторного
+// открытия, html — разметка страницы, собранная при сохранении тем же набором блоков. Не в
+// modelsWithCompany: читается и пишется только через уже проверенный Landing. Удаляется вместе
+// с лендингом (сам лендинг удаляется мягко, так что на практике строка остаётся).
+model LandingPuckContent {
+  landingId String   @id
+  landing   Landing  @relation(fields: [landingId], references: [id], onDelete: Cascade)
+  data      Json
+  html      String
+  updatedAt DateTime @updatedAt
 }
 
 // Правило клоакинга (запрос пользователя 2026-09-24) — набор условий (CloakingCondition) с

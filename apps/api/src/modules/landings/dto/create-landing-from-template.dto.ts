@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import { GAME_KINDS, GAME_LIMITS } from '../game.util';
 import { LandingBehaviorDto } from './landing-behavior.dto';
 import { BUILDER_TEMPLATE_ID } from '../builder.util';
+import { PUCK_TEMPLATE_ID } from '../puck.util';
 
 // Баг-репорт пользователя 2026-07-15: "при выборе telegram тёмный или светлый пишет ошибка
 // валидации" — этот whitelist дублирует список из LandingsService.getTemplates(), но не
@@ -14,6 +15,7 @@ const TEMPLATE_IDS = [
   'age-gate-invite', 'countdown-urgency',
   ...Object.keys(GAME_KINDS),
   BUILDER_TEMPLATE_ID,
+  PUCK_TEMPLATE_ID,
 ];
 
 // Игровые шаблоны (запрос пользователя 2026-10-18) — все поля необязательны, пустое = дефолт игры
@@ -124,6 +126,11 @@ export class CreateLandingFromTemplateDto extends LandingBehaviorDto {
   @ValidateIf((o) => o.builderConfig !== null)
   @IsObject()
   builderConfig?: Record<string, unknown> | null;
+
+  // Визуальный редактор Puck (2026-10-21): состояние редактора и собранная им разметка — всегда
+  // вместе, см. puck.util.ts. Размер проверяет сервис.
+  @IsOptional() @IsObject() puckData?: Record<string, unknown>;
+  @IsOptional() @IsString() @MaxLength(700_000) puckHtml?: string;
 
   @IsOptional() @IsString() metaTitle?: string;
   @IsOptional() @IsString() metaDescription?: string;

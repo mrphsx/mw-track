@@ -15,6 +15,7 @@ import { CreateCloakingRuleDto, ReorderCloakingRulesDto, UpdateCloakingRuleDto }
 import { CloakingLogsQueryDto } from './dto/cloaking-logs-query.dto';
 import { BuilderPreviewDto } from './dto/builder-config.dto';
 import { BUILDER_TEMPLATE_ID, resolveBuilderConfig } from './builder.util';
+import { PuckAssetUploadDto } from './dto/puck-asset.dto';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -89,6 +90,29 @@ export class LandingsController {
     return this.rendererService.renderBuilderPreview(dto);
   }
 
+  // Картинки визуального редактора Puck (2026-10-21) — общая папка компании, адрес вставляется в
+  // разметку страницы. Новый лендинг ещё не существует, поэтому право проверяется по проекту
+  // (создание лендингов), а у существующего — как на любое изменение этого лендинга.
+  @Post('puck-assets')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_AVATAR_SIZE } }))
+  async uploadPuckAsset(
+    @Body() dto: PuckAssetUploadDto,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (dto.landingId) await this.assertAction(dto.landingId, companyId, user, 'edit');
+    else if (dto.projectId) await this.projectsService.assertAccess(dto.projectId, companyId, user.userId, user.role, [Permission.LANDINGS_CREATE]);
+    else throw new BadRequestException('Не указан проект');
+    return this.landingsService.uploadPuckAsset(companyId, file);
+  }
+
+  @Public()
+  @Get('puck-assets/:companyId/:file')
+  puckAsset(@Param('companyId') companyId: string, @Param('file') file: string, @Res() res: Response) {
+    return this.landingsService.streamPuckAsset(companyId, file, res);
+  }
+
   // Отдельная страница /landings (все лендинги компании сразу, не только внутри одного
   // проекта) — эндпоинт объявлен раньше ':id', чтобы Nest не пытался матчить пустой path
   // как параметр. Разрешение здесь не привязано к конкретному проекту (список company-wide) —
@@ -112,6 +136,13 @@ export class LandingsController {
       return { ...withFlags, builderConfig: resolveBuilderConfig(withFlags.builderConfig) };
     }
     return withFlags;
+  }
+
+  // Состояние визуального редактора — отдельно от GET :id, его читает только страница редактора.
+  @Get(':id/puck')
+  async puckContent(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    return this.landingsService.getPuckContent(id, companyId);
   }
 
   @Patch(':id')

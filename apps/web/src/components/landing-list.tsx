@@ -18,7 +18,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { ChevronDown, Copy, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud, Wand2 } from 'lucide-react';
+import { ChevronDown, Copy, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud, Wand2, Layers } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import {
@@ -358,12 +358,15 @@ export function CreateLandingMenu({
   onZip,
   onExternal,
   builderHref,
+  puckHref,
 }: {
   onTemplate: () => void;
   onZip: () => void;
   onExternal: () => void;
   // Конструктор (2026-10-21) — отдельная страница, а не диалог.
   builderHref?: string;
+  // Визуальный редактор Puck (2026-10-21) — тоже отдельная страница.
+  puckHref?: string;
 }) {
   const router = useRouter();
   return (
@@ -377,6 +380,11 @@ export function CreateLandingMenu({
         {builderHref && (
           <DropdownMenuItem onClick={() => router.push(builderHref)}>
             <Wand2 className="w-4 h-4 mr-2" /> Конструктор
+          </DropdownMenuItem>
+        )}
+        {puckHref && (
+          <DropdownMenuItem onClick={() => router.push(puckHref)}>
+            <Layers className="w-4 h-4 mr-2" /> Визуальный редактор
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onClick={onTemplate}>
