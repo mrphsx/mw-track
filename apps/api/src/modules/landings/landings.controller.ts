@@ -1,6 +1,6 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Delete, Get, Header, Param, Patch, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Delete, Get, Header, Param, Patch, Post, Query, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { Permission } from '@prisma/client';
 import { Public } from '../../common/decorators/public.decorator';
 import { Company } from '../../common/decorators/company.decorator';
@@ -94,7 +94,7 @@ export class LandingsController {
   // разметку страницы. Новый лендинг ещё не существует, поэтому право проверяется по проекту
   // (создание лендингов), а у существующего — как на любое изменение этого лендинга.
   @Post('puck-assets')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_AVATAR_SIZE } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
   async uploadPuckAsset(
     @Body() dto: PuckAssetUploadDto,
     @Company() companyId: string,
@@ -109,8 +109,8 @@ export class LandingsController {
 
   @Public()
   @Get('puck-assets/:companyId/:file')
-  puckAsset(@Param('companyId') companyId: string, @Param('file') file: string, @Res() res: Response) {
-    return this.landingsService.streamPuckAsset(companyId, file, res);
+  puckAsset(@Param('companyId') companyId: string, @Param('file') file: string, @Req() req: Request, @Res() res: Response) {
+    return this.landingsService.streamPuckAsset(companyId, file, req, res);
   }
 
   // Отдельная страница /landings (все лендинги компании сразу, не только внутри одного

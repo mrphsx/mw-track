@@ -124,6 +124,70 @@ export class VideoProcessingService {
   // Для случаев, где буфер уже есть в памяти (Историй Telegram, запрос пользователя 2026-07-21)
   // и нужны только width/height/duration для DocumentAttributeVideo — без обрезки/перекодирования,
   // в отличие от ensureSquareVideoNote. Публичный вход к приватному probe() ниже.
+  // Видео для лендингов (конструктор, запрос пользователя 2026-10-21: «свои видео, кружок владельца
+  // канала»). Любой входной формат (в т.ч. HEVC .mov с iPhone, который Chrome на Android не играет)
+  // перекодируется в H.264/AAC mp4 с faststart — так оно начинает играть до полной загрузки.
+  // Длинная сторона не больше 720 px и не дольше 2 минут: это фон/кружок на мобильной странице, а
+  // перекодирование идёт прямо в запросе загрузки (таймаут nginx — 60 с). Плюс кадр-обложка jpg,
+  // которую страница показывает, пока видео грузится.
+  private static readonly WEB_VIDEO_MAX_SIDE = 720;
+  private static readonly WEB_VIDEO_MAX_DURATION_SECONDS = 120;
+
+  async transcodeForWeb(buffer: Buffer): Promise<{ video: Buffer; poster: Buffer | null }> {
+    const tmpDir = os.tmpdir();
+    const id = randomUUID();
+    const inputPath = path.join(tmpDir, `web-video-in-${id}.input`);
+    const outputPath = path.join(tmpDir, `web-video-out-${id}.mp4`);
+    const posterPath = path.join(tmpDir, `web-video-poster-${id}.jpg`);
+    const side = VideoProcessingService.WEB_VIDEO_MAX_SIDE;
+    try {
+      await fs.writeFile(inputPath, buffer);
+      const probe = await this.probe(inputPath).catch(() => null);
+      if (!probe?.width || !probe.height) {
+        throw new BadRequestException('Не удалось распознать видео в этом файле — убедитесь, что это видео и файл не повреждён');
+      }
+      await execFileAsync(
+        'ffmpeg',
+        [
+          '-y',
+          '-i', inputPath,
+          '-map', '0:v:0',
+          '-map', '0:a:0?',
+          '-vf', `scale='if(gte(iw,ih),min(${side},iw),-2)':'if(gte(iw,ih),-2,min(${side},ih))',setsar=1`,
+          '-t', String(VideoProcessingService.WEB_VIDEO_MAX_DURATION_SECONDS),
+          '-c:v', 'libx264',
+          '-profile:v', 'main',
+          '-pix_fmt', 'yuv420p',
+          '-preset', 'veryfast',
+          '-crf', '27',
+          '-threads', '2',
+          '-c:a', 'aac',
+          '-b:a', '96k',
+          '-movflags', '+faststart',
+          '-max_muxing_queue_size', '9999',
+          outputPath,
+        ],
+        { timeout: 50_000 },
+      );
+      const video = await fs.readFile(outputPath);
+      if (!video.length) throw new Error('ffmpeg произвёл пустой файл');
+      let poster: Buffer | null = null;
+      try {
+        await execFileAsync('ffmpeg', ['-y', '-ss', '0.3', '-i', outputPath, '-frames:v', '1', '-q:v', '4', posterPath], { timeout: 15_000 });
+        poster = await fs.readFile(posterPath);
+      } catch {
+        poster = null;
+      }
+      return { video, poster };
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      this.logger.error(`web video processing failed: ${(error as Error).message}`);
+      throw new BadRequestException('Не удалось обработать видео — попробуйте файл короче или другого формата');
+    } finally {
+      await Promise.all([inputPath, outputPath, posterPath].map((p) => fs.unlink(p).catch(() => {})));
+    }
+  }
+
   async probeBuffer(buffer: Buffer): Promise<Probe> {
     const tmpPath = path.join(os.tmpdir(), `video-probe-${randomUUID()}.mp4`);
     try {

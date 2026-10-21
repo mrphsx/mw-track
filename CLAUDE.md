@@ -281,6 +281,15 @@ Supporting pieces:
 
 Verified on prod with the demo account: creation through the menu, save and reload; a full serve with tracking (real visit code in the link, no leftover placeholders); step switching; a delayed popup that closes; the timer; image upload and serving; the rejections; a duplicate copying the content; and the defer attribute when auto-redirect is on. Test landings were deleted; one test image remains in the demo company's asset folder.
 
+The same day, the builder gained its own photos and videos («добавлять свои видео и фото, округлённые… кружок с видео владельца канала… шаг — просто картинка или видео»). Every step now has an optional `media` (`BuilderMedia` in `builder.util.ts`):
+- image or video, http(s) URL only;
+- shape: circle, rounded or rectangle; size 48–720 px; corner radius;
+- position: above the title, after the title, or at the bottom;
+- outline width and colour, shadow;
+- for video: autoplay (muted, looped; a tap toggles sound and the badge switches 🔇/🔊) and player controls.
+
+There is a new step kind «Фото / видео» (`media`) and a preset «Кружок автора → канал». The template script pauses videos on hidden steps and plays them when their step opens. Uploads reuse `POST /landings/puck-assets`, which now also accepts video up to 50 MB. `VideoProcessingService.transcodeForWeb` re-encodes any input (HEVC `.mov` from iPhones included) into H.264/AAC mp4 with faststart: long side capped at 720 px, at most 2 minutes, 2 threads, 50 s timeout. A one-minute 1080×1920 clip takes about 12 s. It also produces a jpg poster. `streamPuckAsset` now answers `Range` requests with 206 (`StorageService.getPartialObjectStream`/`statObject`), since iPhone Safari does not play video without them. Existing builder pages render byte-identical, confirmed by diffing the pre/post output of the v1 and v2 test configs. Verified: a real HEVC 1080p upload returned an H.264 720p mp4 plus poster, Range returned 206, and an unsafe media URL was rejected or escaped. In headless Chromium, a «Фото / видео» step was added through the UI, the video uploaded and played muted as a circle in the preview, shape switching worked, and the landing was created and served with the media. On the rendered page, a tap unmutes and moving to the next step pauses the video. The test landing was deleted. Not yet wired: the Puck «Видео» block still takes a URL rather than an upload.
+
 ## Before doing anything
 
 Read [00_MASTER_OVERVIEW.md](00_MASTER_OVERVIEW.md) first, then the numbered doc matching the area you're touching (01-15, listed in 00's file map). Each numbered doc beyond 00 is currently a TODO stub with section headers only — fill them in as that part of the system gets built, don't let them go stale.

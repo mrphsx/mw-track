@@ -55,6 +55,20 @@
     .b-align--center .b-eyebrow::before, .b-align--center .b-eyebrow::after, .b-align--left .b-eyebrow::after { content: ""; flex: 0 0 20px; height: 1px; background: var(--s-line); }
     .b-eyebrow span { min-width: 0; }
     .b-title { margin: 0; font-size: var(--s-title-size); font-weight: var(--s-title-weight); color: var(--s-title); line-height: 1.15; letter-spacing: -0.01em; }
+    /* Своё фото/видео шага: круг, скруглённое или прямоугольник. */
+    .b-media { position: relative; overflow: hidden; max-width: 100%; margin: 14px auto; background: rgba(0, 0, 0, 0.2); }
+    .b-media:first-child { margin-top: 0; }
+    .b-media:last-child { margin-bottom: 0; }
+    .b-align--left .b-media { margin-left: 0; }
+    .b-media img, .b-media video { display: block; width: 100%; height: auto; }
+    .b-media--circle img, .b-media--circle video { height: 100%; object-fit: cover; }
+    .b-media video[data-b-sound] { cursor: pointer; }
+    .b-media__sound {
+      position: absolute; right: 8px; bottom: 8px; width: 30px; height: 30px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1;
+      background: rgba(0, 0, 0, 0.55); pointer-events: none;
+    }
+    .b-media--circle .b-media__sound { right: 50%; bottom: 10px; transform: translateX(50%); }
     .b-subs { margin-top: 6px; color: var(--s-muted); font-size: calc(var(--s-text-size) * 0.95); }
     .b-subtitle { margin: 10px 0 0; color: var(--s-muted); font-size: var(--s-text-size); line-height: 1.45; }
 
@@ -101,6 +115,27 @@
   <script>
     (function () {
       var screens = document.querySelectorAll('[data-b-screen]');
+      // Видео: автозапуск только на видимом шаге, нажатие включает/выключает звук.
+      function syncVideos() {
+        for (var s = 0; s < screens.length; s++) {
+          var vids = screens[s].querySelectorAll('video[autoplay]');
+          for (var v = 0; v < vids.length; v++) {
+            if (screens[s].hidden) vids[v].pause();
+            else { var p = vids[v].play(); if (p && p.catch) p.catch(function () {}); }
+          }
+        }
+      }
+      var sounds = document.querySelectorAll('video[data-b-sound]');
+      for (var k = 0; k < sounds.length; k++) {
+        sounds[k].addEventListener('click', function (e) {
+          var video = e.currentTarget;
+          video.muted = !video.muted;
+          if (!video.muted) { video.currentTime = 0; var p = video.play(); if (p && p.catch) p.catch(function () {}); }
+          var badge = video.parentNode.querySelector('.b-media__sound');
+          if (badge) badge.textContent = video.muted ? '🔇' : '🔊';
+        });
+      }
+      syncVideos();
       var buttons = document.querySelectorAll('[data-b-next]');
       for (var i = 0; i < buttons.length; i++) {
         buttons[i].addEventListener('click', function (e) {
@@ -110,6 +145,7 @@
           if (!next) return;
           current.hidden = true;
           next.hidden = false;
+          syncVideos();
           if (index + 1 === screens.length - 1 && window.tcrm && typeof window.tcrm.triggerAutoRedirect === 'function') {
             window.tcrm.triggerAutoRedirect();
           }

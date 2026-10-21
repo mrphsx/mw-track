@@ -5,11 +5,12 @@ import AdmZip from 'adm-zip';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { AbTestGroup, CloakingConditionField, Landing, LandingsActionScope, LandingStatus, Permission, Prisma, UserRole } from '@prisma/client';
 import { isElevatedRole } from '../../common/permissions/permission.constants';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql } from '../../common/timezone.util';
 import { TelegramProvider } from '../channels/providers/telegram.provider';
 import { ChannelsService } from '../channels/channels.service';
+import { VideoProcessingService } from '../channels/video-processing.service';
 import { ProjectsService } from '../projects/projects.service';
 import { StorageService } from './storage.service';
 import { CreateLandingFromTemplateDto } from './dto/create-landing-from-template.dto';
@@ -36,7 +37,9 @@ const PUCK_ASSET_TYPES: Record<string, string> = {
   'image/webp': 'webp',
   'image/gif': 'gif',
   'image/svg+xml': 'svg',
+  'video/mp4': 'mp4',
 };
+const MAX_PUCK_VIDEO_SIZE = 50 * 1024 * 1024;
 
 // Суммирует несколько дневных рядов ({date, count}[], уже сгруппированных по дню в часовом
 // поясе проекта — см. dailyBucketSql) в один общий ряд по группе A/B-теста (LandingsService.
@@ -148,6 +151,7 @@ export class LandingsService {
     private telegramProvider: TelegramProvider,
     private channelsService: ChannelsService,
     private projectsService: ProjectsService,
+    private videoProcessing: VideoProcessingService,
   ) {}
 
   async getTemplates(companyId: string): Promise<TemplateInfo[]> {
@@ -1750,31 +1754,75 @@ export class LandingsService {
   // Картинки визуального редактора Puck (2026-10-21): папка компании, имя случайное, файл неизменяем —
   // поэтому кэш на год. Удаляются только вместе с бакетом: страница может ссылаться на картинку и
   // из копии лендинга, и из старой версии, которую ещё не пересохранили.
-  async uploadPuckAsset(companyId: string, file: Express.Multer.File): Promise<{ url: string }> {
+  async uploadPuckAsset(companyId: string, file: Express.Multer.File): Promise<{ url: string; type: 'image' | 'video'; posterUrl: string | null }> {
     if (!file) throw new BadRequestException('Файл не передан');
-    if (file.size > MAX_AVATAR_SIZE) throw new BadRequestException('Максимальный размер файла — 5MB');
-    const ext = PUCK_ASSET_TYPES[file.mimetype || ''];
-    if (!ext) throw new BadRequestException('Нужна картинка: JPG, PNG, WEBP, GIF или SVG');
-    const name = `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
-    await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${name}`, file.buffer, file.mimetype);
-    return { url: `${process.env.API_URL}/api/v1/landings/puck-assets/${companyId}/${name}` };
+    const mime = file.mimetype || '';
+    const base = `${process.env.API_URL}/api/v1/landings/puck-assets/${companyId}`;
+    const name = (ext: string) => `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
+
+    // Видео (конструктор, 2026-10-21): любой формат перекодируется в mp4 + кадр-обложка.
+    if (mime.startsWith('video/')) {
+      if (file.size > MAX_PUCK_VIDEO_SIZE) throw new BadRequestException('Максимальный размер видео — 50MB');
+      const { video, poster } = await this.videoProcessing.transcodeForWeb(file.buffer);
+      const videoName = name('mp4');
+      await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${videoName}`, video, 'video/mp4');
+      let posterUrl: string | null = null;
+      if (poster) {
+        const posterName = name('jpg');
+        await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${posterName}`, poster, 'image/jpeg');
+        posterUrl = `${base}/${posterName}`;
+      }
+      return { url: `${base}/${videoName}`, type: 'video', posterUrl };
+    }
+
+    if (file.size > MAX_AVATAR_SIZE) throw new BadRequestException('Максимальный размер картинки — 5MB');
+    const ext = PUCK_ASSET_TYPES[mime];
+    if (!ext || ext === 'mp4') throw new BadRequestException('Нужна картинка (JPG, PNG, WEBP, GIF, SVG) или видео');
+    const fileName = name(ext);
+    await this.storage.uploadBuffer(`landing-puck-assets/${companyId}/${fileName}`, file.buffer, mime);
+    return { url: `${base}/${fileName}`, type: 'image', posterUrl: null };
   }
 
-  async streamPuckAsset(companyId: string, file: string, res: Response): Promise<void> {
-    const ext = /^[0-9]+-[0-9a-f]{12}\.([a-z]+)$/.exec(file)?.[1];
+  // Публичная выдача. Видео отдаётся кусками по Range — Safari на iPhone без этого его не играет.
+  async streamPuckAsset(companyId: string, file: string, req: Request, res: Response): Promise<void> {
+    const ext = /^[0-9]+-[0-9a-f]{12}\.([a-z0-9]+)$/.exec(file)?.[1];
     const type = ext && Object.entries(PUCK_ASSET_TYPES).find(([, e]) => e === ext)?.[0];
     if (!/^[a-z0-9]{10,40}$/.test(companyId) || !type) {
       res.status(404).end();
       return;
     }
+    const key = `landing-puck-assets/${companyId}/${file}`;
     try {
-      const stream = await this.storage.getObjectStream(`landing-puck-assets/${companyId}/${file}`);
+      const { size } = await this.storage.statObject(key);
       res.setHeader('Content-Type', type);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Accept-Ranges', 'bytes');
       // SVG может содержать скрипт — пусть открывается только как картинка, не как страница.
       if (ext === 'svg') res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+
+      const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+      let stream;
+      if (range && (range[1] || range[2])) {
+        let start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+        let end = range[1] && range[2] ? Number(range[2]) : size - 1;
+        end = Math.min(end, size - 1);
+        if (start > end || start >= size) {
+          res.status(416).setHeader('Content-Range', `bytes */${size}`);
+          res.end();
+          return;
+        }
+        start = Math.max(0, start);
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+        res.setHeader('Content-Length', String(end - start + 1));
+        stream = await this.storage.getPartialObjectStream(key, start, end - start + 1);
+      } else {
+        res.setHeader('Content-Length', String(size));
+        stream = await this.storage.getObjectStream(key);
+      }
       stream.on('error', () => {
         if (!res.headersSent) res.status(404).end();
+        else res.end();
       });
       stream.pipe(res);
     } catch {

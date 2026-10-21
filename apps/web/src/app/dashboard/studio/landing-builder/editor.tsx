@@ -18,6 +18,7 @@ import {
   ArrowLeft,
   ArrowUp,
   Copy,
+  Film,
   HelpCircle,
   ImagePlus,
   Monitor,
@@ -44,6 +45,7 @@ import {
   BUILDER_TEMPLATE_ID,
   BuilderButton,
   BuilderConfig,
+  BuilderMedia,
   BuilderScreen,
   FONT_OPTIONS,
   KIND_LABELS,
@@ -55,6 +57,8 @@ import {
   ScreenStyle,
   defaultBuilderConfig,
   newChannelScreen,
+  newMediaFor,
+  newMediaScreen,
   newQuestionScreen,
   normalizeBuilderConfig,
 } from '@/components/landing-builder/builder-types';
@@ -300,6 +304,21 @@ export function LandingBuilderEditor({ landingId, initialProjectId }: { landingI
     onError: (err) => setError(err instanceof Error && !isAxiosError(err) ? err.message : errorMessage(err, 'Не удалось сохранить')),
   });
 
+  // Фото/видео шага — в общую папку компании (тот же загрузчик, что у визуального редактора).
+  // Видео сервер перекодирует в mp4, это может занять до минуты.
+  const uploadMedia = async (file: File): Promise<{ url: string; type: 'image' | 'video'; posterUrl: string | null }> => {
+    if (!landingId && !projectId) throw new Error('Сначала выберите проект');
+    const fd = new FormData();
+    fd.append('file', file);
+    if (landingId) fd.append('landingId', landingId);
+    else fd.append('projectId', projectId);
+    try {
+      return (await api.post<{ url: string; type: 'image' | 'video'; posterUrl: string | null }>('/landings/puck-assets', fd, { timeout: 120_000 })).data;
+    } catch (err) {
+      throw new Error(errorMessage(err, 'Не удалось загрузить файл'));
+    }
+  };
+
   const uploadBg = useMutation({
     mutationFn: async (file: File | null) => {
       if (!landingId) {
@@ -407,7 +426,7 @@ export function LandingBuilderEditor({ landingId, initialProjectId }: { landingI
               <StepItem
                 active={selection === i}
                 onClick={() => setSelection(i)}
-                icon={s.kind === 'channel' ? <UserSquare2 className="w-4 h-4" /> : <HelpCircle className="w-4 h-4" />}
+                icon={s.kind === 'channel' ? <UserSquare2 className="w-4 h-4" /> : s.kind === 'media' ? <Film className="w-4 h-4" /> : <HelpCircle className="w-4 h-4" />}
                 title={`${i + 1}. ${KIND_LABELS[s.kind]}`}
                 subtitle={(s.title || '—').replace('{channel}', channelTitle)}
               />
@@ -434,6 +453,7 @@ export function LandingBuilderEditor({ landingId, initialProjectId }: { landingI
             <div className="pt-2 space-y-1">
               <AddBtn onClick={() => addScreen(newQuestionScreen(config.screens[config.screens.length - 1]?.style))}>Вопрос</AddBtn>
               <AddBtn onClick={() => addScreen(newChannelScreen())}>Карточка канала</AddBtn>
+              <AddBtn onClick={() => addScreen(newMediaScreen())}>Фото / видео</AddBtn>
             </div>
           )}
           <p className="px-2 pt-2 text-[11px] leading-snug text-[#8A95A3] dark:text-[#7D8A99]">
@@ -503,7 +523,7 @@ export function LandingBuilderEditor({ landingId, initialProjectId }: { landingI
                   value={tab}
                   onChange={setTab}
                   options={[
-                    { value: 'content', label: 'Текст' },
+                    { value: 'content', label: 'Содержимое' },
                     { value: 'buttons', label: 'Кнопки' },
                     { value: 'style', label: 'Оформление' },
                   ]}
@@ -517,6 +537,7 @@ export function LandingBuilderEditor({ landingId, initialProjectId }: { landingI
                   onPickAvatar={(f) => uploadAvatar.mutate(f)}
                   avatarBusy={uploadAvatar.isPending}
                   hasOwnAvatar={!!avatarFile || (!!landingId && (avatarVersion ? avatarVersion !== 'channel' : !!landing?.avatarKey))}
+                  onUploadMedia={uploadMedia}
                 />
               )}
               {tab === 'buttons' && <ButtonsPanel screen={screen} setScreen={setScreen} setButton={setButton} isLast={screenIndex === config.screens.length - 1} />}
@@ -728,6 +749,7 @@ function ContentPanel({
   onPickAvatar,
   avatarBusy,
   hasOwnAvatar,
+  onUploadMedia,
 }: {
   screen: BuilderScreen;
   setScreen: (p: Partial<BuilderScreen>) => void;
@@ -735,10 +757,12 @@ function ContentPanel({
   onPickAvatar: (f: File | null) => void;
   avatarBusy: boolean;
   hasOwnAvatar: boolean;
+  onUploadMedia: (f: File) => Promise<{ url: string; type: 'image' | 'video'; posterUrl: string | null }>;
 }) {
   const isChannel = screen.kind === 'channel';
   return (
     <div className="space-y-4">
+      <MediaSection media={screen.media} onChange={(media) => setScreen({ media })} upload={onUploadMedia} prominent={screen.kind === 'media'} />
       {isChannel && (
         <Section title="Аватар">
           <Toggle label="Показывать аватар" checked={screen.showAvatar} onChange={(v) => setScreen({ showAvatar: v })} />
@@ -760,7 +784,7 @@ function ContentPanel({
         <Field label="Надпись сверху" hint="Мелко над заголовком, необязательно.">
           <Input value={screen.eyebrow} maxLength={80} onChange={(e) => setScreen({ eyebrow: e.target.value })} placeholder="Только для Польши 🇵🇱" />
         </Field>
-        <Field label={isChannel ? 'Название' : 'Вопрос'} hint={isChannel ? '{channel} — название канала' : undefined}>
+        <Field label={isChannel ? 'Название' : screen.kind === 'media' ? 'Заголовок' : 'Вопрос'} hint={isChannel ? '{channel} — название канала' : 'Необязательно.'}>
           <Input value={screen.title} maxLength={200} onChange={(e) => setScreen({ title: e.target.value })} />
         </Field>
         {isChannel && (
@@ -773,6 +797,137 @@ function ContentPanel({
         </Field>
       </Section>
     </div>
+  );
+}
+
+function MediaSection({
+  media,
+  onChange,
+  upload,
+  prominent,
+}: {
+  media: BuilderMedia | null;
+  onChange: (m: BuilderMedia | null) => void;
+  upload: (f: File) => Promise<{ url: string; type: 'image' | 'video'; posterUrl: string | null }>;
+  prominent: boolean;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<'' | 'image' | 'video'>('');
+  const [err, setErr] = useState('');
+  const set = (p: Partial<BuilderMedia>) => media && onChange({ ...media, ...p });
+
+  const pick = async (file: File) => {
+    setErr('');
+    setBusy(file.type.startsWith('video/') ? 'video' : 'image');
+    try {
+      const res = await upload(file);
+      onChange(newMediaFor(res.type, res.url, res.posterUrl ?? '', media));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Не удалось загрузить файл');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return (
+    <Section title="Фото или видео">
+      <input
+        ref={ref}
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif,video/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void pick(f);
+          e.target.value = '';
+        }}
+      />
+      {media ? (
+        <div className="flex items-center gap-3">
+          <div className={cn('h-16 w-16 shrink-0 overflow-hidden bg-black/30', media.shape === 'circle' ? 'rounded-full' : 'rounded-lg')}>
+            {media.type === 'video' ? (
+              media.poster ? <img src={media.poster} alt="" className="h-full w-full object-cover" /> : <video src={media.url} muted playsInline className="h-full w-full object-cover" />
+            ) : (
+              <img src={media.url} alt="" className="h-full w-full object-cover" />
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={!!busy} onClick={() => ref.current?.click()}>
+              {busy ? 'Загружаем…' : 'Заменить'}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" disabled={!!busy} onClick={() => onChange(null)}>
+              Убрать
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <Button type="button" size="sm" variant={prominent ? 'default' : 'outline'} disabled={!!busy} onClick={() => ref.current?.click()}>
+            <ImagePlus className="mr-1 h-3.5 w-3.5" /> {busy ? 'Загружаем…' : 'Загрузить фото или видео'}
+          </Button>
+          <p className="text-[11px] leading-snug text-[#8A95A3] dark:text-[#7D8A99]">
+            Картинка до 5 МБ или видео до 50 МБ (до 2 минут). Видео по умолчанию становится кружком, как в Telegram.
+          </p>
+        </div>
+      )}
+      {busy === 'video' && <p className="text-[11px] text-[#5F6B7A] dark:text-[#92A0AF]">Видео обрабатывается для телефонов — обычно до минуты.</p>}
+      {err && <p className="text-xs text-red-500">{err}</p>}
+
+      {media && (
+        <>
+          <Field label="Форма">
+            <Segmented
+              value={media.shape}
+              onChange={(shape) => set({ shape })}
+              options={[
+                { value: 'circle', label: 'Круг' },
+                { value: 'rounded', label: 'Скруглённая' },
+                { value: 'rect', label: 'Прямоугольник' },
+              ]}
+            />
+          </Field>
+          <Field label="Размер">
+            <Range value={media.size} onChange={(size) => set({ size })} min={48} max={720} suffix="px" />
+          </Field>
+          {media.shape === 'rounded' && (
+            <Field label="Скругление углов">
+              <Range value={media.radius} onChange={(radius) => set({ radius })} min={0} max={80} suffix="px" />
+            </Field>
+          )}
+          <Field label="Где в шаге">
+            <Segmented
+              value={media.position}
+              onChange={(position) => set({ position })}
+              options={[
+                { value: 'top', label: 'Сверху' },
+                { value: 'middle', label: 'После заголовка' },
+                { value: 'bottom', label: 'Внизу' },
+              ]}
+            />
+          </Field>
+          <Field label="Обводка">
+            <Range value={media.ringWidth} onChange={(ringWidth) => set({ ringWidth })} min={0} max={12} suffix="px" />
+          </Field>
+          {media.ringWidth > 0 && (
+            <Field label="Цвет обводки" hint="Пусто — акцентный цвет.">
+              <ColorInput value={media.ringColor} onChange={(ringColor) => set({ ringColor })} optional />
+            </Field>
+          )}
+          <Toggle label="Тень" checked={media.shadow} onChange={(shadow) => set({ shadow })} />
+          {media.type === 'video' && (
+            <>
+              <Toggle
+                label="Запускать сразу"
+                hint="Без звука и по кругу, звук — по нажатию на видео. Так браузеры разрешают автозапуск."
+                checked={media.autoplay}
+                onChange={(autoplay) => set({ autoplay })}
+              />
+              <Toggle label="Кнопки плеера" checked={media.controls} onChange={(controls) => set({ controls })} />
+            </>
+          )}
+        </>
+      )}
+    </Section>
   );
 }
 

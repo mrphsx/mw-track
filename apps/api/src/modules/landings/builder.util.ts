@@ -1,8 +1,10 @@
 // Конструктор лендингов (запрос пользователя 2026-10-20, переработан 2026-10-21). Один шаблон
 // (templates/builder), всё оформление и шаги — в Landing.builderConfig.
 //
-// Шаги бывают двух видов: «Вопрос» (надпись, вопрос, пояснение, кнопки) и «Карточка канала»
-// (аватар, название, подписчики, описание, кнопки — как в обычных лендингах). У каждого шага своё
+// Шаги бывают трёх видов: «Вопрос» (надпись, вопрос, пояснение, кнопки), «Карточка канала»
+// (аватар, название, подписчики, описание, кнопки — как в обычных лендингах) и «Фото / видео».
+// У любого шага может быть своё фото или видео (2026-10-21): круг («кружок» владельца канала),
+// скруглённое или прямоугольник, размер, обводка, место в шаге, автозапуск без звука. У каждого шага своё
 // оформление: попап вкл/выкл, цвет и прозрачность, стекло, тень, скругление, отступы, ширина,
 // выравнивание, шрифты и кнопки, анимация появления. Общие настройки — шрифт, акцент, цвет текста
 // и фон страницы.
@@ -48,7 +50,23 @@ export const BUILDER_FONTS: Record<string, string> = {
 
 export type BuilderButtonStyle = 'filled' | 'outline' | 'soft' | 'plain';
 export type BuilderButtonAction = 'telegram' | 'next' | 'url' | 'none';
-export type BuilderScreenKind = 'question' | 'channel';
+export type BuilderScreenKind = 'question' | 'channel' | 'media';
+
+export interface BuilderMedia {
+  type: 'image' | 'video';
+  url: string;
+  // Кадр-обложка видео (показывается, пока видео грузится).
+  poster: string;
+  shape: 'circle' | 'rounded' | 'rect';
+  size: number; // ширина, px
+  radius: number; // для «скруглённого»
+  position: 'top' | 'middle' | 'bottom'; // над заголовком / между заголовком и текстом / под текстом
+  autoplay: boolean; // видео: сразу, без звука, по кругу; нажатие включает звук
+  controls: boolean;
+  ringColor: string; // обводка; пусто — без обводки
+  ringWidth: number;
+  shadow: boolean;
+}
 
 export interface BuilderButton {
   text: string;
@@ -92,6 +110,7 @@ export interface BuilderScreen {
   // Только для карточки канала.
   showAvatar: boolean;
   subscribersText: string;
+  media: BuilderMedia | null;
   buttons: BuilderButton[];
   style: BuilderScreenStyle;
 }
@@ -173,6 +192,7 @@ export const BUILDER_DEFAULTS: BuilderConfig = {
       subtitle: 'Подтверди возраст, чтобы продолжить',
       showAvatar: true,
       subscribersText: '',
+      media: null,
       buttons: [
         { text: 'Нет', style: 'plain', action: 'telegram', color: '', pulse: false },
         { text: 'Да', style: 'filled', action: 'telegram', color: '', pulse: false },
@@ -258,9 +278,30 @@ function resolveStyle(raw: unknown, base: BuilderScreenStyle): BuilderScreenStyl
   };
 }
 
+function resolveMedia(raw: unknown): BuilderMedia | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const m = raw as Record<string, unknown>;
+  if (!isSafeHttpUrl(m.url)) return null;
+  const type = oneOf(m.type, ['image', 'video'] as const, 'image');
+  return {
+    type,
+    url: m.url,
+    poster: type === 'video' && isSafeHttpUrl(m.poster) ? m.poster : '',
+    shape: oneOf(m.shape, ['circle', 'rounded', 'rect'] as const, 'rounded'),
+    size: num(m.size, 240, 48, 720),
+    radius: num(m.radius, 18, 0, 80),
+    position: oneOf(m.position, ['top', 'middle', 'bottom'] as const, 'top'),
+    autoplay: bool(m.autoplay, true),
+    controls: bool(m.controls, false),
+    ringColor: optColor(m.ringColor),
+    ringWidth: num(m.ringWidth, 0, 0, 12),
+    shadow: bool(m.shadow, false),
+  };
+}
+
 function resolveScreen(raw: unknown, base: BuilderScreenStyle): BuilderScreen {
   const s = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  const kind = oneOf(s.kind, ['question', 'channel'] as const, 'question');
+  const kind = oneOf(s.kind, ['question', 'channel', 'media'] as const, 'question');
   const buttons = (Array.isArray(s.buttons) ? s.buttons : []).slice(0, BUILDER_LIMITS.maxButtons).map(resolveButton);
   return {
     kind,
@@ -269,6 +310,7 @@ function resolveScreen(raw: unknown, base: BuilderScreenStyle): BuilderScreen {
     subtitle: str(s.subtitle, '', BUILDER_LIMITS.subtitle),
     showAvatar: bool(s.showAvatar, true),
     subscribersText: str(s.subscribersText, kind === 'channel' ? '{count} подписчиков' : '', BUILDER_LIMITS.eyebrow),
+    media: resolveMedia(s.media),
     buttons,
     style: resolveStyle(s.style, base),
   };
@@ -335,6 +377,8 @@ export function validateBuilderConfig(raw: unknown): string | null {
       const btn = b as { action?: unknown; url?: unknown };
       if (btn?.action === 'url' && !isSafeHttpUrl(btn.url)) return `Шаг ${i + 1}: ссылка кнопки должна начинаться с https://`;
     }
+    const media = (s as { media?: { url?: unknown } | null })?.media;
+    if (media && !isSafeHttpUrl(media.url)) return `Шаг ${i + 1}: у фото/видео неверная ссылка`;
   }
   return null;
 }
@@ -407,6 +451,25 @@ function buttonHtml(button: BuilderButton, isLastScreen: boolean, accent: string
   }
 }
 
+function mediaHtml(media: BuilderMedia, accent: string): string {
+  const url = escapeHtml(media.url);
+  const ring = media.ringWidth > 0 ? `box-shadow:0 0 0 ${media.ringWidth}px ${media.ringColor || accent}${media.shadow ? ',0 18px 40px -12px rgba(0,0,0,.6)' : ''};` : media.shadow ? 'box-shadow:0 18px 40px -12px rgba(0,0,0,.6);' : '';
+  const radius = media.shape === 'circle' ? '50%' : media.shape === 'rounded' ? `${media.radius}px` : '0';
+  const box = `width:${media.size}px;border-radius:${radius};${ring}${media.shape === 'circle' ? 'aspect-ratio:1/1;' : ''}`;
+  let inner: string;
+  if (media.type === 'video') {
+    const poster = media.poster ? ` poster="${escapeHtml(media.poster)}"` : '';
+    // Автозапуск в мобильных браузерах возможен только без звука — звук включается нажатием.
+    const auto = media.autoplay ? ' autoplay muted loop data-b-sound' : '';
+    inner = `<video src="${url}"${poster} playsinline webkit-playsinline preload="metadata"${auto}${media.controls ? ' controls' : ''}></video>${
+      media.autoplay && !media.controls ? '<span class="b-media__sound" aria-hidden="true">🔇</span>' : ''
+    }`;
+  } else {
+    inner = `<img src="${url}" alt="" loading="lazy">`;
+  }
+  return `<div class="b-media b-media--${media.shape}" style="${box}">${inner}</div>`;
+}
+
 function screenHtml(screen: BuilderScreen, index: number, total: number, config: BuilderConfig, options: BuilderRenderOptions, visible: boolean): string {
   const st = screen.style;
   const text = st.titleColor || config.textColor;
@@ -470,8 +533,13 @@ function screenHtml(screen: BuilderScreen, index: number, total: number, config:
     head = `${eyebrow}${title}`;
   }
 
+  const media = screen.media ? mediaHtml(screen.media, config.accentColor) : '';
+  const pos = screen.media?.position ?? 'top';
+  const body =
+    pos === 'top' ? `${media}${head}${subtitle}` : pos === 'middle' ? `${head}${media}${subtitle}` : `${head}${subtitle}${media}`;
+
   return `<section class="${classes}" style="${vars}"${visible ? '' : ' hidden'} data-b-screen="${index}">
-  <div class="b-body">${head}${subtitle}</div>
+  <div class="b-body">${body}</div>
   ${buttons ? `<div class="${actionsCls}">${buttons}</div>` : ''}
 </section>`;
 }

@@ -60,6 +60,16 @@ export class StorageService implements OnModuleInit {
     return this.client.getObject(this.bucket, key);
   }
 
+  async statObject(key: string): Promise<{ size: number }> {
+    const stat = await this.client.statObject(this.bucket, key);
+    return { size: stat.size };
+  }
+
+  // Кусок объекта — для ответов на Range-запросы (видео на iPhone без них не воспроизводится).
+  async getPartialObjectStream(key: string, offset: number, length: number): Promise<Readable> {
+    return this.client.getPartialObject(this.bucket, key, offset, length);
+  }
+
   async getObjectBuffer(key: string): Promise<Buffer> {
     const stream = await this.client.getObject(this.bucket, key);
     const chunks: Buffer[] = [];

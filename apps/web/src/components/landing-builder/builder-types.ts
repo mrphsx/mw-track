@@ -8,7 +8,23 @@ export const MAX_BUTTONS = 4;
 
 export type ButtonStyle = 'filled' | 'outline' | 'soft' | 'plain';
 export type ButtonAction = 'telegram' | 'next' | 'url' | 'none';
-export type ScreenKind = 'question' | 'channel';
+export type ScreenKind = 'question' | 'channel' | 'media';
+
+// Своё фото/видео шага (2026-10-21): круг («кружок»), скруглённое или прямоугольник.
+export interface BuilderMedia {
+  type: 'image' | 'video';
+  url: string;
+  poster: string;
+  shape: 'circle' | 'rounded' | 'rect';
+  size: number;
+  radius: number;
+  position: 'top' | 'middle' | 'bottom';
+  autoplay: boolean;
+  controls: boolean;
+  ringColor: string;
+  ringWidth: number;
+  shadow: boolean;
+}
 
 export interface BuilderButton {
   text: string;
@@ -50,6 +66,7 @@ export interface BuilderScreen {
   subtitle: string;
   showAvatar: boolean;
   subscribersText: string;
+  media: BuilderMedia | null;
   buttons: BuilderButton[];
   style: ScreenStyle;
 }
@@ -146,6 +163,13 @@ export const CHANNEL_STYLE: ScreenStyle = {
   avatarSize: 104,
 };
 
+export function newMediaFor(type: 'image' | 'video', url: string, poster: string, prev?: BuilderMedia | null): BuilderMedia {
+  if (prev) return { ...prev, type, url, poster };
+  return type === 'video'
+    ? { type, url, poster, shape: 'circle', size: 220, radius: 18, position: 'top', autoplay: true, controls: false, ringColor: '', ringWidth: 3, shadow: true }
+    : { type, url, poster: '', shape: 'rounded', size: 280, radius: 18, position: 'top', autoplay: false, controls: false, ringColor: '', ringWidth: 0, shadow: false };
+}
+
 export function newQuestionScreen(style: ScreenStyle = CARD_STYLE): BuilderScreen {
   return {
     kind: 'question',
@@ -154,6 +178,7 @@ export function newQuestionScreen(style: ScreenStyle = CARD_STYLE): BuilderScree
     subtitle: '',
     showAvatar: true,
     subscribersText: '',
+    media: null,
     buttons: [
       { text: 'Нет', style: 'outline', action: 'telegram', color: '', pulse: false },
       { text: 'Да', style: 'filled', action: 'telegram', color: '', pulse: false },
@@ -170,8 +195,24 @@ export function newChannelScreen(): BuilderScreen {
     subtitle: 'Подписывайся, чтобы не пропустить главное',
     showAvatar: true,
     subscribersText: '{count} подписчиков',
+    media: null,
     buttons: [{ text: 'Вступить в канал', style: 'filled', action: 'telegram', color: '', pulse: true }],
     style: { ...CHANNEL_STYLE },
+  };
+}
+
+// Шаг «Фото / видео»: медиа крупно, короткая подпись и кнопка дальше.
+export function newMediaScreen(): BuilderScreen {
+  return {
+    kind: 'media',
+    eyebrow: '',
+    title: 'Посмотри, что внутри',
+    subtitle: '',
+    showAvatar: false,
+    subscribersText: '',
+    media: null,
+    buttons: [{ text: 'Дальше', style: 'filled', action: 'next', color: '', pulse: false }],
+    style: { ...CHANNEL_STYLE, animation: 'fade' },
   };
 }
 
@@ -193,6 +234,7 @@ export const PRESETS: { id: string; label: string; config: BuilderConfig }[] = [
           subtitle: 'Подтверди возраст, чтобы продолжить',
           showAvatar: true,
           subscribersText: '',
+          media: null,
           buttons: [
             { text: 'Нет', style: 'plain', action: 'telegram', color: '', pulse: false },
             { text: 'Да', style: 'plain', action: 'telegram', color: '', pulse: false },
@@ -219,6 +261,7 @@ export const PRESETS: { id: string; label: string; config: BuilderConfig }[] = [
           subtitle: '',
           showAvatar: true,
           subscribersText: '',
+          media: null,
           buttons: [
             { text: 'ДА', style: 'filled', action: 'telegram', color: '', pulse: false },
             { text: 'НЕТ', style: 'outline', action: 'telegram', color: '', pulse: false },
@@ -245,6 +288,7 @@ export const PRESETS: { id: string; label: string; config: BuilderConfig }[] = [
           subtitle: '',
           showAvatar: true,
           subscribersText: '',
+          media: null,
           buttons: [
             { text: 'Нет', style: 'outline', action: 'telegram', color: '', pulse: false },
             { text: 'Да', style: 'filled', action: 'telegram', color: '', pulse: false },
@@ -271,11 +315,32 @@ export const PRESETS: { id: string; label: string; config: BuilderConfig }[] = [
           subtitle: 'Канал только для взрослых',
           showAvatar: true,
           subscribersText: '',
+          media: null,
           buttons: [
             { text: 'Нет', style: 'plain', action: 'telegram', color: '', pulse: false },
             { text: 'Да', style: 'plain', action: 'next', color: '', pulse: false },
           ],
           style: { ...CARD_STYLE },
+        },
+        newChannelScreen(),
+      ],
+    },
+  },
+  {
+    id: 'owner',
+    label: 'Кружок автора → канал',
+    config: {
+      version: 2,
+      font: 'system',
+      accentColor: '#2AABEE',
+      textColor: '#FFFFFF',
+      background: { type: 'gradient', color: '#0E1621', from: '#17212B', to: '#0E1621', angle: 180, dim: 30, blur: 0 },
+      screens: [
+        {
+          ...newMediaScreen(),
+          title: 'Привет! Я автор канала 👋',
+          subtitle: 'Загрузите своё видео-кружок во вкладке «Содержимое»',
+          style: { ...CHANNEL_STYLE, card: false, glass: false, shadow: 'none', animation: 'zoom' },
         },
         newChannelScreen(),
       ],
@@ -301,6 +366,7 @@ export function normalizeBuilderConfig(raw: unknown): BuilderConfig {
     screens: (c.screens?.length ? c.screens : def.screens).map((s) => ({
       ...newQuestionScreen(),
       ...s,
+      media: s.media ?? null,
       style: { ...(s.kind === 'channel' ? CHANNEL_STYLE : CARD_STYLE), ...(s.style ?? {}) },
       buttons: (s.buttons ?? []).map((b) => ({ ...b, color: b.color ?? '', pulse: b.pulse ?? false })),
     })),
@@ -311,4 +377,4 @@ export const STYLE_LABELS = { filled: 'Залитая', outline: 'Контур',
 export const ACTION_LABELS = { telegram: 'В канал', next: 'След. шаг', url: 'Ссылка', none: 'Ничего' } as const;
 export const ANIMATION_LABELS = { none: 'Нет', fade: 'Появление', slide: 'Снизу', zoom: 'Увеличение' } as const;
 export const SHADOW_LABELS = { none: 'Нет', soft: 'Мягкая', strong: 'Сильная' } as const;
-export const KIND_LABELS = { question: 'Вопрос', channel: 'Карточка канала' } as const;
+export const KIND_LABELS = { question: 'Вопрос', channel: 'Карточка канала', media: 'Фото / видео' } as const;
