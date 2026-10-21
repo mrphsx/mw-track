@@ -214,6 +214,9 @@ export default function StudioProjectPage() {
           : activeLeaderboardTab === 'sources'
             ? leaderboards.sources.map((s) => s.source)
             : leaderboards.campaigns.map((c) => c.campaignId).filter(Boolean);
+  // Остаток «Без баера / пикселя / …» — та же воронка, что у обычных строк (id '__none__').
+  const activeRemainder = leaderboards?.[`${activeLeaderboardTab}Unattributed` as const];
+  if (activeRemainder && (activeRemainder.clients > 0 || activeRemainder.revenue > 0)) activeLeaderboardIds.push(UNATTRIBUTED_ID);
   const { data: leaderboardFunnel, isFetching: leaderboardFunnelLoading } = useQuery({
     queryKey: ['project', id, 'leaderboard-funnel', activeLeaderboardTab, periodParams, activeLeaderboardIds.join(',')],
     queryFn: async () =>
@@ -692,6 +695,7 @@ export default function StudioProjectPage() {
               compareHref={compareHref('landings')}
               unattributed={leaderboards.landingsUnattributed}
               unattributedLabel="Без лендинга"
+              unattributedUnit="подписок"
             />
           )}
           {activeLeaderboardTab === 'campaigns' && (
@@ -808,6 +812,9 @@ function TrackingEventsSummaryPill({ projectId, disabledTrackingEvents }: { proj
 
 // funnelById/funnelLoading — опционально, только для реально открытой вкладки (запрос
 // пользователя 2026-07-29: "с такой же прогрузкой и конверсией как в оригинале"), та же
+// id строки-остатка в эндпоинте воронки топов (UNATTRIBUTED_KEY в ProjectsService).
+const UNATTRIBUTED_ID = '__none__';
+
 // ленивая подгрузка развёрнутой воронки, что и в классической странице проекта.
 function LeaderboardBlock({
   title,
@@ -818,6 +825,7 @@ function LeaderboardBlock({
   funnelLoading,
   unattributed,
   unattributedLabel,
+  unattributedUnit = 'клиентов',
   compareHref,
 }: {
   title: string;
@@ -830,6 +838,7 @@ function LeaderboardBlock({
   // classic-версии (apps/web/src/app/(dashboard)/projects/[id]/page.tsx, LeaderboardCard).
   unattributed?: PrototypeUnattributedBucket;
   unattributedLabel?: string;
+  unattributedUnit?: string;
   // Ссылка на полный список (запрос пользователя 2026-08-19) — см. полный комментарий у
   // classic-версии.
   compareHref?: string;
@@ -902,15 +911,33 @@ function LeaderboardBlock({
             </div>
           );
         })}
-        {!!(unattributed?.clients || unattributed?.revenue) && (
-          <div className="flex items-center justify-between text-sm gap-2 pt-2 border-t border-dashed border-[#DCE1E8] dark:border-white/10">
-            <span className="text-[#5F6B7A] dark:text-[#92A0AF] italic truncate">{unattributedLabel}</span>
-            <div className="text-right shrink-0">
-              <div className="font-medium text-[#5F6B7A] dark:text-[#92A0AF]">{unattributed!.clients} клиентов</div>
-              {unattributed.revenue > 0 && <div className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">${unattributed.revenue.toFixed(2)}</div>}
+        {/* Остаток без атрибуции — та же строка, что у остальных записей (клиенты, сумма,
+            воронка), только вместо места в рейтинге прочерк (2026-10-21). */}
+        {!!(unattributed?.clients || unattributed?.revenue) && (() => {
+          const remainderFunnel = funnelById?.get(UNATTRIBUTED_ID);
+          return (
+            <div>
+              <div className="flex items-center justify-between text-sm gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[#5F6B7A] dark:text-[#92A0AF] shrink-0">—</span>
+                  <span className="truncate text-[#131A24] dark:text-[#E9EDF3]">{unattributedLabel}</span>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-medium text-[#131A24] dark:text-[#E9EDF3]">
+                    {unattributed!.clients} {unattributedUnit}
+                  </div>
+                  <div className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">${unattributed!.revenue.toFixed(2)}</div>
+                </div>
+              </div>
+              {remainderFunnel && <LeaderboardFunnelMini row={remainderFunnel} />}
+              {funnelLoading && !remainderFunnel && (
+                <p className="text-xs text-[#5F6B7A] dark:text-[#92A0AF] mt-1.5 pt-1.5 border-t border-[#DCE1E8] dark:border-white/10">
+                  Загрузка воронки...
+                </p>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

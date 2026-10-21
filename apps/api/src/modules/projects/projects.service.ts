@@ -28,6 +28,16 @@ export interface AggregatedRow {
 
 const UNATTRIBUTED_KEY = '__none__';
 
+export interface LeaderboardFunnelRow {
+  id: string;
+  pageViews?: number;
+  leads?: number;
+  subscribes: number;
+  dialogues: number;
+  purchases: number;
+  revenue: number;
+}
+
 @Injectable()
 export class ProjectsService {
   private readonly logger = new Logger(ProjectsService.name);
@@ -1322,11 +1332,92 @@ requests.post(
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
     if (ids.length === 0) return { items: [] };
 
-    if (category === 'landings') return { items: await this.getLandingsFunnel(id, ids, since, until, buyerId) };
-    if (category === 'pixels') return { items: await this.getEventColumnFunnel('pixelId', id, ids, since, until, buyerId) };
-    if (category === 'campaigns') return { items: await this.getEventColumnFunnel('campaignId', id, ids, since, until, buyerId) };
-    if (category === 'sources') return { items: await this.getSourcesFunnel(id, ids, since, until, buyerId) };
-    return { items: await this.getBuyersFunnel(id, ids, since, until) };
+    // UNATTRIBUTED_KEY среди ids — строка «Без баера / пикселя / лендинга / кампании / источника»
+    // (2026-10-21): её воронка считается теми же правилами, что и у обычных строк, чтобы в
+    // интерфейсе остаток выглядел так же, как остальные записи.
+    const wantRemainder = ids.includes(UNATTRIBUTED_KEY);
+    const realIds = ids.filter((x) => x !== UNATTRIBUTED_KEY);
+    const items: LeaderboardFunnelRow[] = [];
+    if (realIds.length > 0) {
+      if (category === 'landings') items.push(...(await this.getLandingsFunnel(id, realIds, since, until, buyerId)));
+      else if (category === 'pixels') items.push(...(await this.getEventColumnFunnel('pixelId', id, realIds, since, until, buyerId)));
+      else if (category === 'campaigns') items.push(...(await this.getEventColumnFunnel('campaignId', id, realIds, since, until, buyerId)));
+      else if (category === 'sources') items.push(...(await this.getSourcesFunnel(id, realIds, since, until, buyerId)));
+      else items.push(...(await this.getBuyersFunnel(id, realIds, since, until)));
+    }
+    if (wantRemainder) items.push(await this.getUnattributedFunnel(category, id, since, until, category === 'buyers' ? undefined : buyerId));
+    return { items };
+  }
+
+  // Воронка остатка без атрибуции. Условие «нет значения» — то же, что у строки-остатка в
+  // getLeaderboards; просмотры/клики — только там, где у обычных строк этой категории они есть
+  // (пиксели, кампании, лендинги), чтобы строка не отличалась составом колонок.
+  private async getUnattributedFunnel(
+    category: 'buyers' | 'pixels' | 'landings' | 'campaigns' | 'sources',
+    projectId: string,
+    since: Date,
+    until: Date,
+    buyerId?: string,
+  ): Promise<LeaderboardFunnelRow> {
+    const liveLandingSql = (col: Prisma.Sql) =>
+      Prisma.sql`EXISTS (SELECT 1 FROM "Landing" lx WHERE lx.id = ${col} AND lx."projectId" = ${projectId} AND lx."deletedAt" IS NULL)`;
+    const clientNone: Record<typeof category, Prisma.Sql> = {
+      buyers: Prisma.sql`c."buyerId" IS NULL`,
+      pixels: Prisma.sql`c."pixelId" IS NULL`,
+      campaigns: Prisma.sql`c."campaignId" IS NULL`,
+      sources: Prisma.sql`c."fbclid" IS NULL AND c."ttclid" IS NULL`,
+      landings: Prisma.sql`(c."landingId" IS NULL OR NOT ${liveLandingSql(Prisma.sql`c."landingId"`)})`,
+    };
+    const eventNone: Partial<Record<typeof category, Prisma.Sql>> = {
+      pixels: Prisma.sql`e."pixelId" IS NULL`,
+      campaigns: Prisma.sql`e."campaignId" IS NULL`,
+      landings: Prisma.sql`(e.payload->>'landingId' IS NULL OR NOT ${liveLandingSql(Prisma.sql`e.payload->>'landingId'`)})`,
+    };
+    const clientBuyerSql = buyerId ? Prisma.sql`AND c."buyerId" = ${buyerId}` : Prisma.empty;
+    const eventBuyerSql = buyerId ? Prisma.sql`AND e."buyerId" = ${buyerId}` : Prisma.empty;
+    const where = clientNone[category];
+    const eventWhere = eventNone[category];
+
+    const [[clients], [purchases], events] = await Promise.all([
+      this.prisma.$queryRaw<{ subscribes: number; dialogues: number }[]>`
+        SELECT
+          COUNT(*) FILTER (WHERE c."subscribedAt" >= ${since} AND c."subscribedAt" < ${until})::int as subscribes,
+          COUNT(*) FILTER (WHERE c."firstDialogueAt" >= ${since} AND c."firstDialogueAt" < ${until} AND c."subscribedAt" IS NOT NULL AND c."subscribedAt" <= c."firstDialogueAt")::int as dialogues
+        FROM "Client" c
+        WHERE c."projectId" = ${projectId} AND c."deletedAt" IS NULL AND ${where} ${clientBuyerSql}
+      `,
+      this.prisma.$queryRaw<{ purchases: number; revenue: string | null }[]>`
+        SELECT COUNT(p.id)::int as purchases, COALESCE(SUM(p.amount), 0) as revenue
+        FROM "Purchase" p
+        JOIN "Client" c ON c.id = p."clientId" AND c."subscribedAt" IS NOT NULL
+        WHERE c."projectId" = ${projectId} AND c."deletedAt" IS NULL AND ${where}
+          AND p."createdAt" >= ${since} AND p."createdAt" < ${until}
+          ${clientBuyerSql}
+      `,
+      eventWhere
+        ? this.prisma.$queryRaw<{ eventName: string; count: number }[]>`
+            SELECT e."eventName", COUNT(*)::int as count
+            FROM "TrackingEvent" e
+            WHERE e."projectId" = ${projectId} AND e."eventName" IN ('PageView', 'Lead')
+              AND e."createdAt" >= ${since} AND e."createdAt" < ${until}
+              AND ${eventWhere} ${eventBuyerSql}
+            GROUP BY e."eventName"
+          `
+        : Promise.resolve(null),
+    ]);
+
+    const row: LeaderboardFunnelRow = {
+      id: UNATTRIBUTED_KEY,
+      subscribes: clients?.subscribes ?? 0,
+      dialogues: clients?.dialogues ?? 0,
+      purchases: purchases?.purchases ?? 0,
+      revenue: Number(purchases?.revenue ?? 0),
+    };
+    if (events) {
+      row.pageViews = events.find((e) => e.eventName === 'PageView')?.count ?? 0;
+      row.leads = events.find((e) => e.eventName === 'Lead')?.count ?? 0;
+    }
+    return row;
   }
 
   // PageView/Lead лендинга живут только в TrackingEvent.payload (JSON, см. computeLandingStats
