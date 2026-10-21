@@ -17,6 +17,7 @@ import { UpdateLandingDto } from './dto/update-landing.dto';
 import { AbTestMemberDto, CreateAbTestGroupDto, UpdateAbTestGroupDto } from './dto/ab-test-group.dto';
 import { LandingReviewCheck, reviewLandingHtml, summarizeFailedChecks, hasTrackedJoinButton } from './landing-review.util';
 import { isGameTemplate } from './game.util';
+import { BUILDER_TEMPLATE_ID, resolveBuilderConfig, validateBuilderConfig } from './builder.util';
 import { AGE_GATE_TEMPLATE_ID } from './extra-popup.util';
 import { COUNTDOWN_TEMPLATE_ID } from './countdown.util';
 import { CreateExternalLandingDto } from './dto/create-external-landing.dto';
@@ -116,6 +117,18 @@ export interface LandingActionContext {
   accessProjectIds: Set<string>;
   editProjectIds: Set<string>;
   deleteProjectIds: Set<string>;
+}
+
+// Ключ фото фона конструктора внутри builderConfig.background.imageKey.
+function currentBuilderImageKey(config: unknown): string | null {
+  const key = (config as { background?: { imageKey?: unknown } } | null)?.background?.imageKey;
+  return typeof key === 'string' && key.startsWith('landing-builder-bg/') ? key : null;
+}
+
+function withBuilderImageKey(config: unknown, imageKey: string | null): Record<string, unknown> {
+  const c = (config && typeof config === 'object' ? config : {}) as Record<string, unknown>;
+  const background = (c.background && typeof c.background === 'object' ? c.background : {}) as Record<string, unknown>;
+  return { ...c, background: { ...background, imageKey } };
 }
 
 @Injectable()
@@ -264,6 +277,15 @@ export class LandingsService {
         previewUrl: `${process.env.CDN_URL}/templates/game/preview.jpg`,
         customizableFields: ['JOIN_BUTTON_TEXT', 'GAME_CONFIG'],
       },
+      // Конструктор (запрос баеров 2026-10-20): фон, вид окна, вопросы и кнопки с действиями
+      // настраиваются в Landing.builderConfig — см. builder.util.ts.
+      {
+        id: BUILDER_TEMPLATE_ID,
+        name: 'Конструктор',
+        description: 'Свой фон, вопросы и кнопки: окно в стиле iOS или крупный экран',
+        previewUrl: '',
+        customizableFields: ['BUILDER_CONFIG'],
+      },
     ];
   }
 
@@ -275,6 +297,7 @@ export class LandingsService {
   async createFromTemplate(projectId: string, companyId: string, dto: CreateLandingFromTemplateDto, createdById?: string): Promise<Landing> {
     this.assertTemplateAllowed(dto.templateId, companyId);
     this.assertExtraPopupAllowed(dto.templateId, dto.extraPopupEnabled);
+    this.assertBuilderConfigValid(dto.builderConfig);
     this.assertCountdownAllowed(dto.templateId, dto.countdownEnabled);
 
     // "Изначально стоит как в канале" (запрос пользователя 2026-07-04) — если пользователь не
@@ -341,6 +364,7 @@ export class LandingsService {
         countdownEnabled: dto.countdownEnabled,
         countdownConfig: dto.countdownConfig === undefined ? undefined : (dto.countdownConfig as Prisma.InputJsonValue | null),
         gameConfig: dto.gameConfig === undefined ? undefined : dto.gameConfig === null ? Prisma.JsonNull : (dto.gameConfig as unknown as Prisma.InputJsonValue),
+        builderConfig: dto.builderConfig ? (withBuilderImageKey(resolveBuilderConfig(dto.builderConfig), null) as Prisma.InputJsonValue) : undefined,
       },
     });
     // Автопубликация (запрос пользователя 2026-08-20: "при создании лэндинга он автоматом
@@ -681,6 +705,7 @@ export class LandingsService {
   async update(id: string, companyId: string, dto: UpdateLandingDto): Promise<Landing> {
     const landing = await this.findOne(id, companyId);
     this.assertExtraPopupAllowed(landing.templateId, dto.extraPopupEnabled);
+    this.assertBuilderConfigValid(dto.builderConfig);
     this.assertCountdownAllowed(landing.templateId, dto.countdownEnabled);
 
     const existingData = (landing.templateData as Record<string, string>) || {};
@@ -724,6 +749,13 @@ export class LandingsService {
         countdownEnabled: dto.countdownEnabled,
         countdownConfig: dto.countdownConfig === undefined ? undefined : (dto.countdownConfig as Prisma.InputJsonValue | null),
         gameConfig: dto.gameConfig === undefined ? undefined : dto.gameConfig === null ? Prisma.JsonNull : (dto.gameConfig as unknown as Prisma.InputJsonValue),
+        // Ключ фото фона ставит только загрузка файла — из запроса его не берём, сохраняем текущий.
+        builderConfig:
+          dto.builderConfig === undefined
+            ? undefined
+            : dto.builderConfig === null
+              ? Prisma.JsonNull
+              : (withBuilderImageKey(resolveBuilderConfig(dto.builderConfig), currentBuilderImageKey(landing.builderConfig)) as Prisma.InputJsonValue),
       },
     });
   }
@@ -732,9 +764,18 @@ export class LandingsService {
   // age-gate-invite: у него такой попап уже встроен в собственный template.html, и второй поверх
   // него был бы дублем того же вопроса. Отказ, а не молчаливое игнорирование: иначе переключатель
   // в UI выглядел бы включённым, а на странице ничего бы не менялось.
+  private assertBuilderConfigValid(config: unknown): void {
+    if (config === undefined || config === null) return;
+    const error = validateBuilderConfig(config);
+    if (error) throw new BadRequestException(error);
+  }
+
   private assertExtraPopupAllowed(templateId: string | null | undefined, extraPopupEnabled?: boolean): void {
     if (extraPopupEnabled && templateId === AGE_GATE_TEMPLATE_ID) {
       throw new BadRequestException('У шаблона «Проверка возраста + приглашение» такой попап уже есть — дополнительный здесь не нужен');
+    }
+    if (extraPopupEnabled && templateId === BUILDER_TEMPLATE_ID) {
+      throw new BadRequestException('В конструкторе вопросы настраиваются в самом лендинге — дополнительный попап не нужен');
     }
   }
 
@@ -744,6 +785,9 @@ export class LandingsService {
   private assertCountdownAllowed(templateId: string | null | undefined, countdownEnabled?: boolean): void {
     if (countdownEnabled && templateId === COUNTDOWN_TEMPLATE_ID) {
       throw new BadRequestException('У этого шаблона таймер уже встроен — отдельный здесь не нужен');
+    }
+    if (countdownEnabled && templateId === BUILDER_TEMPLATE_ID) {
+      throw new BadRequestException('Таймер в конструкторе пока недоступен');
     }
   }
 
@@ -1378,6 +1422,8 @@ export class LandingsService {
         countdownEnabled: original.countdownEnabled,
         countdownConfig: original.countdownConfig === null ? Prisma.JsonNull : (original.countdownConfig as Prisma.InputJsonValue),
         gameConfig: original.gameConfig === null ? Prisma.JsonNull : (original.gameConfig as Prisma.InputJsonValue),
+        // Фото фона копируется ниже в собственный путь копии — здесь ключ пока сбрасываем.
+        builderConfig: original.builderConfig === null ? Prisma.JsonNull : (withBuilderImageKey(original.builderConfig, null) as Prisma.InputJsonValue),
         status: LandingStatus.DRAFT,
       },
     });
@@ -1392,6 +1438,16 @@ export class LandingsService {
       const newPrelandingPath = `landing-cloaking-prelanding/${created.id}`;
       await this.storage.copyPrefix(original.cloakingPrelandingBasePath, newPrelandingPath);
       await this.prisma.landing.update({ where: { id: created.id }, data: { cloakingPrelandingBasePath: newPrelandingPath } });
+    }
+
+    const originalBgKey = currentBuilderImageKey(original.builderConfig);
+    if (originalBgKey) {
+      const newBgKey = `landing-builder-bg/${created.id}/${originalBgKey.split('/').pop()}`;
+      await this.storage.copyObject(originalBgKey, newBgKey);
+      await this.prisma.landing.update({
+        where: { id: created.id },
+        data: { builderConfig: withBuilderImageKey(original.builderConfig, newBgKey) as Prisma.InputJsonValue },
+      });
     }
 
     if (original.avatarKey) {
@@ -1628,6 +1684,61 @@ export class LandingsService {
     const landing = await this.findOne(id, companyId);
     if (landing.avatarKey) await this.storage.removeObject(landing.avatarKey);
     return this.prisma.landing.update({ where: { id }, data: { avatarKey: null } });
+  }
+
+  // Фото фона конструктора (2026-10-20). Ключ ставит только эта загрузка — PATCH с builderConfig
+  // его не меняет (см. update). Тот же бакет и лимит, что у аватарки.
+  async uploadBuilderBackground(id: string, companyId: string, file: Express.Multer.File): Promise<Landing> {
+    if (!file) throw new BadRequestException('Файл не передан');
+    if (file.size > MAX_AVATAR_SIZE) throw new BadRequestException('Максимальный размер файла — 5MB');
+    if (!/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype || '')) throw new BadRequestException('Нужна картинка: JPG, PNG, WEBP или GIF');
+
+    const landing = await this.findOne(id, companyId);
+    if (landing.templateId !== BUILDER_TEMPLATE_ID) throw new BadRequestException('Фон загружается только для лендинга из конструктора');
+
+    const key = `landing-builder-bg/${landing.id}/${Date.now()}-${file.originalname.replace(/[^\w.-]/g, '_')}`;
+    await this.storage.uploadBuffer(key, file.buffer, file.mimetype);
+    const previous = currentBuilderImageKey(landing.builderConfig);
+    if (previous) await this.storage.removeObject(previous);
+
+    return this.prisma.landing.update({
+      where: { id },
+      data: { builderConfig: withBuilderImageKey(landing.builderConfig, key) as Prisma.InputJsonValue },
+    });
+  }
+
+  async removeBuilderBackground(id: string, companyId: string): Promise<Landing> {
+    const landing = await this.findOne(id, companyId);
+    const previous = currentBuilderImageKey(landing.builderConfig);
+    if (!previous) return landing;
+    await this.storage.removeObject(previous);
+    return this.prisma.landing.update({
+      where: { id },
+      data: { builderConfig: withBuilderImageKey(landing.builderConfig, null) as Prisma.InputJsonValue },
+    });
+  }
+
+  // Публичный, как аватарка: фото фона видит любой посетитель лендинга.
+  async streamBuilderBackground(id: string, res: Response): Promise<void> {
+    const landing = await this.prisma.landing.findFirst({ where: { id, deletedAt: null }, select: { builderConfig: true } });
+    const key = landing ? currentBuilderImageKey(landing.builderConfig) : null;
+    if (!key) {
+      res.status(404).end();
+      return;
+    }
+    try {
+      const stream = await this.storage.getObjectStream(key);
+      const ext = key.split('.').pop()?.toLowerCase();
+      const types: Record<string, string> = { png: 'image/png', webp: 'image/webp', gif: 'image/gif' };
+      res.setHeader('Content-Type', (ext && types[ext]) || 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(404).end();
+      });
+      stream.pipe(res);
+    } catch {
+      if (!res.headersSent) res.status(404).end();
+    }
   }
 
   // Публичный (без companyId) — используется и самим рендером лендинга (<img src>, посетитель

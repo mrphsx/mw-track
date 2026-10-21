@@ -18,7 +18,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { ChevronDown, Copy, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud } from 'lucide-react';
+import { ChevronDown, Copy, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud, Wand2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import {
@@ -353,7 +353,19 @@ export function LandingsViewToggle({ value, onChange }: { value: LandingsView; o
 
 // Одна кнопка создания вместо трёх (запрос пользователя 2026-10-14: "для экономии места... при
 // нажатии пусть покажет уже варианты создания") — стоит справа рядом с переключателем вида.
-export function CreateLandingMenu({ onTemplate, onZip, onExternal }: { onTemplate: () => void; onZip: () => void; onExternal: () => void }) {
+export function CreateLandingMenu({
+  onTemplate,
+  onZip,
+  onExternal,
+  builderHref,
+}: {
+  onTemplate: () => void;
+  onZip: () => void;
+  onExternal: () => void;
+  // Конструктор (2026-10-21) — отдельная страница, а не диалог.
+  builderHref?: string;
+}) {
+  const router = useRouter();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className="inline-flex items-center gap-1.5 rounded-lg font-medium text-sm px-4 py-2 transition-colors bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] hover:opacity-90">
@@ -362,6 +374,11 @@ export function CreateLandingMenu({ onTemplate, onZip, onExternal }: { onTemplat
         <ChevronDown className="w-4 h-4 opacity-80" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-auto min-w-64">
+        {builderHref && (
+          <DropdownMenuItem onClick={() => router.push(builderHref)}>
+            <Wand2 className="w-4 h-4 mr-2" /> Конструктор
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={onTemplate}>
           <LayoutTemplate className="w-4 h-4 mr-2" /> Из шаблона
         </DropdownMenuItem>

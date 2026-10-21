@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { GameConfig, GameConfigFields, isGameTemplateId, mergeGameConfig } from '@/components/game-config-fields';
+import Link from 'next/link';
 import {
   SUBSCRIBERS_LABEL_PRESETS,
   SUBSCRIBERS_LABEL_CUSTOM_VALUE as CUSTOM_VALUE,
@@ -59,6 +60,7 @@ interface LandingContentFull {
     COUNTDOWN_MINUTES?: string;
   } | null;
   gameConfig?: Partial<GameConfig> | null;
+  projectId?: string;
 }
 
 export function LandingContentCard({
@@ -137,6 +139,8 @@ export function LandingContentCard({
 
   const isAgeGate = landing?.templateId === AGE_GATE_TEMPLATE_ID;
   const isCountdown = landing?.templateId === COUNTDOWN_TEMPLATE_ID;
+  // Конструктор редактируется на своей странице (2026-10-21), здесь — только ссылка на неё.
+  const isBuilder = landing?.templateId === 'builder';
 
   const save = useMutation({
     mutationFn: () =>
@@ -243,7 +247,20 @@ export function LandingContentCard({
           </div>
         </>
       )}
-      {!isAgeGate && (
+      {isBuilder && (
+        <div className="space-y-3">
+          <p className={`text-sm ${muted}`}>
+            Этот лендинг собран в конструкторе: шаги, тексты, кнопки и оформление меняются на отдельной странице.
+          </p>
+          <Link
+            href={`/projects/${landing?.projectId}/landings/${landingId}/builder`}
+            className="inline-flex items-center rounded-lg bg-[#1F4E9C] px-4 py-2 text-sm font-medium text-white hover:opacity-90 dark:bg-[#7BA9EE] dark:text-[#0F1620]"
+          >
+            Открыть конструктор
+          </Link>
+        </div>
+      )}
+      {!isAgeGate && !isBuilder && (
       <>
       <div className="space-y-1.5">
         <Label>Аватарка</Label>
@@ -442,9 +459,11 @@ export function LandingContentCard({
       )}
 
       {error && <p className="text-sm text-red-500">{error}</p>}
-      <Button onClick={() => save.mutate()} disabled={save.isPending}>
-        {save.isPending ? 'Сохраняем...' : 'Сохранить'}
-      </Button>
+      {!isBuilder && (
+        <Button onClick={() => save.mutate()} disabled={save.isPending}>
+          {save.isPending ? 'Сохраняем...' : 'Сохранить'}
+        </Button>
+      )}
     </>
   );
 

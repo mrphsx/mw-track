@@ -13,6 +13,7 @@ import { TelegramLinkChannel, buildTelegramLink } from '../channels/telegram-lin
 import { invertParamMap, resolveParamMap } from '../tracking/link-params.const';
 import { AGE_GATE_TEMPLATE_ID, renderExtraPopupHtml, resolveExtraPopup } from './extra-popup.util';
 import { GAME_TEMPLATE_FOLDER, buildGameVars, isGameTemplate } from './game.util';
+import { BUILDER_TEMPLATE_ID, buildBuilderVars, resolveBuilderConfig } from './builder.util';
 import { COUNTDOWN_PLACEHOLDER, COUNTDOWN_TEMPLATE_ID, renderCountdownHtml, resolveCountdown } from './countdown.util';
 import { resolveBuyerShortCode, resolvePixelShortCode } from '../../common/short-code.util';
 import { isBotUserAgent } from '../../common/bot-user-agent.util';
@@ -398,6 +399,8 @@ export class LandingRendererService {
     }
 
     const vars: Record<string, string> = {
+      // Конструктор — ключи первыми, см. комментарий в renderTemplate.
+      ...(templateId === BUILDER_TEMPLATE_ID ? buildBuilderVars(null, { imageUrl: null }) : {}),
       META_TITLE: 'Название канала',
       META_DESCRIPTION: 'Описание канала',
       CHANNEL_TITLE: 'Название канала',
@@ -456,6 +459,52 @@ export class LandingRendererService {
     return renderCountdownHtml(resolveCountdown(landing.countdownConfig), accent);
   }
 
+  // Фото фона конструктора отдаёт публичный эндпоинт лендинга; ключ содержит Date.now(), поэтому
+  // он же служит версией для кэша браузера (как у аватарки).
+  private builderVarsFor(landing: Landing, avatarUrl: string | null, data: Record<string, string>): Record<string, string> {
+    const imageKey = resolveBuilderConfig(landing.builderConfig).background.imageKey;
+    const imageUrl = imageKey
+      ? `${process.env.API_URL}/api/v1/landings/${landing.id}/builder-background?v=${encodeURIComponent(imageKey.split('/').pop() || '')}`
+      : null;
+    return buildBuilderVars(landing.builderConfig, {
+      imageUrl,
+      avatarUrl,
+      channelTitle: data.CHANNEL_TITLE || '',
+      subscribersCount: data.SUBSCRIBERS_COUNT || '',
+    });
+  }
+
+  // Живое превью конструктора в редакторе: конфиг ещё не сохранён, фото и аватар — blob: из
+  // браузера или адреса уже загруженных файлов. Ссылки кнопок никуда не ведут.
+  async renderBuilderPreview(options: {
+    config: unknown;
+    imageUrl?: string | null;
+    avatarUrl?: string | null;
+    channelTitle?: string;
+    subscribersCount?: string;
+    startScreen?: number;
+  }): Promise<string> {
+    const templatePath = path.join(this.templatesDir, BUILDER_TEMPLATE_ID, 'template.html');
+    let html = this.stripStyleComments(await fs.readFile(templatePath, 'utf-8'));
+    const vars: Record<string, string> = {
+      ...buildBuilderVars(options.config, {
+        imageUrl: options.imageUrl ?? null,
+        avatarUrl: options.avatarUrl ?? null,
+        channelTitle: options.channelTitle,
+        subscribersCount: options.subscribersCount,
+        startScreen: options.startScreen,
+      }),
+      TG_REDIRECT_URL: '#',
+      META_TITLE: 'Предпросмотр',
+      META_DESCRIPTION: '',
+    };
+    html = this.processConditionals(html, vars);
+    for (const [key, value] of Object.entries(vars)) {
+      html = html.replaceAll(`{{${key}}}`, value || '');
+    }
+    return html;
+  }
+
   // Четыре игровых шаблона рендерятся из одной общей вёрстки (templates/game), игру выбирает
   // {{GAME_KIND}} — см. game.util.ts.
   private templateFolder(templateId: string): string {
@@ -499,13 +548,19 @@ export class LandingRendererService {
       ? `${process.env.API_URL}/api/v1/landings/${landing.id}/avatar?v=${encodeURIComponent(landing.avatarKey || 'channel')}`
       : data.CHANNEL_AVATAR || '';
 
+    // Конструктор (2026-10-20). Его ключи идут ПЕРВЫМИ: BUILDER_SCREENS сам содержит
+    // {{TG_REDIRECT_URL}}, и подстановка ниже идёт в порядке ключей — экраны должны оказаться в
+    // HTML раньше, чем заменяется ссылка.
+    const builderVars = landing.templateId === BUILDER_TEMPLATE_ID ? this.builderVarsFor(landing, channelAvatar || null, data) : null;
+
     const vars: Record<string, string> = {
+      ...(builderVars ?? {}),
       ...data,
       // Фолбэк для лендингов, созданных до этого поля (запрос пользователя 2026-07-21) —
       // templateData ещё не содержит SUBSCRIBERS_LABEL.
       SUBSCRIBERS_LABEL: data.SUBSCRIBERS_LABEL || 'подписчиков',
       CHANNEL_AVATAR: channelAvatar,
-      META_TITLE: landing.metaTitle || data.CHANNEL_TITLE || 'Закрытый канал',
+      META_TITLE: landing.metaTitle || builderVars?.BUILDER_TITLE || data.CHANNEL_TITLE || 'Закрытый канал',
       META_DESCRIPTION: landing.metaDescription || data.CHANNEL_DESCRIPTION || '',
       // landingId — чтобы редирект-эндпоинт мог найти персональную invite-ссылку ИМЕННО
       // этого лендинга (Landing.tgInviteLink) для точной пер-лендинговой атрибуции, а не
@@ -795,11 +850,14 @@ export class LandingRendererService {
     // посетителя унесло бы в Telegram, не дав ответить на вопрос. Сам попап (см. ниже) вызывает
     // window.tcrm.triggerAutoRedirect() при нажатии кнопки "следующий шаг" — тем же вызовом, что
     // и template.html у age-gate-invite.
-    const extraPopupActive = landing.extraPopupEnabled && landing.templateId !== AGE_GATE_TEMPLATE_ID;
+    const extraPopupActive = landing.extraPopupEnabled && landing.templateId !== AGE_GATE_TEMPLATE_ID && landing.templateId !== BUILDER_TEMPLATE_ID;
 
     // Игровые шаблоны (запрос пользователя 2026-10-18): авторедирект и подсказка TikTok ждут,
     // пока посетитель доиграет — скрипт шаблона сам вызывает triggerAutoRedirect после выигрыша.
-    const deferAutoRedirect = landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive || isGameTemplate(landing.templateId);
+    // Конструктор с несколькими экранами: авторедирект ждёт, пока посетитель дойдёт до последнего
+    // вопроса (скрипт шаблона сам зовёт triggerAutoRedirect).
+    const builderMultiStep = landing.templateId === BUILDER_TEMPLATE_ID && resolveBuilderConfig(landing.builderConfig).screens.length > 1;
+    const deferAutoRedirect = landing.templateId === AGE_GATE_TEMPLATE_ID || extraPopupActive || isGameTemplate(landing.templateId) || builderMultiStep;
 
     // Карта параметров (§ выше) прокидывается браузерному SDK тем же способом, что и
     // data-landing-id — иначе track.js не будет знать, под каким кастомным именем искать

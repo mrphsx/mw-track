@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { ArrowLeft, Eye, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
+import { ArrowLeft, Eye, Wand2, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
@@ -160,6 +160,11 @@ export default function StudioLandingStatsPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
 
+  // Кнопка «Конструктор» в шапке — только у лендингов из конструктора (2026-10-21).
+  const { data: landingTemplateId } = useQuery({
+    queryKey: ['landing', landingId, 'template-id'],
+    queryFn: async () => (await api.get<{ templateId: string | null }>(`/landings/${landingId}`)).data.templateId,
+  });
   const { data: stats } = useQuery({
     queryKey: ['landing', landingId, 'stats'],
     queryFn: async () => (await api.get<LandingStats>(`/landings/${landingId}/stats`)).data,
@@ -284,6 +289,11 @@ export default function StudioLandingStatsPage() {
             {stats.attachment && (
               <StudioLinkButton icon={Link2} onClick={() => setShowGetLink(true)}>
                 Получить ссылку
+              </StudioLinkButton>
+            )}
+            {landingTemplateId === 'builder' && (
+              <StudioLinkButton icon={Wand2} href={`/projects/${projectId}/landings/${landingId}/builder`}>
+                Конструктор
               </StudioLinkButton>
             )}
             <StudioLinkButton icon={Eye} onClick={preview}>

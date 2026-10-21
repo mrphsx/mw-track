@@ -200,7 +200,7 @@ export default function StudioLandingsPage() {
         {viewMode === 'landings' && (
           <div className="ml-auto flex items-center gap-2">
             {!compareMode && hasPermission(user, projectId, 'LANDINGS_CREATE') && (
-              <CreateLandingMenu onTemplate={() => setShowTemplateModal(true)} onZip={() => setUploadTarget('new')} onExternal={() => setExternalTarget('new')} />
+              <CreateLandingMenu builderHref={`/landings/builder?projectId=${projectId}`} onTemplate={() => setShowTemplateModal(true)} onZip={() => setUploadTarget('new')} onExternal={() => setExternalTarget('new')} />
             )}
             <LandingsViewToggle value={landingsView} onChange={setLandingsView} />
           </div>

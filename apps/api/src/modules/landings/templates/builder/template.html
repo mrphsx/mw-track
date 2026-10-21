@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="{{BUILDER_THEME_COLOR}}">
+  {{BUILDER_FONT_LINK}}
+  <title>{{META_TITLE}}</title>
+  <meta name="description" content="{{META_DESCRIPTION}}">
+  <style>
+    /* Конструктор лендингов: фон + шаги. Каждый шаг несёт своё оформление CSS-переменными
+       (--s-*), общие настройки — на body (--b-*). */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      font-family: var(--b-font);
+      color: var(--b-text);
+      background: #111;
+      min-height: 100vh;
+      min-height: 100svh;
+      -webkit-font-smoothing: antialiased;
+    }
+    .b-bg { position: fixed; inset: calc(var(--b-blur) * -2); background: var(--b-bg); filter: blur(var(--b-blur)); z-index: 0; }
+    .b-bg::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, var(--b-dim)); }
+    .b-wrap {
+      position: relative; z-index: 1; min-height: 100vh; min-height: 100svh;
+      display: flex; align-items: center; justify-content: center; padding: 28px 16px;
+    }
+
+    .b-screen { width: 100%; max-width: var(--s-width); text-align: var(--s-align); }
+    .b-screen[hidden] { display: none; }
+    .b-screen--card { background: var(--s-card); border-radius: var(--s-radius); overflow: hidden; }
+    .b-screen--glass { backdrop-filter: blur(24px) saturate(140%); -webkit-backdrop-filter: blur(24px) saturate(140%); }
+    .b-shadow--soft { box-shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.55); }
+    .b-shadow--strong { box-shadow: 0 30px 80px -18px rgba(0, 0, 0, 0.8); }
+    .b-body { padding: var(--s-pad); }
+    .b-screen--card .b-body { padding-bottom: calc(var(--s-pad) * 0.6); }
+
+    .b-avatar {
+      display: block; width: var(--s-avatar); height: var(--s-avatar); border-radius: 50%;
+      object-fit: cover; margin: 0 0 14px;
+    }
+    .b-align--center .b-avatar { margin-left: auto; margin-right: auto; }
+    .b-avatar--initial {
+      position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--btn); color: #fff;
+      font-weight: 700; font-size: calc(var(--s-avatar) * 0.42);
+    }
+    .b-avatar--initial img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+    .b-eyebrow {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+      color: var(--s-muted); font-size: 12px; font-weight: 700; letter-spacing: 0.12em; line-height: 1.5; text-transform: uppercase;
+    }
+    .b-align--center .b-eyebrow { justify-content: center; }
+    .b-align--center .b-eyebrow::before, .b-align--center .b-eyebrow::after, .b-align--left .b-eyebrow::after { content: ""; flex: 0 0 20px; height: 1px; background: var(--s-line); }
+    .b-eyebrow span { min-width: 0; }
+    .b-title { margin: 0; font-size: var(--s-title-size); font-weight: var(--s-title-weight); color: var(--s-title); line-height: 1.15; letter-spacing: -0.01em; }
+    .b-subs { margin-top: 6px; color: var(--s-muted); font-size: calc(var(--s-text-size) * 0.95); }
+    .b-subtitle { margin: 10px 0 0; color: var(--s-muted); font-size: var(--s-text-size); line-height: 1.45; }
+
+    .b-actions { display: flex; gap: 12px; padding: 0 var(--s-pad) var(--s-pad); }
+    .b-screen--page .b-actions { margin-top: 24px; }
+    .b-actions--column { flex-direction: column; }
+    .b-actions--row { flex-direction: row; }
+    .b-actions--row .b-btn { flex: 1; }
+    .b-btn {
+      display: flex; align-items: center; justify-content: center; min-height: var(--s-btn-height); padding: 0 18px;
+      border-radius: var(--s-btn-radius); font: inherit; font-size: var(--s-btn-size); font-weight: var(--s-btn-weight);
+      text-decoration: none; cursor: pointer; border: 2px solid transparent; -webkit-tap-highlight-color: transparent;
+      transition: transform 0.12s ease, opacity 0.12s ease;
+    }
+    .b-btn:active { transform: scale(0.98); }
+    .b-btn--filled { background: var(--btn); color: var(--btn-on); border-color: var(--btn); box-shadow: 0 10px 24px -14px var(--btn); }
+    .b-btn--outline { background: transparent; color: var(--s-title); border-color: var(--s-line); }
+    .b-btn--soft { background: var(--btn-soft); color: var(--btn); }
+    .b-btn--plain { background: transparent; color: var(--btn); }
+
+    /* iOS-окно: все кнопки текстовые, в ряд — во всю ширину попапа с разделителями. */
+    .b-actions--ios { gap: 0; padding: 0; border-top: 1px solid var(--s-line); }
+    .b-btn--ios { border-radius: 0; border: 0; box-shadow: none; }
+    .b-btn--ios:active { background: var(--s-line); transform: none; }
+    .b-actions--ios .b-btn + .b-btn { border-left: 1px solid var(--s-line); }
+
+    .b-btn--pulse { animation: b-pulse 1.6s ease-in-out infinite; }
+    @keyframes b-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+
+    .b-anim--fade { animation: b-fade 0.35s ease both; }
+    .b-anim--slide { animation: b-slide 0.4s cubic-bezier(.2,.8,.2,1) both; }
+    .b-anim--zoom { animation: b-zoom 0.35s cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes b-fade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes b-slide { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+    @keyframes b-zoom { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .b-btn--pulse, .b-anim--fade, .b-anim--slide, .b-anim--zoom { animation: none; } }
+  </style>
+</head>
+<body style="{{BUILDER_STYLE_VARS}}">
+  <div class="b-bg" aria-hidden="true"></div>
+  <main class="b-wrap">
+{{BUILDER_SCREENS}}
+  </main>
+  <script>
+    (function () {
+      var screens = document.querySelectorAll('[data-b-screen]');
+      var buttons = document.querySelectorAll('[data-b-next]');
+      for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function (e) {
+          var current = e.currentTarget.closest('[data-b-screen]');
+          var index = Number(current.getAttribute('data-b-screen'));
+          var next = screens[index + 1];
+          if (!next) return;
+          current.hidden = true;
+          next.hidden = false;
+          if (index + 1 === screens.length - 1 && window.tcrm && typeof window.tcrm.triggerAutoRedirect === 'function') {
+            window.tcrm.triggerAutoRedirect();
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -275,7 +275,7 @@ export function LandingBehaviorFields({
         </div>
       </div>
 
-      {templateId !== COUNTDOWN_TEMPLATE_ID && (
+      {templateId !== COUNTDOWN_TEMPLATE_ID && templateId !== 'builder' && (
         <div className="rounded-md border border-border p-3 space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div>
@@ -332,7 +332,7 @@ export function LandingBehaviorFields({
         </div>
       )}
 
-      {templateId !== AGE_GATE_TEMPLATE_ID && (
+      {templateId !== AGE_GATE_TEMPLATE_ID && templateId !== 'builder' && (
         <div className="rounded-md border border-border p-3 space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div>

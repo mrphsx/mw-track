@@ -13,6 +13,8 @@ import { UpdateLandingDto } from './dto/update-landing.dto';
 import { UploadPrelandingHtmlDto } from './dto/upload-prelanding-html.dto';
 import { CreateCloakingRuleDto, ReorderCloakingRulesDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
 import { CloakingLogsQueryDto } from './dto/cloaking-logs-query.dto';
+import { BuilderPreviewDto } from './dto/builder-config.dto';
+import { BUILDER_TEMPLATE_ID, resolveBuilderConfig } from './builder.util';
 
 const MAX_ZIP_SIZE = 50 * 1024 * 1024;
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024;
@@ -78,6 +80,15 @@ export class LandingsController {
     return this.rendererService.renderTemplateGalleryPreview(id);
   }
 
+  // Живое превью конструктора (2026-10-20) — несохранённый конфиг из редактора. Объявлено раньше
+  // ':id', чтобы 'builder' не приняли за id лендинга. Ничего не читает из базы, поэтому без
+  // проверки проекта; достаточно быть сотрудником компании.
+  @Post('builder/preview')
+  @Header('Content-Type', 'text/html; charset=utf-8')
+  builderPreview(@Body() dto: BuilderPreviewDto) {
+    return this.rendererService.renderBuilderPreview(dto);
+  }
+
   // Отдельная страница /landings (все лендинги компании сразу, не только внутри одного
   // проекта) — эндпоинт объявлен раньше ':id', чтобы Nest не пытался матчить пустой path
   // как параметр. Разрешение здесь не привязано к конкретному проекту (список company-wide) —
@@ -95,6 +106,11 @@ export class LandingsController {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
     const landing = await this.landingsService.findOne(id, companyId);
     const [withFlags] = await this.landingsService.withActionFlags([landing], user.userId, user.role);
+    // Конструктор: редактор получает конфиг уже в текущем формате (старые лендинги первой версии
+    // переводятся на лету, в базе ничего не меняется до первого сохранения).
+    if (withFlags.templateId === BUILDER_TEMPLATE_ID) {
+      return { ...withFlags, builderConfig: resolveBuilderConfig(withFlags.builderConfig) };
+    }
     return withFlags;
   }
 
@@ -330,6 +346,30 @@ export class LandingsController {
   async removeAvatar(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAction(id, companyId, user, 'edit');
     return this.landingsService.removeAvatar(id, companyId);
+  }
+
+  @Post(':id/builder-background')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_AVATAR_SIZE } }))
+  async uploadBuilderBackground(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    await this.assertAction(id, companyId, user, 'edit');
+    return this.landingsService.uploadBuilderBackground(id, companyId, file);
+  }
+
+  @Delete(':id/builder-background')
+  async removeBuilderBackground(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.assertAction(id, companyId, user, 'edit');
+    return this.landingsService.removeBuilderBackground(id, companyId);
+  }
+
+  @Public()
+  @Get(':id/builder-background')
+  builderBackground(@Param('id') id: string, @Res() res: Response) {
+    return this.landingsService.streamBuilderBackground(id, res);
   }
 
   // Публичный — та же картинка, что видит на публичном лендинге любой посетитель

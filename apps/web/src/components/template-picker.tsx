@@ -22,7 +22,9 @@ const PREVIEW_SCALE = 0.26;
 export function TemplatePicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
   const { data: templates } = useQuery({
     queryKey: ['landing-templates'],
-    queryFn: async () => (await api.get<TemplateInfo[]>('/landings/templates')).data,
+    // Конструктор создаётся на отдельной странице (пункт «Конструктор» в меню «Создать лендинг»),
+    // в обычном списке шаблонов его нет.
+    queryFn: async () => (await api.get<TemplateInfo[]>('/landings/templates')).data.filter((t) => t.id !== 'builder'),
     staleTime: 5 * 60 * 1000,
   });
 

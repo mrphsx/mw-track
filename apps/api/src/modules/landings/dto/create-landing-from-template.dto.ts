@@ -1,7 +1,8 @@
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsObject, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { GAME_KINDS, GAME_LIMITS } from '../game.util';
 import { LandingBehaviorDto } from './landing-behavior.dto';
+import { BUILDER_TEMPLATE_ID } from '../builder.util';
 
 // Баг-репорт пользователя 2026-07-15: "при выборе telegram тёмный или светлый пишет ошибка
 // валидации" — этот whitelist дублирует список из LandingsService.getTemplates(), но не
@@ -12,6 +13,7 @@ const TEMPLATE_IDS = [
   'minimal', 'gradient', 'dark', 'telegram-light', 'telegram-dark', 'tg-invite-dark', 'tg-invite-light',
   'age-gate-invite', 'countdown-urgency',
   ...Object.keys(GAME_KINDS),
+  BUILDER_TEMPLATE_ID,
 ];
 
 // Игровые шаблоны (запрос пользователя 2026-10-18) — все поля необязательны, пустое = дефолт игры
@@ -116,6 +118,12 @@ export class CreateLandingFromTemplateDto extends LandingBehaviorDto {
   @ValidateNested()
   @Type(() => GameConfigDto)
   gameConfig?: GameConfigDto | null;
+
+  // Конструктор (шаблон builder, 2026-10-20) — оформление и вопросы, см. builder.util.ts.
+  @IsOptional()
+  @ValidateIf((o) => o.builderConfig !== null)
+  @IsObject()
+  builderConfig?: Record<string, unknown> | null;
 
   @IsOptional() @IsString() metaTitle?: string;
   @IsOptional() @IsString() metaDescription?: string;
