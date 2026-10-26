@@ -22,6 +22,7 @@ import {
   BookOpen,
   Contact,
   MessagesSquare,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -91,7 +92,9 @@ const OPERATOR_NAV_ITEMS: NavItem[] = [
 // остаются серыми даже в тёмной теме, см. globals.css), поэтому здесь свои литеральные цвета
 // с dark:-вариантами вместо семантических токенов, тот же приём, что и у teal-акцента в
 // Control Room, просто применённый шире (весь фон/карточки, не только акцент).
-export function StudioSidebar() {
+// mobileOpen — на телефоне (уже md) меню выезжает поверх страницы по кнопке-бургеру в шапке
+// (2026-10-26: «меню слева не помещается на телефоне»); на десктопе — как раньше, сбоку.
+export function StudioSidebar({ mobileOpen = false, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
   const { sidebarCollapsed, toggleSidebar } = useUiStore();
@@ -100,7 +103,13 @@ export function StudioSidebar() {
   // рендер разошёлся бы с серверным и React пожаловался бы на hydration mismatch.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  const collapsed = mounted && sidebarCollapsed;
+  // Выезжающее меню на телефоне всегда развёрнуто — свёрнутые иконки там ни к чему.
+  const collapsed = mounted && sidebarCollapsed && !mobileOpen;
+  // Перешли по ссылке — меню на телефоне закрывается.
+  useEffect(() => {
+    onMobileClose?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
   const isOwnerOrAdmin =
     user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'OPERATOR_ADMIN';
@@ -115,11 +124,21 @@ export function StudioSidebar() {
   });
 
   return (
+    <>
+    {mobileOpen && <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={onMobileClose} aria-hidden="true" />}
     <aside
-      className={`relative border-r border-[#DCE1E8] dark:border-[#232B38] bg-[#E8ECF1] dark:bg-[#0B121B] flex flex-col h-screen shrink-0 transition-[width] duration-200 ${
-        collapsed ? 'w-[76px]' : 'w-64'
-      }`}
+      className={`fixed inset-y-0 left-0 z-50 md:relative md:z-auto md:translate-x-0 border-r border-[#DCE1E8] dark:border-[#232B38] bg-[#E8ECF1] dark:bg-[#0B121B] flex flex-col h-screen shrink-0 transition-[width,transform] duration-200 ${
+        mobileOpen ? 'translate-x-0 shadow-xl' : '-translate-x-full'
+      } ${collapsed ? 'w-[76px]' : 'w-64'}`}
     >
+      <button
+        type="button"
+        onClick={onMobileClose}
+        aria-label="Закрыть меню"
+        className="md:hidden absolute right-3 top-5 z-10 w-8 h-8 rounded-lg flex items-center justify-center text-[#5F6B7A] dark:text-[#92A0AF] hover:bg-[#DCE1E8]/60 dark:hover:bg-white/5"
+      >
+        <X className="w-4 h-4" />
+      </button>
       {/* Сворачивание до иконок (запрос пользователя 2026-07-31: "освободить много места для
           страниц") — кнопка на границе сайдбара, тот же паттерн, что в большинстве дашбордов
           (VSCode/Notion и т.п.). */}
@@ -127,7 +146,7 @@ export function StudioSidebar() {
         type="button"
         onClick={toggleSidebar}
         aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
-        className="absolute -right-3 top-7 z-10 w-6 h-6 rounded-full bg-white dark:bg-[#171F2B] border border-[#DCE1E8] dark:border-white/10 shadow-sm flex items-center justify-center text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+        className="hidden md:flex absolute -right-3 top-7 z-10 w-6 h-6 rounded-full bg-white dark:bg-[#171F2B] border border-[#DCE1E8] dark:border-white/10 shadow-sm flex items-center justify-center text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
       >
         {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronLeft className="w-3.5 h-3.5" />}
       </button>
@@ -217,5 +236,6 @@ export function StudioSidebar() {
         </DropdownMenu>
       </div>
     </aside>
+    </>
   );
 }

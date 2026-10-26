@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { useQuery } from '@tanstack/react-query';
-import { Moon, Sun, Wallet } from 'lucide-react';
+import { Menu, Moon, Sun, Wallet } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { StudioSidebar } from '@/components/layout/studio-sidebar';
@@ -51,6 +51,8 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const isDark = mounted && resolvedTheme === 'dark';
+  // Меню на телефоне — выезжает по кнопке-бургеру (2026-10-26).
+  const [mobileMenu, setMobileMenu] = useState(false);
 
   // Класс-маркер на <html> (запрос пользователя 2026-08-18: "все попапы и дропдауны
   // черно-серого цвета, поправь все") — Dialog/Select/DropdownMenu/Drawer рендерят контент через
@@ -92,10 +94,18 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#F3F5F8] dark:bg-[#0F1620]">
-      <StudioSidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 flex items-center justify-between px-8 shrink-0 gap-4">
+      <StudioSidebar mobileOpen={mobileMenu} onMobileClose={() => setMobileMenu(false)} />
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <header className="h-16 flex items-center justify-between px-4 md:px-8 shrink-0 gap-4">
           <div className="flex items-center gap-3 min-w-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenu(true)}
+              aria-label="Открыть меню"
+              className="md:hidden -ml-1 w-9 h-9 flex items-center justify-center rounded-lg text-[#131A24] dark:text-[#E9EDF3] hover:bg-white dark:hover:bg-white/5"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
             <span className="text-[10px] font-medium uppercase tracking-widest px-2 py-0.5 rounded-full bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE] shrink-0">
               Beta
             </span>
@@ -152,7 +162,7 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
             </div>
           </div>
         </header>
-        <main className="flex-1 overflow-y-auto px-8 pb-10">{children}</main>
+        <main className="flex-1 overflow-y-auto px-4 md:px-8 pb-10">{children}</main>
       </div>
     </div>
   );
