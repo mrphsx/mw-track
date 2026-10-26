@@ -160,7 +160,22 @@ export interface ChatMessage {
   deletedAt?: string | null;
   deletedByName?: string | null;
   canDelete?: boolean;
+  // Возможности Telegram (2026-10-26): ответ с цитатой, пересланное, правка.
+  replyTo?: { id: string; direction: 'IN' | 'OUT'; text: string | null; mediaType: ChatMediaType | null } | null;
+  forwardedFrom?: string | null;
+  editedAt?: string | null;
+  originalText?: string | null;
+  canReply?: boolean;
+  canEdit?: boolean;
   createdAt: string;
+}
+
+export async function editChatMessage(id: string, text: string) {
+  await api.patch(`/chat/messages/${id}`, { text });
+}
+
+export async function sendTypingSignal(conversationId: string) {
+  await api.post(`/chat/conversations/${conversationId}/typing`);
 }
 
 export async function deleteChatMessage(id: string) {
@@ -206,8 +221,9 @@ export async function fetchMessages(conversationId: string, before?: string) {
   return data;
 }
 
-export async function sendChatMessage(conversationId: string, payload: { text?: string; file?: File; templateId?: string }) {
+export async function sendChatMessage(conversationId: string, payload: { text?: string; file?: File; templateId?: string; replyToId?: string }) {
   const form = new FormData();
+  if (payload.replyToId) form.append('replyToId', payload.replyToId);
   if (payload.text) form.append('text', payload.text);
   if (payload.file) form.append('file', payload.file);
   else if (payload.templateId) form.append('templateId', payload.templateId);

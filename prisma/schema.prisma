@@ -2758,6 +2758,12 @@ model ChatMessage {
   // с пометкой, кто и когда удалил.
   deletedAt      DateTime?
   deletedById    String?
+  // Возможности Telegram в чате (2026-10-26): ответ на сообщение (наш id), пересланное (от кого),
+  // правка — когда и исходный текст (правку видно и у входящих: клиент изменил сообщение).
+  replyToId      String?
+  forwardedFrom  String?
+  editedAt       DateTime?
+  originalText   String?
   createdAt      DateTime       @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])

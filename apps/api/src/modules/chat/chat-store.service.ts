@@ -44,6 +44,24 @@ export function chatPreview(text: string | null | undefined, mediaType?: string 
 
 // Самое крупное фото из набора размеров, остальные типы — как есть. Стикер хранится как
 // медиа: в чате он показывается картинкой (у анимированных .tgs — подписью-эмодзи).
+// От кого переслано (Bot API forward_origin, 2026-10-26): человек, скрытый отправитель, чат или канал.
+export function forwardOriginName(message: Message): string | null {
+  const o = message.forward_origin;
+  if (!o) return null;
+  switch (o.type) {
+    case 'user':
+      return [o.sender_user.first_name, o.sender_user.last_name].filter(Boolean).join(' ') || (o.sender_user.username ? `@${o.sender_user.username}` : 'пользователь');
+    case 'hidden_user':
+      return o.sender_user_name || 'скрытый пользователь';
+    case 'chat':
+      return o.sender_chat.title ?? 'чат';
+    case 'channel':
+      return o.chat.title ?? 'канал';
+    default:
+      return 'пересланное';
+  }
+}
+
 export function extractTelegramMedia(message: Message): ChatMedia | null {
   if (message.photo?.length) return { type: 'photo', fileId: message.photo[message.photo.length - 1].file_id };
   if (message.video) return { type: 'video', fileId: message.video.file_id, fileName: message.video.file_name };
@@ -104,7 +122,49 @@ export class ChatStoreService {
       media: extractTelegramMedia(message),
       externalId: String(message.message_id),
       sentAt: new Date(message.date * 1000),
+      replyToExternalId: message.reply_to_message ? String(message.reply_to_message.message_id) : null,
+      forwardedFrom: forwardOriginName(message),
     }, botKey);
+  }
+
+  // Клиент отредактировал сообщение боту (edited_message, 2026-10-26).
+  async recordEditedBotMessage(channel: Channel, message: Message, botKey = ''): Promise<void> {
+    if (!message.from || message.from.is_bot || message.chat.type !== 'private') return;
+    await this.recordEdit(channel, 'BOT', botKey, String(message.from.id), String(message.message_id), message.text ?? message.caption ?? null, message.edit_date);
+  }
+
+  // Удалено в Telegram мимо CRM (личка): помечаем без автора — «удалено в Telegram». Если удалили
+  // из CRM, ChatService.deleteMessage сам проставит deletedById (его запись идёт после этой).
+  async recordDeletedPersonal(channel: Channel, externalIds: string[]): Promise<void> {
+    try {
+      await this.prisma.chatMessage.updateMany({
+        where: { externalId: { in: externalIds }, deletedAt: null, conversation: { channelId: channel.id, source: 'PERSONAL' } },
+        data: { deletedAt: new Date() },
+      });
+    } catch (error) {
+      this.logger.warn(`recordDeletedPersonal failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
+  }
+
+  // Правка сообщения в Telegram (клиентом или оператором с телефона): текст в CRM обновляется,
+  // исходный остаётся в originalText — видно, что было до правки. Сообщения, которого в CRM нет, —
+  // пропускаем.
+  async recordEdit(channel: Channel, source: ConversationSource, botKey: string, peerId: string, externalId: string, text: string | null, editDate?: number): Promise<void> {
+    try {
+      const conversation = await this.prisma.conversation.findUnique({
+        where: { channelId_source_botKey_peerId: { channelId: channel.id, source, botKey, peerId } },
+        select: { id: true },
+      });
+      if (!conversation) return;
+      const message = await this.prisma.chatMessage.findFirst({ where: { conversationId: conversation.id, externalId }, orderBy: { createdAt: 'desc' } });
+      if (!message || message.text === text) return;
+      await this.prisma.chatMessage.update({
+        where: { id: message.id },
+        data: { text, originalText: message.originalText ?? message.text, editedAt: editDate ? new Date(editDate * 1000) : new Date() },
+      });
+    } catch (error) {
+      this.logger.warn(`recordEdit (${source}) failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
   }
 
   // Общая запись входящего для бота и личного аккаунта (TelegramPersonalService). У лички медиа
@@ -121,6 +181,8 @@ export class ChatStoreService {
       media: { type: string; fileId?: string; fileName?: string } | null;
       externalId: string;
       sentAt: Date;
+      replyToExternalId?: string | null;
+      forwardedFrom?: string | null;
     },
     botKey = '',
   ): Promise<void> {
@@ -183,6 +245,8 @@ export class ChatStoreService {
           mediaFileId: data.media?.fileId,
           mediaFileName: data.media?.fileName,
           externalId: data.externalId,
+          replyToId: await this.messageIdByExternal(conversation.id, data.replyToExternalId),
+          forwardedFrom: data.forwardedFrom?.slice(0, 200) || null,
           createdAt: data.sentAt,
         },
       });
@@ -247,9 +311,16 @@ export class ChatStoreService {
   // в CRM не тянем. Ответы, отправленные из самого чата CRM, приходят сюда же событием
   // Telegram — их отсекает проверка externalId (sendChatMessage сохраняет его до этого события
   // или почти одновременно, поэтому проверка с небольшой задержкой — см. вызов).
+  // Наш id сообщения по его id в Telegram — для ответов (reply).
+  async messageIdByExternal(conversationId: string, externalId?: string | null): Promise<string | null> {
+    if (!externalId) return null;
+    const m = await this.prisma.chatMessage.findFirst({ where: { conversationId, externalId }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+    return m?.id ?? null;
+  }
+
   async recordOutgoingPersonal(
     channel: Channel,
-    data: { peerId: string; text: string | null; media: { type: string; fileName?: string } | null; externalId: string; sentAt: Date },
+    data: { peerId: string; text: string | null; media: { type: string; fileName?: string } | null; externalId: string; sentAt: Date; replyToExternalId?: string | null; forwardedFrom?: string | null },
   ): Promise<void> {
     try {
       if (!data.text && !data.media) return;
@@ -269,6 +340,8 @@ export class ChatStoreService {
         mediaType: data.media?.type,
         mediaFileName: data.media?.fileName,
         externalId: data.externalId,
+        replyToId: await this.messageIdByExternal(conversation.id, data.replyToExternalId),
+        forwardedFrom: data.forwardedFrom,
       });
       // Оператор ответил с телефона — всё, что было до ответа, прочитано.
       await this.prisma.conversation.update({ where: { id: conversation.id }, data: { unreadCount: 0 } });
@@ -320,6 +393,8 @@ export class ChatStoreService {
       mediaFileName?: string | null;
       externalId?: string | null;
       error?: string | null;
+      replyToId?: string | null;
+      forwardedFrom?: string | null;
     },
   ) {
     const now = new Date();
@@ -336,6 +411,8 @@ export class ChatStoreService {
           mediaFileName: data.mediaFileName,
           externalId: data.externalId,
           error: data.error,
+          replyToId: data.replyToId ?? null,
+          forwardedFrom: data.forwardedFrom?.slice(0, 200) || null,
           createdAt: now,
         },
       }),

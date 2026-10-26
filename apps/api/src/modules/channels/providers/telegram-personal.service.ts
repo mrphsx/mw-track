@@ -4,6 +4,8 @@ import { Channel } from '@prisma/client';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
+import { EditedMessage, EditedMessageEvent } from 'telegram/events/EditedMessage';
+import { DeletedMessage, DeletedMessageEvent } from 'telegram/events/DeletedMessage';
 import { FloodWaitError, RPCError, SlowModeWaitError } from 'telegram/errors';
 import { Button } from 'telegram/tl/custom/button';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -215,6 +217,9 @@ export class TelegramPersonalService {
       (event: NewMessageEvent) => this.handleOutgoingChat(channel, event),
       new NewMessage({ outgoing: true }),
     );
+    // Правки сообщений в личке (2026-10-26) — клиентом или оператором с телефона.
+    client.addEventHandler((event: EditedMessageEvent) => this.handleEditedChat(channel, event), new EditedMessage({}));
+    client.addEventHandler((event: DeletedMessageEvent) => this.handleDeletedChat(channel, event), new DeletedMessage({}));
 
     this.liveClients.set(channel.id, client);
   }
@@ -575,6 +580,8 @@ export class TelegramPersonalService {
       (event: NewMessageEvent) => this.handleOutgoingChat(channel, event),
       new NewMessage({ outgoing: true }),
     );
+    attempt.client.addEventHandler((event: EditedMessageEvent) => this.handleEditedChat(channel, event), new EditedMessage({}));
+    attempt.client.addEventHandler((event: DeletedMessageEvent) => this.handleDeletedChat(channel, event), new DeletedMessage({}));
   }
 
   // Не блокирует и не бросает наружу — сбой обработки одного сообщения не должен убить
@@ -662,6 +669,8 @@ export class TelegramPersonalService {
         media: extractMtprotoMedia(event.message),
         externalId: String(event.message.id),
         sentAt: new Date(event.message.date * 1000),
+        replyToExternalId: event.message.replyTo?.replyToMsgId ? String(event.message.replyTo.replyToMsgId) : null,
+        forwardedFrom: await mtprotoForwardName(event.message),
       });
     } catch (error) {
       this.logger.warn(`handleIncomingMessage failed for channel ${channel.id}: ${(error as Error).message}`);
@@ -696,14 +705,42 @@ export class TelegramPersonalService {
     if (!peer || peer.className !== 'PeerUser') return;
     const message = event.message;
     setTimeout(() => {
-      void this.chatStore.recordOutgoingPersonal(channel, {
-        peerId: String(peer.userId),
-        text: message.message || null,
-        media: extractMtprotoMedia(message),
-        externalId: String(message.id),
-        sentAt: new Date(message.date * 1000),
-      });
+      void (async () =>
+        this.chatStore.recordOutgoingPersonal(channel, {
+          peerId: String(peer.userId),
+          text: message.message || null,
+          media: extractMtprotoMedia(message),
+          externalId: String(message.id),
+          sentAt: new Date(message.date * 1000),
+          replyToExternalId: message.replyTo?.replyToMsgId ? String(message.replyTo.replyToMsgId) : null,
+          forwardedFrom: await mtprotoForwardName(message),
+        }))();
     }, OUTGOING_DEDUP_DELAY_MS);
+  }
+
+  // Удаление в личке (2026-10-26): клиент удалил своё сообщение или оператор удалил с телефона.
+  // В личных диалогах Telegram присылает только id сообщений (без собеседника) — они уникальны в
+  // пределах аккаунта, поэтому ищем среди диалогов лички этого канала. Каналы/группы (есть peer)
+  // нас не касаются.
+  private async handleDeletedChat(channel: Channel, event: DeletedMessageEvent): Promise<void> {
+    try {
+      if (event.peer || !event.deletedIds?.length) return;
+      await this.chatStore.recordDeletedPersonal(channel, event.deletedIds.map(String));
+    } catch (error) {
+      this.logger.warn(`handleDeletedChat failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
+  }
+
+  // Правка сообщения в личном диалоге (2026-10-26): собеседник — peerId диалога в обе стороны.
+  private async handleEditedChat(channel: Channel, event: EditedMessageEvent): Promise<void> {
+    try {
+      if (!event.isPrivate) return;
+      const peer = event.message.peerId;
+      if (!peer || peer.className !== 'PeerUser') return;
+      await this.chatStore.recordEdit(channel, 'PERSONAL', '', String(peer.userId), String(event.message.id), event.message.message || null, event.message.editDate);
+    } catch (error) {
+      this.logger.warn(`handleEditedChat failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
   }
 
   // @username подключённого аккаунта, а если его нет — имя. null — сессия недоступна или не
@@ -747,36 +784,64 @@ export class TelegramPersonalService {
   async sendChatMessage(
     channel: Channel,
     peerId: string,
-    payload: { text?: string; file?: { buffer: Buffer; filename: string; mimetype: string; kind?: 'voice' | 'video_note' } },
+    payload: { text?: string; file?: { buffer: Buffer; filename: string; mimetype: string; kind?: 'voice' | 'video_note' }; replyToExternalId?: string | null },
   ): Promise<{ messageId: string; mediaType?: string }> {
+    // Ответ на сообщение (2026-10-26) — цитата у первого отправленного.
+    const replyTo = payload.replyToExternalId ? Number(payload.replyToExternalId) : undefined;
     const client = await this.getLiveClient(channel);
     if (!client) throw new Error('Личный аккаунт не подключён');
     try {
       const entity = await this.resolvePeer(client, peerId);
       const text = payload.text?.trim() || '';
       if (!payload.file) {
-        const sent = await client.sendMessage(entity, { message: text });
+        const sent = await client.sendMessage(entity, { message: text, replyTo });
         return { messageId: String(sent.id) };
       }
       const file = new CustomFile(payload.file.filename, payload.file.buffer.length, '', payload.file.buffer);
       // Голосовое и кружок (2026-10-25, шаблоны ответов) — файл уже подготовлен (ogg/opus,
       // квадратное mp4). У кружка подписи не бывает — текст уходит отдельным сообщением.
       if (payload.file.kind === 'voice') {
-        const sent = await client.sendFile(entity, { file, caption: text, voiceNote: true, workers: 1 });
+        const sent = await client.sendFile(entity, { file, caption: text, voiceNote: true, workers: 1, replyTo });
         return { messageId: String(sent.id), mediaType: 'voice' };
       }
       if (payload.file.kind === 'video_note') {
-        const sent = await client.sendFile(entity, { file, videoNote: true, workers: 1 });
+        const sent = await client.sendFile(entity, { file, videoNote: true, workers: 1, replyTo });
         if (text) await client.sendMessage(entity, { message: text });
         return { messageId: String(sent.id), mediaType: 'video_note' };
       }
       const isPhoto = /^image\/(jpeg|png|webp)$/.test(payload.file.mimetype);
       const isVideo = payload.file.mimetype === 'video/mp4';
-      const sent = await client.sendFile(entity, { file, caption: text, forceDocument: !isPhoto && !isVideo, workers: 1 });
+      const sent = await client.sendFile(entity, { file, caption: text, forceDocument: !isPhoto && !isVideo, workers: 1, replyTo });
       return { messageId: String(sent.id), mediaType: isPhoto ? 'photo' : isVideo ? 'video' : 'document' };
     } catch (error) {
       await this.handleDeadSession(channel, error);
       throw error;
+    }
+  }
+
+  // Правка своего сообщения в личке (2026-10-26) — текст или подпись к файлу.
+  async editChatMessage(channel: Channel, peerId: string, messageId: string, text: string): Promise<void> {
+    const client = await this.getLiveClient(channel);
+    if (!client) throw new Error('Личный аккаунт не подключён');
+    try {
+      const entity = await this.resolvePeer(client, peerId);
+      await client.editMessage(entity, { message: Number(messageId), text });
+    } catch (error) {
+      this.logger.warn(`editChatMessage ${channel.id}/${messageId}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
+      throw error;
+    }
+  }
+
+  // «Печатает…» у собеседника (2026-10-26). Ошибки не важны — только пишем в лог.
+  async sendTyping(channel: Channel, peerId: string): Promise<void> {
+    try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return;
+      const entity = await this.resolvePeer(client, peerId);
+      await client.invoke(new Api.messages.SetTyping({ peer: entity, action: new Api.SendMessageTypingAction() }));
+    } catch (error) {
+      this.logger.warn(`sendTyping ${channel.id}: ${(error as Error).message}`);
     }
   }
 
@@ -875,4 +940,23 @@ export class TelegramPersonalService {
       this.logger.warn(`handlePaymentDetailsLog failed for channel ${channel.id}: ${(error as Error).message}`);
     }
   }
+}
+
+// От кого переслано сообщение лички (2026-10-26). Имя есть сразу только у скрытых отправителей;
+// иначе — из кеша сущностей GramJS (getSender пересылки). Не нашли — «пересланное».
+async function mtprotoForwardName(message: Api.Message): Promise<string | null> {
+  const fwd = message.fwdFrom;
+  if (!fwd) return null;
+  if (fwd.fromName) return fwd.fromName;
+  try {
+    const sender = await message.forward?.getSender();
+    if (sender && 'title' in sender && sender.title) return sender.title;
+    if (sender && sender.className === 'User') {
+      const u = sender as Api.User;
+      return [u.firstName, u.lastName].filter(Boolean).join(' ') || (u.username ? `@${u.username}` : 'пользователь');
+    }
+  } catch {
+    // нет в кеше — не страшно
+  }
+  return 'пересланное';
 }

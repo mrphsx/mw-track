@@ -119,6 +119,9 @@ function scopeAllows(
   return scope.projectIds.includes(c.projectId) && scope.sources.includes(c.source);
 }
 
+// «Печатает…» у собеседника держится ~5 секунд — чаще не обновляем (2026-10-26).
+const TYPING_THROTTLE_MS = 4000;
+
 @Injectable()
 export class ChatService {
   constructor(
@@ -569,6 +572,10 @@ export class ChatService {
         deletedAt: true,
         deletedById: true,
         externalId: true,
+        replyToId: true,
+        forwardedFrom: true,
+        editedAt: true,
+        originalText: true,
         createdAt: true,
       },
     });
@@ -580,10 +587,20 @@ export class ChatService {
       ? await this.prisma.user.findMany({ where: { id: { in: senderIds } }, select: { id: true, firstName: true, lastName: true, email: true } })
       : [];
     const senderName = new Map(senders.map((u) => [u.id, [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email]));
+    // Цитаты ответов (2026-10-26) — коротко: кто и начало текста (или вид файла).
+    const replyIds = [...new Set(page.map((m) => m.replyToId).filter((v): v is string => !!v))];
+    const replied = replyIds.length
+      ? await this.prisma.chatMessage.findMany({ where: { id: { in: replyIds }, conversationId: id }, select: { id: true, direction: true, text: true, mediaType: true } })
+      : [];
+    const replyMap = new Map(replied.map((r) => [r.id, { id: r.id, direction: r.direction, text: r.text ? r.text.slice(0, 200) : null, mediaType: r.mediaType }]));
 
     return {
       items: page.reverse().map(({ externalId, deletedById, ...m }) => ({
         ...m,
+        replyTo: m.replyToId ? replyMap.get(m.replyToId) ?? null : null,
+        // Ответить можно на то, что есть в Telegram; править — только свои (операторские) тексты.
+        canReply: !!externalId && !m.deletedAt && m.senderType !== 'SYSTEM',
+        canEdit: !!externalId && !m.deletedAt && m.direction === 'OUT' && m.senderType === 'OPERATOR' && m.mediaType !== 'video_note' && m.mediaType !== 'sticker',
         senderName: m.senderUserId ? senderName.get(m.senderUserId) ?? null : null,
         deletedByName: deletedById ? senderName.get(deletedById) ?? 'сотрудник' : null,
         // Удалить из Telegram можно только то, что реально дошло (есть id сообщения в Telegram).
@@ -591,6 +608,60 @@ export class ChatService {
       })),
       hasMore: rows.length > MESSAGES_PAGE,
     };
+  }
+
+  // Изменить своё сообщение в Telegram (2026-10-26). Исходный текст остаётся в originalText.
+  async editMessage(messageId: string, companyId: string, user: AuthUser, rawText: string) {
+    const text = rawText.trim();
+    if (!text) throw new BadRequestException('Пустое сообщение');
+    const message = await this.prisma.chatMessage.findUnique({ where: { id: messageId } });
+    if (!message) throw new NotFoundException('Сообщение не найдено');
+    const conversation = await this.loadConversation(message.conversationId, companyId, user, true);
+    if (message.direction !== 'OUT' || message.senderType !== 'OPERATOR') throw new BadRequestException('Изменить можно только ответ оператора');
+    if (message.deletedAt) throw new BadRequestException('Сообщение удалено');
+    if (!message.externalId) throw new BadRequestException('Это сообщение не дошло до Telegram');
+    if (message.mediaType === 'video_note' || message.mediaType === 'sticker') throw new BadRequestException('У этого сообщения нет текста');
+    const isMedia = !!message.mediaType;
+    if (isMedia && text.length > 1024) throw new BadRequestException('Подпись к файлу — не длиннее 1024 символов');
+    if (text === message.text) return { id: message.id };
+    const channel = await this.prisma.channel.findUnique({ where: { id: conversation.channelId } });
+    if (!channel) throw new NotFoundException('Канал не найден');
+    try {
+      if (conversation.source === 'PERSONAL') {
+        await this.telegramPersonal.editChatMessage(channel, conversation.peerId, message.externalId, text);
+      } else if (conversation.botKey) {
+        const bot = this.extraBots.getBot(conversation.botKey);
+        if (!bot) throw new Error('Этот бот сейчас не подключён');
+        await this.telegram.editChatMessageWithBot(bot, conversation.peerId, message.externalId, text, isMedia);
+      } else {
+        await this.telegram.editChatMessage(channel, conversation.peerId, message.externalId, text, isMedia);
+      }
+    } catch (error) {
+      if (error instanceof GrammyError && /not found/i.test(error.description)) throw new BadRequestException('В Telegram этого сообщения уже нет');
+      if (error instanceof GrammyError && /can't be edited/i.test(error.description)) throw new BadRequestException('Telegram не даёт изменить это сообщение');
+      throw new BadRequestException(`Не удалось изменить: ${(error as Error).message}`);
+    }
+    return this.prisma.chatMessage.update({
+      where: { id: message.id },
+      data: { text, originalText: message.originalText ?? message.text, editedAt: new Date() },
+      select: { id: true, text: true, editedAt: true },
+    });
+  }
+
+  // «Печатает…» у клиента (2026-10-26): поле ввода шлёт не чаще раза в несколько секунд, здесь —
+  // ещё и общий предел на диалог (несколько операторов в одном чате).
+  private readonly typingAt = new Map<string, number>();
+  async typing(id: string, companyId: string, user: AuthUser) {
+    const conversation = await this.loadConversation(id, companyId, user, true);
+    const now = Date.now();
+    if (now - (this.typingAt.get(id) ?? 0) < TYPING_THROTTLE_MS) return { ok: true };
+    this.typingAt.set(id, now);
+    if (this.typingAt.size > 5000) this.typingAt.clear();
+    const channel = await this.prisma.channel.findUnique({ where: { id: conversation.channelId } });
+    if (!channel) return { ok: true };
+    if (conversation.source === 'PERSONAL') void this.telegramPersonal.sendTyping(channel, conversation.peerId);
+    else void this.telegram.sendTyping(conversation.botKey ? this.extraBots.getBot(conversation.botKey) : this.telegram.botFor(channel), conversation.peerId);
+    return { ok: true };
   }
 
   // Удалить сообщение из Telegram (2026-10-26: «удалится только с Телеграма, в CRM останется со
@@ -676,9 +747,14 @@ export class ChatService {
     user: AuthUser,
     // attachment — уже подготовленный файл (медиа шаблона ответа, 2026-10-25); file — загрузка из
     // поля ввода.
-    payload: { text?: string; file?: Express.Multer.File; attachment?: ChatOutgoingFile },
+    payload: { text?: string; file?: Express.Multer.File; attachment?: ChatOutgoingFile; replyToId?: string },
   ) {
     const conversation = await this.loadConversation(id, companyId, user, true);
+    // Ответ на сообщение (2026-10-26): только на сообщение этого же диалога, дошедшее до Telegram.
+    const replyTo = payload.replyToId
+      ? await this.prisma.chatMessage.findFirst({ where: { id: payload.replyToId, conversationId: conversation.id }, select: { id: true, externalId: true } })
+      : null;
+    const replyToExternalId = replyTo?.externalId ?? null;
     const text = payload.text?.trim();
     const file: ChatOutgoingFile | undefined =
       payload.attachment ?? (payload.file ? { buffer: payload.file.buffer, filename: payload.file.originalname, mimetype: payload.file.mimetype } : undefined);
@@ -691,14 +767,14 @@ export class ChatService {
     try {
       let sent: { messageId: string; mediaType?: string; fileId?: string };
       if (conversation.source === 'PERSONAL') {
-        sent = await this.telegramPersonal.sendChatMessage(channel, conversation.peerId, { text, file });
+        sent = await this.telegramPersonal.sendChatMessage(channel, conversation.peerId, { text, file, replyToExternalId });
       } else if (conversation.botKey) {
         // Переписка через дополнительного бота — отвечаем тем же ботом.
         const bot = this.extraBots.getBot(conversation.botKey);
         if (!bot) throw new Error('Этот бот сейчас не подключён — переподключите его в «Подключениях»');
-        sent = await this.telegram.sendChatMessageWithBot(bot, conversation.peerId, { text, file });
+        sent = await this.telegram.sendChatMessageWithBot(bot, conversation.peerId, { text, file, replyToExternalId });
       } else {
-        sent = await this.telegram.sendChatMessage(channel, conversation.peerId, { text, file });
+        sent = await this.telegram.sendChatMessage(channel, conversation.peerId, { text, file, replyToExternalId });
       }
       const message = await this.chatStore.appendOutgoing(conversation.id, {
         senderType: 'OPERATOR',
@@ -708,6 +784,7 @@ export class ChatService {
         mediaFileId: sent.fileId,
         mediaFileName: file?.filename,
         externalId: sent.messageId,
+        replyToId: replyTo?.id ?? null,
       });
       // Ответ оператора = прочитал всё, что было до него.
       await this.prisma.conversation.update({ where: { id }, data: { unreadCount: 0 } });

@@ -241,6 +241,16 @@ export class TelegramProvider implements ChannelProvider {
 
     const bot = new Bot(channel.tgBotToken);
 
+    // Правка сообщения клиентом (2026-10-26) — только в переписку CRM и дальше по цепочке не идёт:
+    // фильтры команд grammY ловят и edited_message и падали бы на нём (ctx.message там пустой).
+    bot.use(async (ctx, next) => {
+      if (ctx.editedMessage) {
+        await this.chatStore.recordEditedBotMessage(channel, ctx.editedMessage);
+        return;
+      }
+      await next();
+    });
+
     // Менеджеры (запрос пользователя 2026-07-21) — перехватывается ПЕРВЫМ, до любых
     // bot.command/bot.on ниже, чтобы поймать сообщение от менеджера независимо от его типа
     // (пересланное медиа без подписи не дошло бы до message:text) и не дать ему создать Client
@@ -366,7 +376,7 @@ export class TelegramProvider implements ChannelProvider {
     // начала (проблема была не только у новой фичи с менеджерами — mgr_dlg_yes/no, WelcomeButtons/
     // scenario-кнопки — все они были URL-кнопками до сих пор, поэтому не проявлялось раньше).
     await bot.api.setWebhook(webhookUrl, {
-      allowed_updates: ['message', 'chat_join_request', 'my_chat_member', 'chat_member', 'callback_query'],
+      allowed_updates: ['message', 'edited_message', 'chat_join_request', 'my_chat_member', 'chat_member', 'callback_query'],
     });
   }
 
@@ -1618,7 +1628,7 @@ export class TelegramProvider implements ChannelProvider {
   async sendChatMessage(
     channel: Channel,
     peerId: string,
-    payload: { text?: string; file?: ChatOutgoingFile },
+    payload: { text?: string; file?: ChatOutgoingFile; replyToExternalId?: string | null },
   ): Promise<{ messageId: string; mediaType?: string; fileId?: string }> {
     const bot = this.bots.get(channel.id);
     if (!bot) throw new Error('Бот проекта не подключён — ответить через него нельзя');
@@ -1641,12 +1651,17 @@ export class TelegramProvider implements ChannelProvider {
   async sendChatMessageWithBot(
     bot: Bot,
     peerId: string,
-    payload: { text?: string; file?: ChatOutgoingFile },
+    payload: { text?: string; file?: ChatOutgoingFile; replyToExternalId?: string | null },
   ): Promise<{ messageId: string; mediaType?: string; fileId?: string }> {
     const text = payload.text?.trim() || undefined;
+    // Ответ на сообщение (2026-10-26): цитата у первого отправленного; если исходное уже удалено —
+    // Telegram всё равно отправит, без цитаты.
+    const reply = payload.replyToExternalId
+      ? { reply_parameters: { message_id: Number(payload.replyToExternalId), allow_sending_without_reply: true } }
+      : {};
 
     if (!payload.file) {
-      const sent = await bot.api.sendMessage(peerId, text ?? '');
+      const sent = await bot.api.sendMessage(peerId, text ?? '', reply);
       return { messageId: String(sent.message_id) };
     }
 
@@ -1659,25 +1674,46 @@ export class TelegramProvider implements ChannelProvider {
     // Голосовое и кружок (2026-10-25, шаблоны ответов) — тип задан явно, файл уже подготовлен
     // (ogg/opus и квадратное mp4 — см. ChatTemplatesService). У кружка подписи не бывает.
     if (kind === 'voice') {
-      sent = await bot.api.sendVoice(peerId, input, { caption });
+      sent = await bot.api.sendVoice(peerId, input, { caption, ...reply });
       mediaType = 'voice';
     } else if (kind === 'video_note') {
-      sent = await bot.api.sendVideoNote(peerId, input);
+      sent = await bot.api.sendVideoNote(peerId, input, reply);
       mediaType = 'video_note';
       if (text) await bot.api.sendMessage(peerId, text);
       return { messageId: String(sent.message_id), mediaType, fileId: this.extractFileId(sent) };
     } else if (/^image\/(jpeg|png|webp)$/.test(mimetype)) {
-      sent = await bot.api.sendPhoto(peerId, input, { caption });
+      sent = await bot.api.sendPhoto(peerId, input, { caption, ...reply });
       mediaType = 'photo';
     } else if (mimetype === 'video/mp4') {
-      sent = await bot.api.sendVideo(peerId, input, { caption });
+      sent = await bot.api.sendVideo(peerId, input, { caption, ...reply });
       mediaType = 'video';
     } else {
-      sent = await bot.api.sendDocument(peerId, input, { caption });
+      sent = await bot.api.sendDocument(peerId, input, { caption, ...reply });
       mediaType = 'document';
     }
     if (text && !caption) await bot.api.sendMessage(peerId, text);
     return { messageId: String(sent.message_id), mediaType, fileId: this.extractFileId(sent) };
+  }
+
+  // Правка своего сообщения (2026-10-26): текст — editMessageText, у файла — подпись.
+  async editChatMessageWithBot(bot: Bot, peerId: string, messageId: string, text: string, isMedia: boolean): Promise<void> {
+    if (isMedia) await bot.api.editMessageCaption(peerId, Number(messageId), { caption: text });
+    else await bot.api.editMessageText(peerId, Number(messageId), text);
+  }
+
+  async editChatMessage(channel: Channel, peerId: string, messageId: string, text: string, isMedia: boolean): Promise<void> {
+    const bot = this.bots.get(channel.id);
+    if (!bot) throw new Error('Бот проекта не подключён');
+    await this.editChatMessageWithBot(bot, peerId, messageId, text, isMedia);
+  }
+
+  // «Печатает…» у клиента, пока оператор набирает ответ (2026-10-26). Ошибки не важны.
+  async sendTyping(bot: Bot | undefined, peerId: string): Promise<void> {
+    if (bot) await bot.api.sendChatAction(peerId, 'typing').catch(() => undefined);
+  }
+
+  botFor(channel: Channel): Bot | undefined {
+    return this.bots.get(channel.id);
   }
 
   // Файл из переписки по file_id — для просмотра медиа во встроенном чате. Через Api по токену,

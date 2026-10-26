@@ -34,6 +34,17 @@ class SendChatMessageDto {
   @IsOptional()
   @IsString()
   templateId?: string;
+
+  // Ответ на сообщение переписки (наш id, 2026-10-26).
+  @IsOptional()
+  @IsString()
+  replyToId?: string;
+}
+
+class EditChatMessageDto {
+  @IsString()
+  @MaxLength(4096)
+  text!: string;
 }
 
 class CreateTemplateFolderDto {
@@ -924,6 +935,11 @@ export class ChatController {
     return this.chatService.translateDraft(dto.text, dto.lang, companyId, user);
   }
 
+  @Patch('messages/:id')
+  editMessage(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: EditChatMessageDto) {
+    return this.chatService.editMessage(id, companyId, user, dto.text);
+  }
+
   @Delete('messages/:id')
   deleteMessage(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     return this.chatService.deleteMessage(id, companyId, user);
@@ -1015,8 +1031,14 @@ export class ChatController {
     @Body() dto: SendChatMessageDto,
     @UploadedFile() file?: Express.Multer.File,
   ) {
-    if (dto.templateId && !file) return this.chatTemplates.sendTemplate(id, companyId, user, dto.templateId, dto.text);
-    return this.chatService.send(id, companyId, user, { text: dto.text, file });
+    if (dto.templateId && !file) return this.chatTemplates.sendTemplate(id, companyId, user, dto.templateId, dto.text, dto.replyToId);
+    return this.chatService.send(id, companyId, user, { text: dto.text, file, replyToId: dto.replyToId });
+  }
+
+  // «Печатает…» у клиента, пока оператор набирает ответ (2026-10-26).
+  @Post('conversations/:id/typing')
+  typing(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.chatService.typing(id, companyId, user);
   }
 
   @Get('messages/:id/media')

@@ -5,7 +5,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { isAxiosError } from 'axios';
 import { format, isToday, isYesterday } from 'date-fns';
 import { ru } from 'date-fns/locale';
-import { ArrowLeft, BookText, Clock, Languages, Loader2, PanelRight, Paperclip, SendHorizontal, Undo2, UserRound, X } from 'lucide-react';
+import { ArrowLeft, BookText, Clock, Languages, Loader2, PanelRight, Paperclip, Pencil, Reply, SendHorizontal, Undo2, UserRound, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   chatResourceOf,
@@ -25,12 +25,15 @@ import {
   saveTranslatePrefs,
   sendChatMessage,
   translateDraft,
+  ChatMessage,
+  editChatMessage,
+  sendTypingSignal,
 } from '@/lib/chat';
 import { useAuthStore } from '@/store/auth.store';
 import { cn } from '@/lib/utils';
 import { ChatAvatar } from './chat-avatar';
 import { TrafficBadge } from './traffic-badge';
-import { MessageBubble } from './message-bubble';
+import { MessageBubble, quoteText } from './message-bubble';
 import { OrganizeBar } from './organize-bar';
 import { TemplateKindBadge, TemplatePicker, matchTemplates, useChatTemplates } from './templates';
 
@@ -61,6 +64,13 @@ export function Thread({
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // Ответ на сообщение и правка своего (2026-10-26) — выбираются в ленте, работают в поле ввода.
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  const [editing, setEditing] = useState<ChatMessage | null>(null);
+  useEffect(() => {
+    setReplyTo(null);
+    setEditing(null);
+  }, [conversationId]);
   const restoreFromBottom = useRef<number | null>(null);
 
   const { data: conversation } = useQuery({
@@ -277,7 +287,20 @@ export function Thread({
                   </div>
                 )}
                 <div className={cn(showSender || (prev && prev.direction !== m.direction) ? 'pt-2' : '')}>
-                  <MessageBubble message={m} showSender={showSender} translateTo={prefs.read} translationEnabled={translationEnabled} />
+                  <MessageBubble
+                    message={m}
+                    showSender={showSender}
+                    translateTo={prefs.read}
+                    translationEnabled={translationEnabled}
+                    onReply={() => {
+                      setEditing(null);
+                      setReplyTo(m);
+                    }}
+                    onEdit={() => {
+                      setReplyTo(null);
+                      setEditing(m);
+                    }}
+                  />
                 </div>
               </div>
             );
@@ -292,6 +315,10 @@ export function Thread({
           translationEnabled={translationEnabled}
           onPickLanguage={() => setLangPanelOpen(true)}
           pendingTemplate={pendingTemplate}
+          replyTo={replyTo}
+          editing={editing}
+          onCancelReply={() => setReplyTo(null)}
+          onCancelEdit={() => setEditing(null)}
           onOpenTemplates={() => onToggleSide('templates')}
           templatesInSide={side === 'templates'}
           onSent={() => {
@@ -402,7 +429,15 @@ function Composer({
   pendingTemplate,
   onOpenTemplates,
   templatesInSide,
+  replyTo,
+  editing,
+  onCancelReply,
+  onCancelEdit,
 }: {
+  replyTo: ChatMessage | null;
+  editing: ChatMessage | null;
+  onCancelReply: () => void;
+  onCancelEdit: () => void;
   conversation: ConversationDetail;
   onSent: () => void;
   writeLang: string | null;
@@ -530,10 +565,42 @@ function Composer({
     setOriginal(null);
   };
 
+  // Правка: в поле ввода — текст сообщения; отмена правки возвращает прежний черновик.
+  const draftBeforeEdit = useRef('');
+  useEffect(() => {
+    if (editing) {
+      draftBeforeEdit.current = text;
+      setText(editing.text ?? '');
+      setFile(null);
+      setTplAttach(null);
+      textareaRef.current?.focus();
+    } else if (draftBeforeEdit.current) {
+      setText(draftBeforeEdit.current);
+      draftBeforeEdit.current = '';
+    }
+  }, [editing?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (replyTo) textareaRef.current?.focus();
+  }, [replyTo?.id]);
+
+  // «Печатает…» у клиента — не чаще раза в 4,5 с, пока оператор набирает текст.
+  const lastTyping = useRef(0);
+  const signalTyping = () => {
+    if (editing || Date.now() - lastTyping.current < 4500) return;
+    lastTyping.current = Date.now();
+    void sendTypingSignal(conversation.id).catch(() => undefined);
+  };
+
   const send = useMutation({
-    mutationFn: () => sendChatMessage(conversation.id, { text: text.trim() || undefined, file: file ?? undefined, templateId: tplAttach?.id }),
+    mutationFn: async () => {
+      if (editing) return editChatMessage(editing.id, text.trim());
+      await sendChatMessage(conversation.id, { text: text.trim() || undefined, file: file ?? undefined, templateId: tplAttach?.id, replyToId: replyTo?.id });
+    },
     onSuccess: () => {
+      draftBeforeEdit.current = '';
       clearDraft();
+      if (editing) onCancelEdit();
+      if (replyTo) onCancelReply();
       onSent();
       textareaRef.current?.focus();
     },
@@ -558,7 +625,7 @@ function Composer({
     );
   }
 
-  const hasContent = text.trim().length > 0 || !!file || !!tplAttach;
+  const hasContent = editing ? text.trim().length > 0 && text.trim() !== (editing.text ?? '') : text.trim().length > 0 || !!file || !!tplAttach;
   const canSend = hasContent && !send.isPending;
   const submit = () => canSend && send.mutate();
 
@@ -600,6 +667,25 @@ function Composer({
             }}
             className="shrink-0 opacity-60 hover:opacity-100"
             aria-label="Убрать вложение"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+      {(replyTo || editing) && (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-[#1F4E9C] dark:border-[#7BA9EE] bg-[#F3F5F8] dark:bg-[#0F1620] px-2.5 py-1.5">
+          {editing ? <Pencil className="w-4 h-4 shrink-0 text-[#1F4E9C] dark:text-[#7BA9EE]" /> : <Reply className="w-4 h-4 shrink-0 text-[#1F4E9C] dark:text-[#7BA9EE]" />}
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-semibold text-[#1F4E9C] dark:text-[#7BA9EE]">
+              {editing ? 'Редактирование' : replyTo!.direction === 'IN' ? `Ответ ${peerDisplayName(conversation)}` : 'Ответ на своё сообщение'}
+            </div>
+            <div className="truncate text-xs text-[#5F6B7A] dark:text-[#92A0AF]">{quoteText(editing ?? replyTo!)}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => (editing ? onCancelEdit() : onCancelReply())}
+            className="shrink-0 p-1 rounded text-[#5F6B7A] hover:bg-white dark:hover:bg-white/5"
+            aria-label="Отменить"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -705,6 +791,7 @@ function Composer({
             const value = e.target.value;
             setText(value);
             setOriginal(null);
+            if (value.trim()) signalTyping();
             // «#код» прямо перед курсором — подсказки шаблонов.
             const caret = e.target.selectionStart ?? value.length;
             const m = value.slice(0, caret).match(HASH_TOKEN);
@@ -732,6 +819,12 @@ function Composer({
                 setHash(null);
                 return;
               }
+            }
+            if (e.key === 'Escape' && (replyTo || editing)) {
+              e.preventDefault();
+              if (editing) onCancelEdit();
+              else onCancelReply();
+              return;
             }
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();

@@ -273,7 +273,7 @@ export class ChatTemplatesService {
   // Отправка шаблона в диалог. Одно сообщение — как раньше: текст из поля ввода (если оператор его
   // поправил) или текст шаблона + файл шаблона. Цепочка — сначала текст из поля ввода, если он
   // есть, затем все сообщения шаблона по порядку; на первой ошибке останавливаемся.
-  async sendTemplate(conversationId: string, companyId: string, user: AuthUser, templateId: string, composerText?: string) {
+  async sendTemplate(conversationId: string, companyId: string, user: AuthUser, templateId: string, composerText?: string, replyToId?: string) {
     const conversation = await this.chatService.loadConversation(conversationId, companyId, user, true);
     const template = await this.loadUsable(templateId, companyId, user, conversation.projectId, chatResourceKey(conversation));
     const parts = partsOf(template);
@@ -281,14 +281,15 @@ export class ChatTemplatesService {
     const typed = composerText?.trim() || undefined;
 
     if (parts.length === 1) {
-      return this.chatService.send(conversationId, companyId, user, { text: typed ?? parts[0].text ?? undefined, attachment: await this.attachmentOf(parts[0]) });
+      return this.chatService.send(conversationId, companyId, user, { text: typed ?? parts[0].text ?? undefined, attachment: await this.attachmentOf(parts[0]), replyToId });
     }
 
-    let last = typed ? await this.chatService.send(conversationId, companyId, user, { text: typed }) : null;
+    // Ответом (reply) уходит только первое сообщение цепочки.
+    let last = typed ? await this.chatService.send(conversationId, companyId, user, { text: typed, replyToId }) : null;
     for (const part of parts) {
       if (last?.error) return last;
       if (last) await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
-      last = await this.chatService.send(conversationId, companyId, user, { text: part.text ?? undefined, attachment: await this.attachmentOf(part) });
+      last = await this.chatService.send(conversationId, companyId, user, { text: part.text ?? undefined, attachment: await this.attachmentOf(part), replyToId: last ? undefined : replyToId });
     }
     return last!;
   }

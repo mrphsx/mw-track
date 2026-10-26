@@ -63,6 +63,16 @@ export class ExtraBotsService implements OnModuleInit {
     if (!channel) throw new Error('У проекта нет канала');
 
     const bot = new Bot(projectBot.tgBotToken);
+
+    // Правка сообщения клиентом (2026-10-26) — только в переписку CRM и дальше по цепочке не идёт:
+    // фильтры команд grammY ловят и edited_message и падали бы на нём (ctx.message там пустой).
+    bot.use(async (ctx, next) => {
+      if (ctx.editedMessage) {
+        await this.chatStore.recordEditedBotMessage(channel, ctx.editedMessage, projectBot.id);
+        return;
+      }
+      await next();
+    });
     // Для логики менеджеров — канал проекта с id и менеджерами этого бота: она читает только
     // id (ключи Redis), projectId и tgManagerUsernames (см. TelegramProvider.useManagerInterceptor).
     const managerChannel: Channel = { ...channel, id: projectBot.id, tgManagerUsernames: projectBot.tgManagerUsernames };
@@ -95,7 +105,7 @@ export class ExtraBotsService implements OnModuleInit {
 
     await bot.init();
     const webhookUrl = `${this.config.get<string>('API_URL')}/api/v1/webhooks/telegram-bot/${projectBot.id}`;
-    await bot.api.setWebhook(webhookUrl, { allowed_updates: ['message', 'my_chat_member', 'callback_query'] });
+    await bot.api.setWebhook(webhookUrl, { allowed_updates: ['message', 'edited_message', 'my_chat_member', 'callback_query'] });
 
     let avatarFileId: string | undefined;
     try {

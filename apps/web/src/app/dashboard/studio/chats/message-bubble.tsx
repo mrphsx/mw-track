@@ -3,11 +3,17 @@
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { isAxiosError } from 'axios';
-import { AlertCircle, Bot, Download, FileText, Languages, Loader2, Trash2 } from 'lucide-react';
+import { AlertCircle, Bot, CornerUpRight, Download, FileText, Languages, Loader2, Pencil, Reply, Trash2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ru } from 'date-fns/locale';
 import { ChatMessage, ChatTranslation, deleteChatMessage, langLabel, loadChatMedia, translateChatMessage } from '@/lib/chat';
 import { cn, downloadBlob } from '@/lib/utils';
+
+// Короткая цитата сообщения: текст или вид файла.
+const MEDIA_WORD: Record<string, string> = { photo: 'Фото', video: 'Видео', voice: 'Голосовое', video_note: 'Кружок', audio: 'Аудио', document: 'Файл', sticker: 'Стикер', animation: 'GIF' };
+export function quoteText(m: { text: string | null; mediaType: string | null }): string {
+  return m.text?.trim() || (m.mediaType ? MEDIA_WORD[m.mediaType] ?? 'Файл' : 'Сообщение');
+}
 
 function useMediaUrl(messageId: string, enabled: boolean) {
   const [url, setUrl] = useState<string | null>(null);
@@ -139,11 +145,15 @@ export function MessageBubble({
   showSender,
   translateTo,
   translationEnabled,
+  onReply,
+  onEdit,
 }: {
   message: ChatMessage;
   showSender: boolean;
   translateTo: string;
   translationEnabled: boolean;
+  onReply?: () => void;
+  onEdit?: () => void;
 }) {
   const outgoing = message.direction === 'OUT';
   const isBot = message.senderType === 'BOT';
@@ -203,6 +213,24 @@ export function MessageBubble({
                 : 'bg-[#1F4E9C] text-white rounded-br-md dark:bg-[#3567B8]',
         )}
       >
+        {message.forwardedFrom && (
+          <div className={cn('mb-1 flex items-center gap-1 text-[11px] font-medium', ownBubble ? 'text-white/80' : 'text-[#1F4E9C] dark:text-[#7BA9EE]')}>
+            <CornerUpRight className="w-3 h-3" /> Переслано от {message.forwardedFrom}
+          </div>
+        )}
+        {message.replyTo && (
+          <div
+            className={cn(
+              'mb-1.5 border-l-2 rounded-sm pl-2 py-0.5 text-xs max-w-full',
+              ownBubble ? 'border-white/70 bg-white/10 text-white/85' : 'border-[#1F4E9C] dark:border-[#7BA9EE] bg-[#1F4E9C]/5 dark:bg-white/5',
+            )}
+          >
+            <div className={cn('font-semibold text-[11px]', ownBubble ? 'text-white' : 'text-[#1F4E9C] dark:text-[#7BA9EE]')}>
+              {message.replyTo.direction === 'IN' ? 'Клиент' : 'Мы'}
+            </div>
+            <div className="truncate opacity-90">{quoteText(message.replyTo)}</div>
+          </div>
+        )}
         {message.mediaType && (
           <div className={cn(message.text ? 'mb-1.5' : '')}>
             <MediaBlock message={message} outgoing={ownBubble} />
@@ -213,6 +241,11 @@ export function MessageBubble({
           {tr.translation && (
             <span className="italic">
               {tr.translation.from === translateTo ? `уже на языке: ${langLabel(translateTo)}` : `перевод${tr.translation.from ? ` с ${langLabel(tr.translation.from).toLowerCase()}` : ''}`}
+            </span>
+          )}
+          {message.editedAt && (
+            <span title={message.originalText ? `До правки: ${message.originalText}` : undefined} className="italic">
+              изменено
             </span>
           )}
           <span>{time}</span>
@@ -235,6 +268,28 @@ export function MessageBubble({
           {tr.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />}
         </button>
       )}
+      {message.canReply && onReply && (
+        <button
+          type="button"
+          onClick={onReply}
+          title="Ответить"
+          aria-label="Ответить"
+          className="shrink-0 mb-1 p-1 rounded-md text-[#5F6B7A]/60 hover:text-[#1F4E9C] hover:bg-[#1F4E9C]/10 dark:text-[#92A0AF]/60 dark:hover:text-[#7BA9EE] opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-opacity"
+        >
+          <Reply className="w-3.5 h-3.5" />
+        </button>
+      )}
+      {message.canEdit && onEdit && (
+        <button
+          type="button"
+          onClick={onEdit}
+          title="Изменить"
+          aria-label="Изменить"
+          className="shrink-0 mb-1 p-1 rounded-md text-[#5F6B7A]/60 hover:text-[#1F4E9C] hover:bg-[#1F4E9C]/10 dark:text-[#92A0AF]/60 dark:hover:text-[#7BA9EE] opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-opacity"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
       {message.canDelete && (
         <button
           type="button"
@@ -250,7 +305,9 @@ export function MessageBubble({
       </div>
       {deleted && (
         <div className="mt-1 px-1 text-[11px] text-red-600/90 dark:text-red-400/90 flex items-center gap-1">
-          <Trash2 className="w-3 h-3" /> Удалено из Telegram · {message.deletedByName || 'сотрудник'} · {format(new Date(message.deletedAt!), 'd MMM, HH:mm', { locale: ru })}
+          <Trash2 className="w-3 h-3" />
+          {message.deletedByName ? `Удалено из Telegram · ${message.deletedByName}` : 'Удалено в Telegram (клиентом или с телефона)'} ·{' '}
+          {format(new Date(message.deletedAt!), 'd MMM, HH:mm', { locale: ru })}
         </div>
       )}
       {deleteError && <div className="mt-1 px-1 text-[11px] text-red-600 dark:text-red-400">{deleteError}</div>}
