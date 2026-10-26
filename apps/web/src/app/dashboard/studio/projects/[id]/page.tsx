@@ -1,5 +1,6 @@
 'use client';
 
+import { MobilePeriodSelect } from '@/components/shared/mobile-period-select';
 import { Fragment, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
@@ -385,7 +386,14 @@ export default function StudioProjectPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+          <MobilePeriodSelect
+            options={[...PROTOTYPE_PERIOD_OPTIONS, { value: 'custom', label: 'Свой период' }]}
+            value={period.period}
+            onChange={(v) =>
+              setPeriod(v === 'custom' ? { period: 'custom', from: period.from, to: period.to } : { period: v as (typeof PROTOTYPE_PERIOD_OPTIONS)[number]['value'] })
+            }
+          />
+          <div className="hidden sm:flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
             {PROTOTYPE_PERIOD_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
@@ -416,7 +424,7 @@ export default function StudioProjectPage() {
             </button>
           </div>
           {period.period === 'custom' && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Input
                 type="date"
                 value={period.from ?? ''}

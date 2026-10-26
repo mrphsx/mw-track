@@ -1,5 +1,6 @@
 'use client';
 
+import { MobilePeriodSelect } from '@/components/shared/mobile-period-select';
 import { Fragment } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -163,13 +164,20 @@ export default function StudioLeaderboardFullPage() {
         <h1 className="text-2xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">{CATEGORY_TITLE[cat]} — сравнение</h1>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+          <MobilePeriodSelect
+            options={[...PROTOTYPE_PERIOD_OPTIONS, { value: 'custom', label: 'Свой период' }]}
+            value={period.period}
+            onChange={(v) =>
+              setPeriod(v === 'custom' ? { period: 'custom', from: period.from, to: period.to } : { period: v as (typeof PROTOTYPE_PERIOD_OPTIONS)[number]['value'] })
+            }
+          />
+          <div className="hidden sm:inline-flex flex-wrap rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
             {PROTOTYPE_PERIOD_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 type="button"
                 onClick={() => setPeriod({ period: opt.value })}
-                className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                   period.period === opt.value
                     ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                     : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -181,7 +189,7 @@ export default function StudioLeaderboardFullPage() {
             <button
               type="button"
               onClick={() => setPeriod({ period: 'custom', from: period.from, to: period.to })}
-              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                 period.period === 'custom'
                   ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -191,7 +199,7 @@ export default function StudioLeaderboardFullPage() {
             </button>
           </div>
           {period.period === 'custom' && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Input
                 type="date"
                 value={period.from ?? ''}

@@ -5,6 +5,7 @@
 // на shared data layer (prototype-project-data.ts) раньше в этой же сессии. Радиус — актуальная
 // на 2026-07-30 шкала (2-й раунд, "давай немного округленнее"): rounded-lg пилюли/кнопки/бейджи,
 // rounded-xl карточки — см. историю в projects/[id]/page.tsx.
+import { MobilePeriodSelect } from '@/components/shared/mobile-period-select';
 import Link from 'next/link';
 import { LucideIcon } from 'lucide-react';
 import { PeriodValue, StatsPeriod } from '@/components/shared/period-selector';
@@ -88,7 +89,14 @@ const CLIENTS_PERIOD_OPTIONS: { value: StatsPeriod; label: string }[] = [
 export function StudioClientsPeriodPicker({ value, onChange }: { value: PeriodValue | null; onChange: (value: PeriodValue | null) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+      <MobilePeriodSelect
+        options={[{ value: '', label: 'Все' }, ...CLIENTS_PERIOD_OPTIONS, { value: 'custom', label: 'Свой период' }]}
+        value={value?.period ?? ''}
+        onChange={(v) =>
+          onChange(v === '' ? null : v === 'custom' ? { period: 'custom', from: value?.from, to: value?.to } : { period: v as PeriodValue['period'] })
+        }
+      />
+      <div className="hidden sm:flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
         <button
           type="button"
           onClick={() => onChange(null)}

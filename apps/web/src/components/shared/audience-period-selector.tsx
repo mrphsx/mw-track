@@ -1,5 +1,6 @@
 'use client';
 
+import { MobilePeriodSelect } from '@/components/shared/mobile-period-select';
 import { Input } from '@/components/ui/input';
 import { AudiencePeriodValue } from '@/lib/use-audience-period';
 
@@ -24,7 +25,14 @@ export function AudiencePeriodSelector({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="flex rounded-lg border border-border p-0.5 gap-0.5">
+      <MobilePeriodSelect
+        options={[...OPTIONS, { value: 'custom', label: 'Свой период' }]}
+        value={value.period}
+        onChange={(v) =>
+          onChange(v === 'custom' ? { period: 'custom', from: value.from, to: value.to } : { period: v as Exclude<AudiencePeriodValue['period'], 'custom'> })
+        }
+      />
+      <div className="hidden sm:flex rounded-lg border border-border p-0.5 gap-0.5">
         {OPTIONS.map((opt) => (
           <button
             key={opt.value}
@@ -48,7 +56,7 @@ export function AudiencePeriodSelector({
         </button>
       </div>
       {value.period === 'custom' && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Input
             type="date"
             value={value.from ?? ''}
