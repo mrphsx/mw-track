@@ -9,6 +9,7 @@ import { useAuthStore } from '@/store/auth.store';
 import { StudioSidebar } from '@/components/layout/studio-sidebar';
 import { Switch } from '@/components/ui/switch';
 import { StudioNotificationsMenu } from './notifications-menu';
+import { TelegramHeaderButton } from '@/components/telegram-login-dialog';
 
 const PLAN_LABELS: Record<string, string> = {
   TRIAL: 'Триал',
@@ -112,6 +113,7 @@ export default function StudioLayout({ children }: { children: React.ReactNode }
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <TelegramHeaderButton />
             {/* Объединено в одну пилюлю (запрос пользователя 2026-07-30: "таблетка плана меньше
                 чем остальные, лучше добавь все в одну таблету, план, баланс, уведомления") —
                 раньше баланс/план/колокол были тремя визуально разными элементами (разный

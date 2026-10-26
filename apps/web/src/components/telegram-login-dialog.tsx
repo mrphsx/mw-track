@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { ExternalLink, Trash2 } from 'lucide-react';
+import { ExternalLink, Send, Trash2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,40 @@ import { Input } from '@/components/ui/input';
 interface AccountsData {
   bot: { username: string; active: boolean } | null;
   accounts: { id: string; username: string | null; firstName: string | null; linked: boolean; linkedAt: string | null; lastLoginAt: string | null }[];
+}
+
+// Кнопка в шапке (2026-10-26: «привязку к Telegram в хэдере кнопкой — самолётик и текст, по нажатию
+// попап, после привязки написано „привязано“»). className — внешний вид под шапку каждого дизайна.
+export function TelegramHeaderButton({ className }: { className?: string }) {
+  const [open, setOpen] = useState(false);
+  const { data } = useQuery({
+    queryKey: ['telegram-accounts'],
+    queryFn: async () => (await api.get<AccountsData>('/auth/telegram/accounts')).data,
+    staleTime: 60_000,
+  });
+  const linked = !!data?.accounts.some((a) => a.linked);
+  const label = linked ? 'Telegram привязан' : 'Привязать Telegram';
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title={label}
+        aria-label={label}
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-full px-3 h-9 text-sm font-medium shadow-sm transition-colors',
+          linked
+            ? 'bg-[#229ED9]/10 text-[#1C8AC0] dark:bg-[#229ED9]/15 dark:text-[#5CC1F0]'
+            : 'bg-[#229ED9] text-white hover:bg-[#1C8AC0]',
+          className,
+        )}
+      >
+        <Send className="w-4 h-4" />
+        <span className="hidden md:inline">{label}</span>
+      </button>
+      {open && <TelegramLoginDialog onClose={() => setOpen(false)} />}
+    </>
+  );
 }
 
 const errText = (err: unknown, fallback: string) => (isAxiosError(err) && err.response?.data?.error?.message) || fallback;

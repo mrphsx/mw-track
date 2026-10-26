@@ -2,6 +2,7 @@
 
 import { useAuthStore } from '@/store/auth.store';
 import { Badge } from '@/components/ui/badge';
+import { TelegramHeaderButton } from '@/components/telegram-login-dialog';
 
 const PLAN_LABELS: Record<string, string> = {
   TRIAL: 'Триал',
@@ -22,6 +23,7 @@ export function Header() {
     <header className="h-14 border-b bg-card flex items-center justify-between px-6 shrink-0">
       <div className="font-medium text-sm text-foreground">{user?.company?.name}</div>
       <div className="flex items-center gap-3">
+        <TelegramHeaderButton className="h-8" />
         {user?.company?.plan && (
           <Badge variant="secondary" className="font-normal">
             {PLAN_LABELS[user.company.plan] || user.company.plan}
