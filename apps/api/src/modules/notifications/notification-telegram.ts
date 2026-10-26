@@ -48,10 +48,12 @@ export function profileFromChat(chat: { type: string; username?: string; first_n
   return { username: chat.username ?? null, firstName: chat.first_name ?? null };
 }
 
-export async function sendNotifierMessage(token: string, chatId: string, html: string): Promise<ChatProfile | null> {
+// replyMarkup — кнопки бота (клавиатура меню, кнопки мини-аппа), 2026-10-26.
+export async function sendNotifierMessage(token: string, chatId: string, html: string, replyMarkup?: unknown): Promise<ChatProfile | null> {
   const message = await notifierApi(token).sendMessage(chatId, html, {
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
+    ...(replyMarkup ? { reply_markup: replyMarkup as never } : {}),
   });
   return profileFromChat(message.chat);
 }

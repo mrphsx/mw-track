@@ -7,9 +7,12 @@ import { NotificationsCron } from './notifications.cron';
 import { NOTIFICATION_MESSAGES_QUEUE, NotificationsEvaluator } from './notifications-evaluator.service';
 import { NotificationsProcessor } from './notifications.processor';
 import { NotificationsService } from './notifications.service';
+import { NotificationsBotMenuService } from './notifications-bot-menu.service';
+import { ProjectsModule } from '../projects/projects.module';
 
 @Module({
   imports: [
+    ProjectsModule,
     BullModule.registerQueue({
       name: NOTIFICATION_MESSAGES_QUEUE,
       // Ниже лимита Telegram в 30 сообщений/сек на бота — с запасом.
@@ -18,6 +21,6 @@ import { NotificationsService } from './notifications.service';
   ],
   controllers: [NotificationsController, NotificationWebhookController],
   // EncryptionService — отдельный экземпляр, как в ChannelsModule: он без состояния, кроме ключа из env.
-  providers: [NotificationsService, NotificationsEvaluator, NotificationsProcessor, NotificationsCron, EncryptionService],
+  providers: [NotificationsService, NotificationsBotMenuService, NotificationsEvaluator, NotificationsProcessor, NotificationsCron, EncryptionService],
 })
 export class NotificationsModule {}

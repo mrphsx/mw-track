@@ -59,7 +59,9 @@ function Inner() {
       if (app.colorScheme) setTheme(app.colorScheme);
       try {
         await loginWithTelegram(botId, app.initData);
-        if (!cancelled) router.replace('/');
+        // Кнопка проекта в боте ведёт сразу в него (?next=/projects/<id>) — только свои пути.
+        const next = searchParams.get('next');
+        if (!cancelled) router.replace(next && /^\/projects\/[A-Za-z0-9]+$/.test(next) ? next : '/');
       } catch (err) {
         if (!cancelled) setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось войти');
       }

@@ -25,6 +25,7 @@ import {
   TELEGRAM_USERNAME_PATTERN,
 } from './notification-types';
 import { NotificationsEvaluator } from './notifications-evaluator.service';
+import { MENU_BUTTONS, MENU_KEYBOARD, NotificationsBotMenuService } from './notifications-bot-menu.service';
 
 // Минимальная форма апдейта Telegram, которая нам нужна, — без зависимости от типов grammY Bot.
 interface IncomingUpdate {
@@ -50,6 +51,7 @@ export class NotificationsService implements OnModuleInit {
     private config: ConfigService,
     private encryption: EncryptionService,
     private evaluator: NotificationsEvaluator,
+    private menu: NotificationsBotMenuService,
   ) {}
 
   // Кнопка мини-аппа CRM у всех подключённых ботов оповещений (2026-10-26) — в фоне, после старта.
@@ -302,9 +304,9 @@ export class NotificationsService implements OnModuleInit {
       });
       return;
     }
-    const reply = async (html: string) => {
+    const reply = async (html: string, markup?: unknown) => {
       try {
-        await sendNotifierMessage(token, String(chatId), html);
+        await sendNotifierMessage(token, String(chatId), html, markup);
       } catch (error) {
         this.logger.warn(`Ответ ботом оповещений не отправлен: ${describeTelegramError(error)}`);
       }
@@ -324,6 +326,19 @@ export class NotificationsService implements OnModuleInit {
           })
         : null;
       if (known) await this.syncProfile(known.id, incomingProfile);
+
+      // Кнопки меню (2026-10-26): статистика и проекты — только привязанным сотрудникам CRM.
+      const menuAction = MENU_BUTTONS[text] ?? (/^\/stats\b/i.test(text) ? 'today' : /^\/projects\b/i.test(text) ? 'projects' : undefined);
+      if (menuAction && fromId) {
+        const staff = await this.menu.staffFor(bot.companyId, fromId);
+        if (!staff) {
+          await reply('Статистика доступна только сотрудникам, привязавшим этот Telegram к профилю CRM: на сайте CRM — кнопка «Привязать Telegram» в шапке.');
+          return;
+        }
+        const res = await this.menu.handle(bot.companyId, bot.id, staff, menuAction);
+        await reply(res.html, res.markup);
+        return;
+      }
 
       if (/^\/stop\b/i.test(text)) {
         // tgUserId не трогаем: человек остаётся опознаваемым и после переименования сможет
@@ -354,8 +369,9 @@ export class NotificationsService implements OnModuleInit {
         const res = await bindByLinkToken(this.prisma, bot.companyId, linkMatch[1], who);
         await reply(
           res.ok
-            ? '✅ <b>Telegram привязан к вашему профилю CRM.</b>\nНажмите кнопку «Открыть CRM» внизу — вход без пароля.'
+            ? '✅ <b>Telegram привязан к вашему профилю CRM.</b>\nКнопки ниже — статистика и проекты, «Открыть CRM» — вход в CRM без пароля.'
             : `❌ ${escapeTelegramHtml(res.reason)}`,
+          res.ok ? MENU_KEYBOARD : undefined,
         );
         return;
       }
@@ -370,7 +386,7 @@ export class NotificationsService implements OnModuleInit {
       if (!recipient) {
         const username = incomingProfile.username ? normalizeTelegramUsername(incomingProfile.username) : null;
         if (!username && loginAccount) {
-          await reply('✅ Ваш Telegram привязан к профилю CRM. Нажмите кнопку «Открыть CRM» внизу — вход без пароля.');
+          await reply('✅ Ваш Telegram привязан к профилю CRM. Кнопки ниже — статистика и проекты, «Открыть CRM» — вход без пароля.', MENU_KEYBOARD);
           return;
         }
         if (!username) {
@@ -385,7 +401,7 @@ export class NotificationsService implements OnModuleInit {
         });
         if (!pending) {
           if (loginAccount) {
-            await reply('✅ Ваш Telegram привязан к профилю CRM. Нажмите кнопку «Открыть CRM» внизу — вход без пароля.');
+            await reply('✅ Ваш Telegram привязан к профилю CRM. Кнопки ниже — статистика и проекты, «Открыть CRM» — вход без пароля.', MENU_KEYBOARD);
             return;
           }
           await reply(
@@ -418,7 +434,7 @@ export class NotificationsService implements OnModuleInit {
         `✅ <b>Вы подписаны на оповещения компании «${escapeTelegramHtml(company?.name ?? '')}».</b>\n\n` +
         (types.length ? `Вы получаете:\n${types.join('\n')}` : 'Пока ни один тип оповещений не выбран — владелец может включить их в настройках.');
       if (active.length) html += `\n\n<b>Прямо сейчас:</b>\n\n${active.map((a) => `⚠️ ${a}`).join('\n\n')}`;
-      await reply(html);
+      await reply(html, loginAccount ? MENU_KEYBOARD : undefined);
     } catch (error) {
       this.logger.error(`Обработка апдейта бота оповещений упала: ${(error as Error).message}`);
     }
