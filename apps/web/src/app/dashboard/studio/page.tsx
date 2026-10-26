@@ -93,9 +93,9 @@ export default function StudioDashboardPage() {
   });
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-6 sm:space-y-10">
       <div>
-        <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">
+        <h1 className="text-2xl sm:text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">
           {greeting()}, {user?.firstName}
         </h1>
         {/* Раньше "видно только владельцам компании" — с 2026-07-30 Studio основной дизайн для
@@ -106,7 +106,7 @@ export default function StudioDashboardPage() {
       {warning && (
         <div className="flex items-center gap-3 rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm px-5 py-4">
           <AlertTriangle className="w-4.5 h-4.5 text-[#1F4E9C] dark:text-[#7BA9EE] shrink-0" />
-          <p className="text-sm text-[#131A24] dark:text-[#E9EDF3]">
+          <p className="min-w-0 text-sm text-[#131A24] dark:text-[#E9EDF3]">
             {warning.expired
               ? 'Срок подписки истёк — функции ограничены до автопродления или сброса до TRIAL.'
               : warning.plan === 'TRIAL'
@@ -119,7 +119,7 @@ export default function StudioDashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard label="Клиентов" value={totalClients} icon={Users} hue="amber" />
         <StatCard label="Проектов" value={`${usage?.currentProjects ?? totalProjects}/${usage?.maxProjects ?? '—'}`} icon={FolderOpen} hue="slate" />
         <StatCard label="Рассылок" value={totalPushes} icon={Send} hue="teal" />
@@ -369,10 +369,10 @@ function PeriodTable({
 function StatCard({ label, value, icon: Icon, hue }: { label: string; value: string | number; icon: LucideIcon; hue: StudioHueName }) {
   const { textClass, bgSoftClass } = STUDIO_HUES[hue];
   return (
-    <div className="rounded-3xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-5 flex items-start justify-between">
-      <div>
-        <div className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">{label}</div>
-        <div className="text-2xl font-bold mt-1 text-[#131A24] dark:text-[#E9EDF3]">{value}</div>
+    <div className="rounded-3xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-4 sm:p-5 flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-sm text-[#5F6B7A] dark:text-[#92A0AF] truncate">{label}</div>
+        <div className="text-xl sm:text-2xl font-bold mt-1 text-[#131A24] dark:text-[#E9EDF3] truncate">{value}</div>
       </div>
       <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${bgSoftClass}`}>
         <Icon className={`w-4.5 h-4.5 ${textClass}`} />

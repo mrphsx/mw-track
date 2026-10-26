@@ -49,8 +49,8 @@ export default function StudioProjectsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Проекты</h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-2xl sm:text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Проекты</h1>
         <StudioLinkButton variant="primary" icon={Plus} href="/projects/new">
           Новый проект
         </StudioLinkButton>

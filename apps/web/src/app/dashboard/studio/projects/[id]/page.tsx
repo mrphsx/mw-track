@@ -239,9 +239,9 @@ export default function StudioProjectPage() {
   if (!project) return <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Загрузка...</p>;
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3.5">
+        <div className="flex items-center gap-3.5 min-w-0">
           {/* rounded-full на кольце-подложке сохранён намеренно (не тронут общей заменой на
               менее округлый дизайн) — ChannelAvatar сам всегда круглый (shared-компонент,
               rounded-full зашит внутри), квадратное кольцо вокруг круглого фото выглядело бы
@@ -256,7 +256,7 @@ export default function StudioProjectPage() {
           )}
           <div>
             <div className="flex items-center gap-2.5 flex-wrap">
-              <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">{project.name}</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">{project.name}</h1>
               <StatusPill active={project.status === 'ACTIVE'} label={project.status} />
               {project.channel && (
                 <StatusPill active={project.channel.isActive} label={CHANNEL_TYPE_LABEL[project.channel.type as ChannelType] ?? project.channel.type} />
@@ -283,7 +283,7 @@ export default function StudioProjectPage() {
           "Скрипт не найден на странице..."), поэтому его достаточно показать как есть, без
           повторной классификации на фронте. */}
       {project.channel?.type === 'WEBSITE' && !project.channel.isActive && (
-        <div className="rounded-xl border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-950/30 p-4 flex items-start gap-3">
+        <div className="rounded-xl border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-950/30 p-4 flex flex-wrap sm:flex-nowrap items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">Сайт не подключён</p>
@@ -304,7 +304,8 @@ export default function StudioProjectPage() {
           справа, в одном ряду — статус трекинга ушёл в компактную строку ниже, прижатую вправо
           (justify-end), а не влево, чтобы не продолжать тот же левый стек. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
+        {/* На телефоне — сетка по две кнопки одинаковой ширины вместо «лесенки» разной длины. */}
+        <div className="grid grid-cols-2 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap">
           {/* Ведут на Studio-версии этих страниц, где они уже готовы (запрос пользователя
               2026-07-30: "готовить все остальные страницы") — Настройки пока без Studio-
               варианта (1575-строчный файл с десятком вкладок, отложен), ведёт на классику. */}
@@ -313,7 +314,7 @@ export default function StudioProjectPage() {
           {project?.channel?.type !== 'WEBSITE' && (
             <Link
               href={`/projects/${id}/pushes`}
-              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
             >
               <Send className="w-4 h-4" /> Рассылка
             </Link>
@@ -323,7 +324,7 @@ export default function StudioProjectPage() {
           {project?.channel?.tgPersonalConnected && canViewPersonalBroadcasts && (
             <Link
               href={`/projects/${id}/personal-broadcasts`}
-              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Contact className="w-4 h-4" /> Личный аккаунт
             </Link>
@@ -334,7 +335,7 @@ export default function StudioProjectPage() {
           {project?.channel?.tgPersonalConnected && user?.role === 'OWNER' && (
             <Link
               href={`/payment-details-log?projectId=${id}`}
-              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Contact className="w-4 h-4" /> Журнал реквизитов
             </Link>
@@ -346,14 +347,14 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setShowWebsiteLink(true)}
-              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Link2 className="w-4 h-4" /> Получить ссылку
             </button>
           )}
           <Link
             href={`/projects/${id}/landings`}
-            className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <LayoutTemplate className="w-4 h-4" /> Лендинги
           </Link>
@@ -361,7 +362,7 @@ export default function StudioProjectPage() {
           {project?.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'BOT_DIRECT' && (
             <Link
               href={`/projects/${id}/bot-links`}
-              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Link2 className="w-4 h-4" /> Ссылки на бота
             </Link>
@@ -370,27 +371,27 @@ export default function StudioProjectPage() {
           {project?.channel?.type !== 'WEBSITE' && (
             <Link
               href={`/projects/${id}/scenarios`}
-              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Workflow className="w-4 h-4" /> Сценарии
             </Link>
           )}
           <Link
             href={`/projects/${id}/settings`}
-            className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <Settings className="w-4 h-4" /> Настройки
           </Link>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+          <div className="flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
             {PROTOTYPE_PERIOD_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 type="button"
                 onClick={() => setPeriod({ period: opt.value })}
-                className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                   period.period === opt.value
                     ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                     : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -405,7 +406,7 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setPeriod({ period: 'custom', from: period.from, to: period.to })}
-              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                 period.period === 'custom'
                   ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -471,7 +472,7 @@ export default function StudioProjectPage() {
               >
                 <span className="flex items-center gap-2 min-w-0">
                   <m.icon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="hidden sm:inline truncate">{m.label}</span>
+                  <span className="truncate">{m.label}</span>
                 </span>
                 <span className="font-mono tabular-nums font-semibold shrink-0">{m.value}</span>
               </button>
@@ -481,7 +482,7 @@ export default function StudioProjectPage() {
 
         {/* Уменьшено (запрос пользователя 2026-07-29: "сделай чуть поменьше") — было p-8/w-16/
             text-5xl, теперь более сдержанный размер, всё ещё крупнее обычных карточек. */}
-        <div className="rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-5 flex items-center gap-4">
+        <div className="rounded-2xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-4 sm:p-5 flex items-center gap-4 min-w-0">
           <div
             className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 ${
               featured.danger ? 'bg-red-50 dark:bg-red-950/40' : STUDIO_HUES[featured.hue].bgSoftClass
@@ -492,7 +493,7 @@ export default function StudioProjectPage() {
           <div>
             <div className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">{featured.label}</div>
             <div
-              className={`text-4xl font-bold font-mono tabular-nums mt-0.5 ${
+              className={`text-3xl sm:text-4xl font-bold font-mono tabular-nums mt-0.5 break-all ${
                 featured.danger ? 'text-red-600 dark:text-red-400' : 'text-[#131A24] dark:text-[#E9EDF3]'
               }`}
             >
@@ -524,7 +525,7 @@ export default function StudioProjectPage() {
             cardClassName="rounded-xl bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-5"
             titleClassName="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3] mb-3"
             legendClassName="flex items-center gap-4 text-xs text-[#5F6B7A] dark:text-[#92A0AF] mb-2"
-            tabsListClassName="rounded-lg bg-[#E8ECF1] dark:bg-white/5 p-1 h-auto"
+            tabsListClassName="rounded-lg bg-[#E8ECF1] dark:bg-white/5 p-1 h-auto flex-wrap justify-start max-w-full"
             tabsTriggerClassName="rounded-lg data-active:bg-[#1F4E9C] dark:data-active:bg-[#7BA9EE] data-active:text-white dark:data-active:text-[#0F1620] data-active:shadow-none"
           />
         )}
@@ -587,7 +588,7 @@ export default function StudioProjectPage() {
               "показывай каждый отдельно как мини вкладки, а не все сразу, как в оригинале") —
               топ-5 списки уже загружены одним запросом (staleTime: Infinity), здесь только
               переключение видимости + ленивая подгрузка развёрнутой воронки под элементами. */}
-          <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5 mb-4">
+          <div className="flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5 mb-4">
             {/* "Только свои клиенты" (запрос пользователя 2026-08-03) — та же логика, что и в
                 классической версии: бэкенд отдаёт пустой buyers[] для скоуп-баера, прячем
                 пилюлю целиком вместо пустого списка. */}
@@ -595,7 +596,7 @@ export default function StudioProjectPage() {
               <button
                 type="button"
                 onClick={() => setActiveLeaderboardTab('buyers')}
-                className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+                className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                   activeLeaderboardTab === 'buyers'
                     ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                     : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -607,7 +608,7 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setActiveLeaderboardTab('pixels')}
-              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                 activeLeaderboardTab === 'pixels'
                   ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -618,7 +619,7 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setActiveLeaderboardTab('landings')}
-              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                 activeLeaderboardTab === 'landings'
                   ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -629,7 +630,7 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setActiveLeaderboardTab('campaigns')}
-              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                 activeLeaderboardTab === 'campaigns'
                   ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -640,7 +641,7 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setActiveLeaderboardTab('sources')}
-              className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
                 activeLeaderboardTab === 'sources'
                   ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -748,7 +749,7 @@ export default function StudioProjectPage() {
       )}
 
       <div>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
           <h2 className="text-lg font-semibold text-[#131A24] dark:text-[#E9EDF3]">Последние клиенты</h2>
           <Link
             href={`/projects/${id}/clients`}

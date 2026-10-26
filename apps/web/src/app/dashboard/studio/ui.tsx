@@ -88,11 +88,11 @@ const CLIENTS_PERIOD_OPTIONS: { value: StatsPeriod; label: string }[] = [
 export function StudioClientsPeriodPicker({ value, onChange }: { value: PeriodValue | null; onChange: (value: PeriodValue | null) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="inline-flex rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
+      <div className="flex flex-wrap w-fit max-w-full rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm p-1 gap-0.5">
         <button
           type="button"
           onClick={() => onChange(null)}
-          className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+          className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
             value === null
               ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
               : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -105,7 +105,7 @@ export function StudioClientsPeriodPicker({ value, onChange }: { value: PeriodVa
             key={opt.value}
             type="button"
             onClick={() => onChange({ period: opt.value })}
-            className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+            className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
               value?.period === opt.value
                 ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                 : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
@@ -117,7 +117,7 @@ export function StudioClientsPeriodPicker({ value, onChange }: { value: PeriodVa
         <button
           type="button"
           onClick={() => onChange({ period: 'custom', from: value?.from, to: value?.to })}
-          className={`px-4 py-1.5 text-sm rounded-lg transition-colors ${
+          className={`px-3 sm:px-4 py-1.5 text-sm rounded-lg transition-colors ${
             value?.period === 'custom'
               ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
               : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
