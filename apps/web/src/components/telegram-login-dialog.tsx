@@ -1,11 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
 import { ExternalLink, Send, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { useAuthStore } from '@/store/auth.store';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,13 +24,37 @@ interface AccountsData {
 // попап, после привязки написано „привязано“»). className — внешний вид под шапку каждого дизайна.
 export function TelegramHeaderButton({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
+  const userId = useAuthStore((st) => st.user?.id);
   const { data } = useQuery({
     queryKey: ['telegram-accounts'],
     queryFn: async () => (await api.get<AccountsData>('/auth/telegram/accounts')).data,
     staleTime: 60_000,
   });
-  const linked = !!data?.accounts.some((a) => a.linked);
-  const label = linked ? 'Telegram привязан' : 'Привязать Telegram';
+  // Пока статус грузится — последнее известное состояние из браузера, иначе при каждой перезагрузке
+  // кнопка мигала «Привязать» → «привязан» (2026-10-26). Без сохранённого — нейтральный вид.
+  const cacheKey = userId ? `tg-linked:${userId}` : null;
+  const [cached, setCached] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!cacheKey) return;
+    try {
+      const v = localStorage.getItem(cacheKey);
+      setCached(v === null ? null : v === '1');
+    } catch {
+      // приватный режим — без кэша
+    }
+  }, [cacheKey]);
+  const fresh = data ? data.accounts.some((a) => a.linked) : null;
+  useEffect(() => {
+    if (fresh === null || !cacheKey) return;
+    try {
+      localStorage.setItem(cacheKey, fresh ? '1' : '0');
+    } catch {
+      // приватный режим — без кэша
+    }
+  }, [fresh, cacheKey]);
+  const state = fresh ?? cached;
+  const linked = state === true;
+  const label = state === null ? 'Telegram' : linked ? 'Telegram привязан' : 'Привязать Telegram';
   return (
     <>
       <button
@@ -39,7 +64,7 @@ export function TelegramHeaderButton({ className }: { className?: string }) {
         aria-label={label}
         className={cn(
           'inline-flex items-center gap-1.5 rounded-full px-3 h-9 text-sm font-medium shadow-sm transition-colors',
-          linked
+          linked || state === null
             ? 'bg-[#229ED9]/10 text-[#1C8AC0] dark:bg-[#229ED9]/15 dark:text-[#5CC1F0]'
             : 'bg-[#229ED9] text-white hover:bg-[#1C8AC0]',
           className,
