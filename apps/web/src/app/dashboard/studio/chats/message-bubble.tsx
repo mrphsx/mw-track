@@ -3,10 +3,10 @@
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { isAxiosError } from 'axios';
-import { AlertCircle, Bot, CornerUpRight, Download, FileText, Languages, Loader2, Pencil, Reply, Trash2 } from 'lucide-react';
+import { AlertCircle, Bot, Check, CheckCheck, CornerUpRight, Download, FileText, Languages, Loader2, Pencil, Reply, SmilePlus, Trash2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ru } from 'date-fns/locale';
-import { ChatMessage, ChatTranslation, deleteChatMessage, langLabel, loadChatMedia, translateChatMessage } from '@/lib/chat';
+import { CHAT_REACTIONS, ChatMessage, ChatTranslation, deleteChatMessage, langLabel, loadChatMedia, reactChatMessage, translateChatMessage } from '@/lib/chat';
 import { cn, downloadBlob } from '@/lib/utils';
 
 // Короткая цитата сообщения: текст или вид файла.
@@ -147,6 +147,7 @@ export function MessageBubble({
   translationEnabled,
   onReply,
   onEdit,
+  album,
 }: {
   message: ChatMessage;
   showSender: boolean;
@@ -154,6 +155,8 @@ export function MessageBubble({
   translationEnabled: boolean;
   onReply?: () => void;
   onEdit?: () => void;
+  // Альбом (2026-10-26): все сообщения группы; message — первое из них, подпись — у любого.
+  album?: ChatMessage[];
 }) {
   const outgoing = message.direction === 'OUT';
   const isBot = message.senderType === 'BOT';
@@ -165,6 +168,18 @@ export function MessageBubble({
   // на слабо-красном фоне с пометкой, кто и когда удалил.
   const queryClient = useQueryClient();
   const [deleteError, setDeleteError] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const react = useMutation({
+    mutationFn: (emoji: string | null) => reactChatMessage(message.id, emoji),
+    onSuccess: () => {
+      setDeleteError('');
+      setPickerOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['chat-messages'] });
+    },
+    onError: (err) => setDeleteError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось поставить реакцию'),
+  });
+  const isAlbum = !!album && album.length > 1;
+  const caption = isAlbum ? album!.find((m) => m.text) : null;
   const remove = useMutation({
     mutationFn: () => deleteChatMessage(message.id),
     onSuccess: () => {
@@ -231,12 +246,24 @@ export function MessageBubble({
             <div className="truncate opacity-90">{quoteText(message.replyTo)}</div>
           </div>
         )}
-        {message.mediaType && (
-          <div className={cn(message.text ? 'mb-1.5' : '')}>
-            <MediaBlock message={message} outgoing={ownBubble} />
+        {isAlbum ? (
+          <div className={cn('grid gap-1', album!.length === 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3', caption ? 'mb-1.5' : '')}>
+            {album!.map((m) => (
+              <div key={m.id} className="overflow-hidden rounded-lg [&_img]:w-full [&_img]:h-32 [&_img]:max-w-none [&_video]:w-full [&_video]:h-32 [&_video]:max-w-none [&_img]:object-cover [&_video]:object-cover">
+                <MediaBlock message={m} outgoing={ownBubble} />
+              </div>
+            ))}
           </div>
+        ) : (
+          message.mediaType && (
+            <div className={cn(message.text ? 'mb-1.5' : '')}>
+              <MediaBlock message={message} outgoing={ownBubble} />
+            </div>
+          )
         )}
-        {message.text && <div className="whitespace-pre-wrap break-words text-[14px] leading-snug">{tr.translation?.text ?? message.text}</div>}
+        {isAlbum
+          ? caption?.text && <div className="whitespace-pre-wrap break-words text-[14px] leading-snug">{caption.text}</div>
+          : message.text && <div className="whitespace-pre-wrap break-words text-[14px] leading-snug">{tr.translation?.text ?? message.text}</div>}
         <div className={cn('mt-0.5 flex justify-end gap-2 text-[10px] tabular-nums', ownBubble ? 'text-white/70' : 'opacity-50')}>
           {tr.translation && (
             <span className="italic">
@@ -249,9 +276,51 @@ export function MessageBubble({
             </span>
           )}
           <span>{time}</span>
+          {outgoing && message.read !== null && message.read !== undefined && !deleted && (
+            <span title={message.read ? 'Прочитано' : 'Доставлено, не прочитано'} className="inline-flex">
+              {message.read ? <CheckCheck className="w-3.5 h-3.5" /> : <Check className="w-3.5 h-3.5" />}
+            </span>
+          )}
         </div>
       </div>
-      {message.text && (
+      {message.canReply && (
+        <div className="relative shrink-0 mb-1">
+          <button
+            type="button"
+            onClick={() => setPickerOpen((v) => !v)}
+            title="Реакция"
+            aria-label="Реакция"
+            className={cn(
+              'p-1 rounded-md text-[#5F6B7A]/60 hover:text-[#1F4E9C] hover:bg-[#1F4E9C]/10 dark:text-[#92A0AF]/60 dark:hover:text-[#7BA9EE] transition-opacity',
+              pickerOpen ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100 focus:opacity-100',
+            )}
+          >
+            <SmilePlus className="w-3.5 h-3.5" />
+          </button>
+          {pickerOpen && (
+            <div
+              className={cn(
+                'absolute bottom-full mb-1 z-20 flex flex-wrap gap-0.5 w-[232px] rounded-xl border border-[#DCE1E8] dark:border-white/10 bg-white dark:bg-[#171F2B] shadow-lg p-1.5',
+                outgoing ? 'right-0' : 'left-0',
+              )}
+              onMouseLeave={() => setPickerOpen(false)}
+            >
+              {CHAT_REACTIONS.map((e) => (
+                <button
+                  key={e}
+                  type="button"
+                  disabled={react.isPending}
+                  onClick={() => react.mutate(message.ourReaction === e ? null : e)}
+                  className={cn('w-8 h-8 rounded-lg text-lg hover:bg-[#F3F5F8] dark:hover:bg-white/5', message.ourReaction === e && 'bg-[#1F4E9C]/10 dark:bg-[#7BA9EE]/15')}
+                >
+                  {e}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {message.text && !isAlbum && (
         <button
           type="button"
           onClick={tr.toggle}
@@ -279,7 +348,7 @@ export function MessageBubble({
           <Reply className="w-3.5 h-3.5" />
         </button>
       )}
-      {message.canEdit && onEdit && (
+      {message.canEdit && onEdit && !isAlbum && (
         <button
           type="button"
           onClick={onEdit}
@@ -290,7 +359,7 @@ export function MessageBubble({
           <Pencil className="w-3.5 h-3.5" />
         </button>
       )}
-      {message.canDelete && (
+      {message.canDelete && !isAlbum && (
         <button
           type="button"
           onClick={() => confirm('Удалить это сообщение у клиента в Telegram? В CRM оно останется с пометкой, кто удалил.') && remove.mutate()}
@@ -303,6 +372,25 @@ export function MessageBubble({
         </button>
       )}
       </div>
+      {(message.leadReaction || message.ourReaction) && (
+        <div className={cn('mt-0.5 flex gap-1 px-1', outgoing ? 'justify-end' : 'justify-start')}>
+          {message.leadReaction && (
+            <span title="Реакция клиента" className="text-xs rounded-full px-1.5 py-0.5 bg-white dark:bg-[#1C2532] border border-[#DCE1E8] dark:border-white/10">
+              {message.leadReaction}
+            </span>
+          )}
+          {message.ourReaction && (
+            <button
+              type="button"
+              title="Наша реакция — нажмите, чтобы снять"
+              onClick={() => react.mutate(null)}
+              className="text-xs rounded-full px-1.5 py-0.5 bg-[#1F4E9C]/10 dark:bg-[#7BA9EE]/15 border border-[#1F4E9C]/30 dark:border-[#7BA9EE]/30"
+            >
+              {message.ourReaction}
+            </button>
+          )}
+        </div>
+      )}
       {deleted && (
         <div className="mt-1 px-1 text-[11px] text-red-600/90 dark:text-red-400/90 flex items-center gap-1">
           <Trash2 className="w-3 h-3" />

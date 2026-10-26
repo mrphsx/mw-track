@@ -5,7 +5,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { isAxiosError } from 'axios';
 import { format, isToday, isYesterday } from 'date-fns';
 import { ru } from 'date-fns/locale';
-import { ArrowLeft, BookText, Clock, Languages, Loader2, PanelRight, Paperclip, Pencil, Reply, SendHorizontal, Undo2, UserRound, X } from 'lucide-react';
+import { ArrowLeft, BookText, Clock, Languages, Loader2, PanelRight, Paperclip, Pencil, Reply, Search, SendHorizontal, Undo2, UserRound, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   chatResourceOf,
@@ -28,6 +28,7 @@ import {
   ChatMessage,
   editChatMessage,
   sendTypingSignal,
+  searchChatMessages,
 } from '@/lib/chat';
 import { useAuthStore } from '@/store/auth.store';
 import { cn } from '@/lib/utils';
@@ -138,6 +139,64 @@ export function Thread({
 
   const name = conversation ? peerDisplayName(conversation) : '';
 
+  // Альбомы (2026-10-26): подряд идущие сообщения одной группы — один пузырь у первого.
+  const albumOf = useMemo(() => {
+    const first = new Map<string, string>(); // id сообщения → id первого в альбоме
+    const items = new Map<string, typeof messages>();
+    messages.forEach((m, i) => {
+      const prev = messages[i - 1];
+      if (m.mediaGroupId && prev && prev.mediaGroupId === m.mediaGroupId && prev.direction === m.direction) {
+        const head = first.get(prev.id) ?? prev.id;
+        first.set(m.id, head);
+        items.get(head)!.push(m);
+      } else {
+        first.set(m.id, m.id);
+        items.set(m.id, [m]);
+      }
+    });
+    return { first, items };
+  }, [messages]);
+
+  // Поиск по переписке (2026-10-26): найденное догружаем страницами истории и прокручиваем к нему.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [searchQ, setSearchQ] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(searchText.trim()), 300);
+    return () => clearTimeout(t);
+  }, [searchText]);
+  useEffect(() => {
+    setSearchOpen(false);
+    setSearchText('');
+  }, [conversationId]);
+  const searchQuery = useQuery({
+    queryKey: ['chat-search', conversationId, searchQ],
+    queryFn: () => searchChatMessages(conversationId, searchQ),
+    enabled: searchOpen && searchQ.length >= 2,
+  });
+  const [jumpTo, setJumpTo] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const jumpPages = useRef(0);
+  useEffect(() => {
+    if (!jumpTo) return;
+    const head = albumOf.first.get(jumpTo);
+    if (head) {
+      stickToBottom.current = false;
+      document.getElementById(`msg-${head}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      setHighlight(head);
+      setJumpTo(null);
+      const t = setTimeout(() => setHighlight(null), 2500);
+      return () => clearTimeout(t);
+    }
+    if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage && jumpPages.current < 40) {
+      jumpPages.current++;
+      stickToBottom.current = false;
+      messagesQuery.fetchNextPage();
+    } else if (!messagesQuery.hasNextPage || jumpPages.current >= 40) {
+      setJumpTo(null);
+    }
+  }, [jumpTo, albumOf, messagesQuery]);
+
   // Переводчик (2026-10-24): языки — личный выбор пользователя для этого бота/лички проекта.
   const userId = useAuthStore((s) => s.user?.id) ?? '';
   const { data: translateStatus } = useQuery({
@@ -202,6 +261,20 @@ export function Thread({
             >
               <Languages className="w-4 h-4" />
             </button>
+            <button
+              type="button"
+              onClick={() => setSearchOpen((v) => !v)}
+              className={cn(
+                'p-2 rounded-lg transition-colors',
+                searchOpen
+                  ? 'bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]'
+                  : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:bg-[#F3F5F8] dark:hover:bg-white/5',
+              )}
+              aria-label="Поиск по переписке"
+              title="Поиск по переписке"
+            >
+              <Search className="w-4 h-4" />
+            </button>
             <AssigneeControl conversation={conversation} onReturned={onBack} />
             <button
               type="button"
@@ -239,6 +312,51 @@ export function Thread({
 
       {conversation && <OrganizeBar conversation={conversation} />}
 
+      {searchOpen && (
+        <div className="shrink-0 border-b border-[#DCE1E8] dark:border-white/10 px-4 py-2 space-y-1.5">
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-[#5F6B7A] shrink-0" />
+            <input
+              autoFocus
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              onKeyDown={(e) => e.key === 'Escape' && setSearchOpen(false)}
+              placeholder="Найти в переписке…"
+              className="flex-1 h-8 rounded-lg bg-[#F3F5F8] dark:bg-[#0F1620] px-2.5 text-sm text-[#131A24] dark:text-[#E9EDF3] outline-none"
+            />
+            <button type="button" onClick={() => setSearchOpen(false)} className="p-1 rounded text-[#5F6B7A] hover:bg-[#F3F5F8] dark:hover:bg-white/5" aria-label="Закрыть поиск">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          {searchQ.length >= 2 && (
+            <div className="max-h-56 overflow-y-auto rounded-lg border border-[#DCE1E8] dark:border-white/10 divide-y divide-[#DCE1E8] dark:divide-white/10">
+              {searchQuery.isLoading ? (
+                <div className="px-3 py-2 text-xs text-[#5F6B7A]">Ищем…</div>
+              ) : !searchQuery.data?.length ? (
+                <div className="px-3 py-2 text-xs text-[#5F6B7A] dark:text-[#92A0AF]">Ничего не найдено</div>
+              ) : (
+                searchQuery.data.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => {
+                      jumpPages.current = 0;
+                      setJumpTo(r.id);
+                    }}
+                    className="w-full text-left px-3 py-1.5 hover:bg-[#F3F5F8] dark:hover:bg-white/5"
+                  >
+                    <div className="flex items-center gap-2 text-[11px] text-[#5F6B7A] dark:text-[#92A0AF]">
+                      <span className="font-medium">{r.direction === 'IN' ? name || 'Клиент' : 'Мы'}</span>
+                      <span>{format(new Date(r.createdAt), 'd MMM yyyy, HH:mm', { locale: ru })}</span>
+                    </div>
+                    <div className="truncate text-sm text-[#131A24] dark:text-[#E9EDF3]">{r.text}</div>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {conversation && langPanelOpen && (
         <div className="shrink-0 flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2.5 border-b border-[#DCE1E8] dark:border-white/10 text-sm">
           <label className="flex items-center gap-2">
@@ -272,13 +390,16 @@ export function Thread({
         )}
         <div className="space-y-1.5 max-w-3xl mx-auto">
           {messages.map((m, i) => {
+            // Не первое сообщение альбома — уже нарисовано в пузыре первого.
+            if (albumOf.first.get(m.id) !== m.id) return null;
+            const album = albumOf.items.get(m.id);
             const prev = messages[i - 1];
             const date = new Date(m.createdAt);
             const newDay = !prev || new Date(prev.createdAt).toDateString() !== date.toDateString();
             const showSender =
               m.direction === 'OUT' && (newDay || !prev || prev.direction !== 'OUT' || prev.senderType !== m.senderType || prev.senderUserId !== m.senderUserId);
             return (
-              <div key={m.id}>
+              <div key={m.id} id={`msg-${m.id}`} className={cn('rounded-xl transition-colors duration-700', highlight === m.id && 'bg-[#1F4E9C]/10 dark:bg-[#7BA9EE]/10')}>
                 {newDay && (
                   <div className="flex justify-center my-3">
                     <span className="text-[11px] font-medium px-2.5 py-1 rounded-full bg-white/80 dark:bg-white/5 text-[#5F6B7A] dark:text-[#92A0AF] shadow-sm">
@@ -292,6 +413,7 @@ export function Thread({
                     showSender={showSender}
                     translateTo={prefs.read}
                     translationEnabled={translationEnabled}
+                    album={album && album.length > 1 ? album : undefined}
                     onReply={() => {
                       setEditing(null);
                       setReplyTo(m);

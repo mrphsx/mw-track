@@ -6,6 +6,7 @@ import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
 import { EditedMessage, EditedMessageEvent } from 'telegram/events/EditedMessage';
 import { DeletedMessage, DeletedMessageEvent } from 'telegram/events/DeletedMessage';
+import { Raw } from 'telegram/events/Raw';
 import { FloodWaitError, RPCError, SlowModeWaitError } from 'telegram/errors';
 import { Button } from 'telegram/tl/custom/button';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -220,6 +221,7 @@ export class TelegramPersonalService {
     // Правки сообщений в личке (2026-10-26) — клиентом или оператором с телефона.
     client.addEventHandler((event: EditedMessageEvent) => this.handleEditedChat(channel, event), new EditedMessage({}));
     client.addEventHandler((event: DeletedMessageEvent) => this.handleDeletedChat(channel, event), new DeletedMessage({}));
+    client.addEventHandler((update: Api.TypeUpdate) => this.handleChatRawUpdate(channel, update), new Raw({ types: [Api.UpdateReadHistoryOutbox, Api.UpdateMessageReactions] }));
 
     this.liveClients.set(channel.id, client);
   }
@@ -582,6 +584,7 @@ export class TelegramPersonalService {
     );
     attempt.client.addEventHandler((event: EditedMessageEvent) => this.handleEditedChat(channel, event), new EditedMessage({}));
     attempt.client.addEventHandler((event: DeletedMessageEvent) => this.handleDeletedChat(channel, event), new DeletedMessage({}));
+    attempt.client.addEventHandler((update: Api.TypeUpdate) => this.handleChatRawUpdate(channel, update), new Raw({ types: [Api.UpdateReadHistoryOutbox, Api.UpdateMessageReactions] }));
   }
 
   // Не блокирует и не бросает наружу — сбой обработки одного сообщения не должен убить
@@ -671,6 +674,7 @@ export class TelegramPersonalService {
         sentAt: new Date(event.message.date * 1000),
         replyToExternalId: event.message.replyTo?.replyToMsgId ? String(event.message.replyTo.replyToMsgId) : null,
         forwardedFrom: await mtprotoForwardName(event.message),
+        mediaGroupId: event.message.groupedId ? String(event.message.groupedId) : null,
       });
     } catch (error) {
       this.logger.warn(`handleIncomingMessage failed for channel ${channel.id}: ${(error as Error).message}`);
@@ -714,8 +718,55 @@ export class TelegramPersonalService {
           sentAt: new Date(message.date * 1000),
           replyToExternalId: message.replyTo?.replyToMsgId ? String(message.replyTo.replyToMsgId) : null,
           forwardedFrom: await mtprotoForwardName(message),
+          mediaGroupId: message.groupedId ? String(message.groupedId) : null,
         }))();
     }, OUTGOING_DEDUP_DELAY_MS);
+  }
+
+  // Прочтение лидом наших сообщений и реакции (2026-10-26) — «сырые» апдейты MTProto.
+  private async handleChatRawUpdate(channel: Channel, update: Api.TypeUpdate): Promise<void> {
+    try {
+      if (update instanceof Api.UpdateReadHistoryOutbox && update.peer instanceof Api.PeerUser) {
+        await this.chatStore.recordReadOutbox(channel, String(update.peer.userId), update.maxId);
+      } else if (update instanceof Api.UpdateMessageReactions && update.peer instanceof Api.PeerUser) {
+        const peerId = String(update.peer.userId);
+        await this.chatStore.recordReaction(channel, 'PERSONAL', '', peerId, String(update.msgId), parseMtprotoReactions(update.reactions, peerId));
+      }
+    } catch (error) {
+      this.logger.warn(`handleChatRawUpdate failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
+  }
+
+  // До какого сообщения лид прочитал нашу переписку — когда апдейта о прочтении ещё не было.
+  async getReadOutboxMaxId(channel: Channel, peerId: string): Promise<number | null> {
+    try {
+      const client = await this.getLiveClient(channel);
+      if (!client) return null;
+      const entity = await this.resolvePeer(client, peerId);
+      const res = await client.invoke(new Api.messages.GetPeerDialogs({ peers: [new Api.InputDialogPeer({ peer: await client.getInputEntity(entity) })] }));
+      const dialog = res.dialogs[0];
+      return dialog instanceof Api.Dialog ? dialog.readOutboxMaxId : null;
+    } catch (error) {
+      this.logger.warn(`getReadOutboxMaxId ${channel.id}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
+      return null;
+    }
+  }
+
+  // Наша реакция на сообщение в личке; null — снять.
+  async setReaction(channel: Channel, peerId: string, messageId: string, emoji: string | null): Promise<void> {
+    const client = await this.getLiveClient(channel);
+    if (!client) throw new Error('Личный аккаунт не подключён');
+    try {
+      const entity = await this.resolvePeer(client, peerId);
+      await client.invoke(
+        new Api.messages.SendReaction({ peer: entity, msgId: Number(messageId), reaction: emoji ? [new Api.ReactionEmoji({ emoticon: emoji })] : [] }),
+      );
+    } catch (error) {
+      this.logger.warn(`setReaction ${channel.id}/${messageId}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
+      throw error;
+    }
   }
 
   // Удаление в личке (2026-10-26): клиент удалил своё сообщение или оператор удалил с телефона.
@@ -738,6 +789,10 @@ export class TelegramPersonalService {
       const peer = event.message.peerId;
       if (!peer || peer.className !== 'PeerUser') return;
       await this.chatStore.recordEdit(channel, 'PERSONAL', '', String(peer.userId), String(event.message.id), event.message.message || null, event.message.editDate);
+      // В личке реакции приходят правкой сообщения.
+      if (event.message.reactions) {
+        await this.chatStore.recordReaction(channel, 'PERSONAL', '', String(peer.userId), String(event.message.id), parseMtprotoReactions(event.message.reactions, String(peer.userId)));
+      }
     } catch (error) {
       this.logger.warn(`handleEditedChat failed for channel ${channel.id}: ${(error as Error).message}`);
     }
@@ -959,4 +1014,18 @@ async function mtprotoForwardName(message: Api.Message): Promise<string | null> 
     // нет в кеше — не страшно
   }
   return 'пересланное';
+}
+
+// Реакции в личке: лида — из списка «кто поставил» (recentReactions), наша — отмеченная chosenOrder.
+function parseMtprotoReactions(reactions: Api.TypeMessageReactions, leadPeerId: string): { lead: string | null; ours: string | null } {
+  const emoji = (r: Api.TypeReaction | undefined) => (r instanceof Api.ReactionEmoji ? r.emoticon : null);
+  const chosen = (r: Api.ReactionCount) => r.chosenOrder !== undefined && r.chosenOrder !== null;
+  const ours = reactions.results.find(chosen);
+  if (reactions.recentReactions) {
+    const lead = reactions.recentReactions.find((r) => r.peerId instanceof Api.PeerUser && String(r.peerId.userId) === leadPeerId);
+    return { lead: emoji(lead?.reaction), ours: emoji(ours?.reaction) };
+  }
+  // Списка «кто поставил» нет — в личке нас двое: не наша реакция или наша же, но с двумя голосами.
+  const lead = reactions.results.find((r) => (!chosen(r) && r.count > 0) || (chosen(r) && r.count > 1));
+  return { lead: emoji(lead?.reaction), ours: emoji(ours?.reaction) };
 }

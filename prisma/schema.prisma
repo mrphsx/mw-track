@@ -202,15 +202,15 @@ model User {
   // (TrackingPixel.createdById) или все пиксели его проектов. Дефолт и значение для всех, кто
   // существовал на момент появления поля, — только свои. Действует только на роль BUYER, как и
   // clientsVisibilityScope.
-  pixelsVisibilityScope PixelsVisibilityScope @default(OWN_PIXELS)
+  pixelsVisibilityScope  PixelsVisibilityScope  @default(OWN_PIXELS)
   // Доступ к встроенному чату (запрос пользователя 2026-10-24) — для ADMIN/OPERATOR_ADMIN/OPERATOR:
   // нет доступа / только чат бота / только чат лички / оба. BUYER чатов не видит никогда,
   // OWNER/SUPER_ADMIN — всегда все (см. ChatService.chatSourcesFor). Дефолт ALL сохраняет доступ,
   // который у этих ролей был до появления настройки.
-  chatAccess ChatAccess @default(ALL)
+  chatAccess             ChatAccess             @default(ALL)
   // «Скрытый оператор» (2026-10-25, как Hide Operator в Chatterfy): работает с чатами, но не видит
   // имя, @username, Telegram ID, телефон и фото лида — вместо имени «Лид #…». Только для OPERATOR.
-  chatAnonymous Boolean @default(false)
+  chatAnonymous          Boolean                @default(false)
 
   // Короткий код баера в трекинг-ссылках (запрос пользователя 2026-08-20: "сократим значения
   // z=... но обязательно с обратной совместимостью для старых ссылок") — заменяет полный User.id
@@ -2407,8 +2407,10 @@ model Conversation {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  channel  Channel       @relation(fields: [channelId], references: [id])
-  messages ChatMessage[]
+  channel             Channel       @relation(fields: [channelId], references: [id])
+  messages            ChatMessage[]
+  // «Прочитано» (2026-10-26, только личка): до какого id Telegram наши сообщения прочитаны лидом.
+  peerReadOutboxMaxId Int?
 
   @@unique([channelId, source, botKey, peerId])
   @@index([companyId, lastMessageAt])
@@ -2764,6 +2766,11 @@ model ChatMessage {
   forwardedFrom  String?
   editedAt       DateTime?
   originalText   String?
+  // Реакции (2026-10-26): лида и наша — в личке Telegram у каждой стороны одна обычная реакция.
+  leadReaction   String?
+  ourReaction    String?
+  // Альбом (несколько фото/видео одним сообщением): общий id группы из Telegram.
+  mediaGroupId   String?
   createdAt      DateTime       @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])

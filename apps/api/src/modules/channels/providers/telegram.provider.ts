@@ -1,3 +1,4 @@
+import type { ReactionTypeEmoji } from 'grammy/types';
 import { InjectQueue } from '@nestjs/bull';
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -248,6 +249,11 @@ export class TelegramProvider implements ChannelProvider {
         await this.chatStore.recordEditedBotMessage(channel, ctx.editedMessage);
         return;
       }
+      // Реакция лида на сообщение (2026-10-26) — тоже только в переписку CRM.
+      if (ctx.messageReaction) {
+        await this.chatStore.recordBotReaction(channel, ctx.messageReaction);
+        return;
+      }
       await next();
     });
 
@@ -376,7 +382,7 @@ export class TelegramProvider implements ChannelProvider {
     // начала (проблема была не только у новой фичи с менеджерами — mgr_dlg_yes/no, WelcomeButtons/
     // scenario-кнопки — все они были URL-кнопками до сих пор, поэтому не проявлялось раньше).
     await bot.api.setWebhook(webhookUrl, {
-      allowed_updates: ['message', 'edited_message', 'chat_join_request', 'my_chat_member', 'chat_member', 'callback_query'],
+      allowed_updates: ['message', 'edited_message', 'message_reaction', 'chat_join_request', 'my_chat_member', 'chat_member', 'callback_query'],
     });
   }
 
@@ -1705,6 +1711,11 @@ export class TelegramProvider implements ChannelProvider {
     const bot = this.bots.get(channel.id);
     if (!bot) throw new Error('Бот проекта не подключён');
     await this.editChatMessageWithBot(bot, peerId, messageId, text, isMedia);
+  }
+
+  // Наша реакция на сообщение (2026-10-26); null — снять.
+  async setReactionWithBot(bot: Bot, peerId: string, messageId: string, emoji: string | null): Promise<void> {
+    await bot.api.setMessageReaction(peerId, Number(messageId), emoji ? [{ type: 'emoji', emoji: emoji as ReactionTypeEmoji['emoji'] }] : []);
   }
 
   // «Печатает…» у клиента, пока оператор набирает ответ (2026-10-26). Ошибки не важны.

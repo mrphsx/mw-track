@@ -167,7 +167,23 @@ export interface ChatMessage {
   originalText?: string | null;
   canReply?: boolean;
   canEdit?: boolean;
+  // Реакции, альбом, «прочитано» (только личка; null — неизвестно) — 2026-10-26.
+  leadReaction?: string | null;
+  ourReaction?: string | null;
+  mediaGroupId?: string | null;
+  read?: boolean | null;
   createdAt: string;
+}
+
+// Реакции, которые Telegram принимает в личке и от бота, и от аккаунта (совпадает с сервером).
+export const CHAT_REACTIONS = ['👍', '❤', '🔥', '😁', '😍', '😱', '😢', '👎', '🙏', '👌', '🤝', '🎉', '🤔', '💯'];
+
+export async function reactChatMessage(id: string, emoji: string | null) {
+  await api.put(`/chat/messages/${id}/reaction`, { emoji });
+}
+
+export async function searchChatMessages(conversationId: string, q: string) {
+  return (await api.get<{ id: string; direction: 'IN' | 'OUT'; text: string | null; createdAt: string }[]>(`/chat/conversations/${conversationId}/search`, { params: { q } })).data;
 }
 
 export async function editChatMessage(id: string, text: string) {

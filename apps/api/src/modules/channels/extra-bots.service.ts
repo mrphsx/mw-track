@@ -71,6 +71,11 @@ export class ExtraBotsService implements OnModuleInit {
         await this.chatStore.recordEditedBotMessage(channel, ctx.editedMessage, projectBot.id);
         return;
       }
+      // Реакция лида на сообщение (2026-10-26) — тоже только в переписку CRM.
+      if (ctx.messageReaction) {
+        await this.chatStore.recordBotReaction(channel, ctx.messageReaction, projectBot.id);
+        return;
+      }
       await next();
     });
     // Для логики менеджеров — канал проекта с id и менеджерами этого бота: она читает только
@@ -105,7 +110,7 @@ export class ExtraBotsService implements OnModuleInit {
 
     await bot.init();
     const webhookUrl = `${this.config.get<string>('API_URL')}/api/v1/webhooks/telegram-bot/${projectBot.id}`;
-    await bot.api.setWebhook(webhookUrl, { allowed_updates: ['message', 'edited_message', 'my_chat_member', 'callback_query'] });
+    await bot.api.setWebhook(webhookUrl, { allowed_updates: ['message', 'edited_message', 'message_reaction', 'my_chat_member', 'callback_query'] });
 
     let avatarFileId: string | undefined;
     try {

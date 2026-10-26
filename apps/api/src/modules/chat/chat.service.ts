@@ -121,6 +121,10 @@ function scopeAllows(
 
 // «Печатает…» у собеседника держится ~5 секунд — чаще не обновляем (2026-10-26).
 const TYPING_THROTTLE_MS = 4000;
+// Своё прочтение в личке спрашиваем у Telegram не чаще раза в 2 минуты на диалог.
+const READ_STATE_RETRY_MS = 120_000;
+// Реакции, которые Telegram принимает в личке от бота и от обычного аккаунта (базовый набор).
+export const CHAT_REACTIONS = ['👍', '❤', '🔥', '😁', '😍', '😱', '😢', '👎', '🙏', '👌', '🤝', '🎉', '🤔', '💯'];
 
 @Injectable()
 export class ChatService {
@@ -554,7 +558,10 @@ export class ChatService {
   }
 
   async listMessages(id: string, companyId: string, user: AuthUser, before?: string) {
-    await this.loadConversation(id, companyId, user);
+    const conversation = await this.loadConversation(id, companyId, user);
+    // «Прочитано» в личке: если Telegram ещё не присылал прочтение — один раз спросим сами (в фоне,
+    // результат появится со следующим обновлением ленты).
+    if (conversation.source === 'PERSONAL' && conversation.peerReadOutboxMaxId === null) void this.fetchReadState(conversation);
     const rows = await this.prisma.chatMessage.findMany({
       where: { conversationId: id, ...(before ? { createdAt: { lt: new Date(before) } } : {}) },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -576,6 +583,9 @@ export class ChatService {
         forwardedFrom: true,
         editedAt: true,
         originalText: true,
+        leadReaction: true,
+        ourReaction: true,
+        mediaGroupId: true,
         createdAt: true,
       },
     });
@@ -598,6 +608,11 @@ export class ChatService {
       items: page.reverse().map(({ externalId, deletedById, ...m }) => ({
         ...m,
         replyTo: m.replyToId ? replyMap.get(m.replyToId) ?? null : null,
+        // Только личка: прочитал ли лид наше сообщение (у бота Telegram этого не сообщает — null).
+        read:
+          conversation.source === 'PERSONAL' && m.direction === 'OUT' && externalId && conversation.peerReadOutboxMaxId !== null
+            ? Number(externalId) <= conversation.peerReadOutboxMaxId
+            : null,
         // Ответить можно на то, что есть в Telegram; править — только свои (операторские) тексты.
         canReply: !!externalId && !m.deletedAt && m.senderType !== 'SYSTEM',
         canEdit: !!externalId && !m.deletedAt && m.direction === 'OUT' && m.senderType === 'OPERATOR' && m.mediaType !== 'video_note' && m.mediaType !== 'sticker',
@@ -646,6 +661,59 @@ export class ChatService {
       data: { text, originalText: message.originalText ?? message.text, editedAt: new Date() },
       select: { id: true, text: true, editedAt: true },
     });
+  }
+
+  private readonly readStateAsked = new Map<string, number>();
+  private async fetchReadState(conversation: { id: string; channelId: string; peerId: string }) {
+    const last = this.readStateAsked.get(conversation.id) ?? 0;
+    if (Date.now() - last < READ_STATE_RETRY_MS) return;
+    this.readStateAsked.set(conversation.id, Date.now());
+    if (this.readStateAsked.size > 5000) this.readStateAsked.clear();
+    try {
+      const channel = await this.prisma.channel.findUnique({ where: { id: conversation.channelId } });
+      if (!channel) return;
+      const maxId = await this.telegramPersonal.getReadOutboxMaxId(channel, conversation.peerId);
+      if (maxId !== null) await this.chatStore.recordReadOutbox(channel, conversation.peerId, maxId);
+    } catch {
+      // не критично — «прочитано» просто не покажется
+    }
+  }
+
+  // Реакция на сообщение (2026-10-26): одна обычная эмодзи-реакция с нашей стороны, null — снять.
+  async react(messageId: string, companyId: string, user: AuthUser, emoji: string | null) {
+    if (emoji !== null && !CHAT_REACTIONS.includes(emoji)) throw new BadRequestException('Такую реакцию Telegram не принимает');
+    const message = await this.prisma.chatMessage.findUnique({ where: { id: messageId } });
+    if (!message) throw new NotFoundException('Сообщение не найдено');
+    const conversation = await this.loadConversation(message.conversationId, companyId, user, true);
+    if (message.deletedAt || !message.externalId || message.senderType === 'SYSTEM') throw new BadRequestException('На это сообщение нельзя поставить реакцию');
+    const channel = await this.prisma.channel.findUnique({ where: { id: conversation.channelId } });
+    if (!channel) throw new NotFoundException('Канал не найден');
+    try {
+      if (conversation.source === 'PERSONAL') {
+        await this.telegramPersonal.setReaction(channel, conversation.peerId, message.externalId, emoji);
+      } else {
+        const bot = conversation.botKey ? this.extraBots.getBot(conversation.botKey) : this.telegram.botFor(channel);
+        if (!bot) throw new Error('Бот сейчас не подключён');
+        await this.telegram.setReactionWithBot(bot, conversation.peerId, message.externalId, emoji);
+      }
+    } catch (error) {
+      throw new BadRequestException(`Не удалось поставить реакцию: ${(error as Error).message}`);
+    }
+    return this.prisma.chatMessage.update({ where: { id: messageId }, data: { ourReaction: emoji }, select: { id: true, ourReaction: true } });
+  }
+
+  // Поиск по переписке диалога (2026-10-26): текст и текст до правки, новые сверху.
+  async searchMessages(id: string, companyId: string, user: AuthUser, rawQuery: string) {
+    await this.loadConversation(id, companyId, user);
+    const q = rawQuery.trim();
+    if (q.length < 2) return [];
+    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    return this.prisma.$queryRaw<{ id: string; direction: string; text: string | null; createdAt: Date }[]>`
+      SELECT id, direction, text, "createdAt" FROM "ChatMessage"
+      WHERE "conversationId" = ${id} AND "senderType" <> 'SYSTEM' AND (text ILIKE ${like} OR "originalText" ILIKE ${like})
+      ORDER BY "createdAt" DESC
+      LIMIT 50
+    `;
   }
 
   // «Печатает…» у клиента (2026-10-26): поле ввода шлёт не чаще раза в несколько секунд, здесь —

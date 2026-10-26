@@ -41,6 +41,14 @@ class SendChatMessageDto {
   replyToId?: string;
 }
 
+class ReactionDto {
+  // Пусто — снять реакцию.
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  emoji?: string | null;
+}
+
 class EditChatMessageDto {
   @IsString()
   @MaxLength(4096)
@@ -938,6 +946,16 @@ export class ChatController {
   @Patch('messages/:id')
   editMessage(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: EditChatMessageDto) {
     return this.chatService.editMessage(id, companyId, user, dto.text);
+  }
+
+  @Put('messages/:id/reaction')
+  react(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: ReactionDto) {
+    return this.chatService.react(id, companyId, user, dto.emoji || null);
+  }
+
+  @Get('conversations/:id/search')
+  searchMessages(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Query('q') q?: string) {
+    return this.chatService.searchMessages(id, companyId, user, (q ?? '').slice(0, 200));
   }
 
   @Delete('messages/:id')

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Channel, ChatSenderType, Conversation, ConversationSource } from '@prisma/client';
-import type { Message } from 'grammy/types';
+import type { Message, MessageReactionUpdated, ReactionType } from 'grammy/types';
 import { PrismaService } from '../../prisma/prisma.service';
 import { formatUserName } from '../../common/user-name.util';
 import { ChatStagesEngine } from './chat-stages.engine';
@@ -44,6 +44,12 @@ export function chatPreview(text: string | null | undefined, mediaType?: string 
 
 // Самое крупное фото из набора размеров, остальные типы — как есть. Стикер хранится как
 // медиа: в чате он показывается картинкой (у анимированных .tgs — подписью-эмодзи).
+// Первая обычная реакция-эмодзи из списка Bot API (кастомные и платные не показываем).
+export function firstEmoji(list: ReactionType[] | undefined): string | null {
+  const r = list?.find((x) => x.type === 'emoji');
+  return r && r.type === 'emoji' ? r.emoji : null;
+}
+
 // От кого переслано (Bot API forward_origin, 2026-10-26): человек, скрытый отправитель, чат или канал.
 export function forwardOriginName(message: Message): string | null {
   const o = message.forward_origin;
@@ -124,7 +130,44 @@ export class ChatStoreService {
       sentAt: new Date(message.date * 1000),
       replyToExternalId: message.reply_to_message ? String(message.reply_to_message.message_id) : null,
       forwardedFrom: forwardOriginName(message),
+      mediaGroupId: message.media_group_id ?? null,
     }, botKey);
+  }
+
+  // Реакция лида в чате с ботом (message_reaction, 2026-10-26). Реакции самого бота Telegram сюда
+  // не присылает — их пишет ChatService.react.
+  async recordBotReaction(channel: Channel, update: MessageReactionUpdated, botKey = ''): Promise<void> {
+    if (!update.user || update.user.is_bot || update.chat.type !== 'private') return;
+    await this.recordReaction(channel, 'BOT', botKey, String(update.user.id), String(update.message_id), { lead: firstEmoji(update.new_reaction) });
+  }
+
+  // Реакции на сообщение: lead/ours — только переданные поля (null — реакцию сняли).
+  async recordReaction(channel: Channel, source: ConversationSource, botKey: string, peerId: string, externalId: string, r: { lead?: string | null; ours?: string | null }): Promise<void> {
+    try {
+      const conversation = await this.prisma.conversation.findUnique({
+        where: { channelId_source_botKey_peerId: { channelId: channel.id, source, botKey, peerId } },
+        select: { id: true },
+      });
+      if (!conversation) return;
+      await this.prisma.chatMessage.updateMany({
+        where: { conversationId: conversation.id, externalId },
+        data: { ...(r.lead !== undefined ? { leadReaction: r.lead } : {}), ...(r.ours !== undefined ? { ourReaction: r.ours } : {}) },
+      });
+    } catch (error) {
+      this.logger.warn(`recordReaction (${source}) failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
+  }
+
+  // Лид прочитал наши сообщения в личке (до maxId включительно) — только вперёд.
+  async recordReadOutbox(channel: Channel, peerId: string, maxId: number): Promise<void> {
+    try {
+      await this.prisma.conversation.updateMany({
+        where: { channelId: channel.id, source: 'PERSONAL', botKey: '', peerId, OR: [{ peerReadOutboxMaxId: null }, { peerReadOutboxMaxId: { lt: maxId } }] },
+        data: { peerReadOutboxMaxId: maxId },
+      });
+    } catch (error) {
+      this.logger.warn(`recordReadOutbox failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
   }
 
   // Клиент отредактировал сообщение боту (edited_message, 2026-10-26).
@@ -183,6 +226,7 @@ export class ChatStoreService {
       sentAt: Date;
       replyToExternalId?: string | null;
       forwardedFrom?: string | null;
+      mediaGroupId?: string | null;
     },
     botKey = '',
   ): Promise<void> {
@@ -247,6 +291,7 @@ export class ChatStoreService {
           externalId: data.externalId,
           replyToId: await this.messageIdByExternal(conversation.id, data.replyToExternalId),
           forwardedFrom: data.forwardedFrom?.slice(0, 200) || null,
+          mediaGroupId: data.mediaGroupId ?? null,
           createdAt: data.sentAt,
         },
       });
@@ -320,7 +365,7 @@ export class ChatStoreService {
 
   async recordOutgoingPersonal(
     channel: Channel,
-    data: { peerId: string; text: string | null; media: { type: string; fileName?: string } | null; externalId: string; sentAt: Date; replyToExternalId?: string | null; forwardedFrom?: string | null },
+    data: { peerId: string; text: string | null; media: { type: string; fileName?: string } | null; externalId: string; sentAt: Date; replyToExternalId?: string | null; forwardedFrom?: string | null; mediaGroupId?: string | null },
   ): Promise<void> {
     try {
       if (!data.text && !data.media) return;
@@ -342,6 +387,7 @@ export class ChatStoreService {
         externalId: data.externalId,
         replyToId: await this.messageIdByExternal(conversation.id, data.replyToExternalId),
         forwardedFrom: data.forwardedFrom,
+        mediaGroupId: data.mediaGroupId,
       });
       // Оператор ответил с телефона — всё, что было до ответа, прочитано.
       await this.prisma.conversation.update({ where: { id: conversation.id }, data: { unreadCount: 0 } });
@@ -395,6 +441,7 @@ export class ChatStoreService {
       error?: string | null;
       replyToId?: string | null;
       forwardedFrom?: string | null;
+      mediaGroupId?: string | null;
     },
   ) {
     const now = new Date();
@@ -413,6 +460,7 @@ export class ChatStoreService {
           error: data.error,
           replyToId: data.replyToId ?? null,
           forwardedFrom: data.forwardedFrom?.slice(0, 200) || null,
+          mediaGroupId: data.mediaGroupId ?? null,
           createdAt: now,
         },
       }),
