@@ -14,6 +14,7 @@ import {
   notifierApi,
   sendNotifierMessage,
   setMiniAppMenuButton,
+  setNotifierAvatar,
 } from './notification-telegram';
 import { bindByLinkToken, findOrBindAccount } from '../auth/telegram/telegram-accounts.util';
 import {
@@ -194,6 +195,12 @@ export class NotificationsService implements OnModuleInit {
       await setMiniAppMenuButton(token, this.miniAppUrl(row.id));
     } catch (error) {
       this.logger.warn(`Кнопка мини-аппа не установлена: ${describeTelegramError(error)}`);
+    }
+    // Аватарка MWTRACK — у каждого нового бота оповещений (2026-10-26). Не критично для подключения.
+    try {
+      await setNotifierAvatar(token);
+    } catch (error) {
+      this.logger.warn(`Аватарка бота оповещений не установлена: ${(error as Error).message}`);
     }
 
     // Состояние прошлых алертов (если бот переподключают) сбрасываем: пусть текущие проблемы

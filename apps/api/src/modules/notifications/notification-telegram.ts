@@ -1,8 +1,28 @@
+import { readFile } from 'fs/promises';
+import * as path from 'path';
 import { Api, GrammyError } from 'grammy';
 
 // Тонкая обёртка над Bot API для бота оповещений. Намеренно без grammY Bot и без карты живых
 // инстансов, как у TelegramProvider: этот бот только отвечает на /start и шлёт уведомления,
 // ему не нужны middleware, сессии и обработчики апдейтов — только четыре метода API.
+// Аватарка MWTRACK для бота оповещений (2026-10-26: «когда кто-то привяжет своего бота, к нему тоже
+// должна примениться аватарка, как у нас»). Файл — снятая с нашего бота версия, которую владелец
+// подрезал под круг аватарки; лежит в apps/api/assets (вне src, одинаково видна из dist и dist-build).
+const NOTIFIER_AVATAR_PATH = path.resolve(__dirname, '../../../assets/notifier-bot-avatar.jpg');
+
+// Прямой multipart-запрос: setMyProfilePhoto новее, чем установленная версия grammY.
+export async function setNotifierAvatar(token: string): Promise<void> {
+  const photo = await readFile(NOTIFIER_AVATAR_PATH);
+  const form = new FormData();
+  form.append('photo', JSON.stringify({ type: 'static', photo: 'attach://avatar' }));
+  form.append('avatar', new Blob([photo], { type: 'image/jpeg' }), 'avatar.jpg');
+  const res = (await (await fetch(`https://api.telegram.org/bot${token}/setMyProfilePhoto`, { method: 'POST', body: form })).json()) as {
+    ok: boolean;
+    description?: string;
+  };
+  if (!res.ok) throw new Error(res.description ?? 'Telegram не принял аватарку');
+}
+
 // Кнопка «Открыть CRM» у поля ввода бота — открывает мини-апп CRM (2026-10-26). Идемпотентно.
 export async function setMiniAppMenuButton(token: string, url: string): Promise<void> {
   await notifierApi(token).setChatMenuButton({ menu_button: { type: 'web_app', text: 'Открыть CRM', web_app: { url } } });
