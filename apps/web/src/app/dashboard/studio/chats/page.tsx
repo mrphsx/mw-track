@@ -676,7 +676,9 @@ function ProjectChat({
           }
           toolbar={
             <div className="space-y-2">
-            <div className="-mx-3 px-3 flex gap-1 overflow-x-auto pb-0.5 [scrollbar-width:none]">
+            {/* Вкладки и этапы переносятся по строкам — всё видно сразу, без горизонтальной
+                прокрутки (2026-10-26: «надо зажимать Ctrl и скролить, неудобно»). */}
+            <div className="flex flex-wrap gap-1">
               {CHAT_TABS.map((t) => {
                 const n = counts?.[t.value];
                 return (
@@ -686,7 +688,7 @@ function ProjectChat({
                     title={t.hint}
                     onClick={() => setTab(t.value)}
                     className={cn(
-                      'shrink-0 inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                      'inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium transition-colors',
                       tab === t.value
                         ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
                         : 'bg-[#F3F5F8] dark:bg-[#0F1620] text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]',
@@ -699,14 +701,14 @@ function ProjectChat({
               })}
             </div>
             {stages.length > 0 && (
-              <div className="-mx-3 px-3 flex gap-1 overflow-x-auto [scrollbar-width:none]">
+              <div className="flex flex-wrap gap-1">
                 {[{ id: '', name: 'Все этапы', color: '' }, ...stages, { id: 'none', name: 'Без этапа', color: '' }].map((st) => (
                   <button
                     key={st.id || 'all'}
                     type="button"
                     onClick={() => setStage(st.id)}
                     className={cn(
-                      'shrink-0 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors',
+                      'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium border transition-colors',
                       stage === st.id
                         ? 'border-[#1F4E9C] bg-[#1F4E9C]/10 text-[#1F4E9C] dark:border-[#7BA9EE] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]'
                         : 'border-[#DCE1E8] dark:border-white/10 text-[#5F6B7A] dark:text-[#92A0AF]',
