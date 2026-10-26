@@ -35,6 +35,12 @@ export interface MenuReply {
   markup?: unknown;
 }
 
+function plural(n: number, one: string, few: string, many: string) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
 const num = (n: number) => n.toLocaleString('ru-RU');
 const money = (n: number) => `$${n.toLocaleString('ru-RU', { maximumFractionDigits: 2 })}`;
 
@@ -93,14 +99,31 @@ export class NotificationsBotMenuService {
         ? [`💰 Депозиты: ФД <b>${num(stats.totalFd)}</b> · РД <b>${num(stats.totalRd)}</b>`, `💵 Сумма: <b>${money(stats.totalRevenue)}</b>`]
         : []),
     ];
+    // Источники трафика (2026-10-26: «добавь источники трафика со статистикой») — те же FB/TT и
+    // «без метки», что в блоке источников на главной.
+    const srcLine = (label: string, r: { clients: number; dialogues: number; fd: number; rd: number; revenue: number }) => {
+      const parts = [`👥 ${num(r.clients)}`, `💬 ${num(r.dialogues)}`];
+      if (canRevenue) parts.push(`ФД ${num(r.fd)}`, `РД ${num(r.rd)}`, money(r.revenue));
+      return `• ${label} — ${parts.join(' · ')}`;
+    };
+    const SOURCE_LABEL: Record<string, string> = { FACEBOOK: '🔵 Facebook', TIKTOK: '🎵 TikTok' };
+    lines.push('', '<b>Источники трафика:</b>');
+    for (const src of stats.sources) lines.push(srcLine(SOURCE_LABEL[src.source] ?? src.source, src));
+    if (stats.sourcesUnattributed) lines.push(srcLine('⚪ Без метки (органика)', stats.sourcesUnattributed));
+
     if (rows.length > 1) {
+      // Проекты без единой цифры за период — одной строкой, а не списком нулей.
+      const active = rows.filter((r) => r.clients || r.dialogues || r.fd || r.rd || r.revenue);
+      const idle = rows.length - active.length;
       lines.push('', '<b>По проектам:</b>');
-      for (const r of rows.slice(0, MAX_PROJECT_LINES)) {
+      for (const r of active.slice(0, MAX_PROJECT_LINES)) {
         const parts = [`👥 ${num(r.clients)}`, `💬 ${num(r.dialogues)}`];
         if (r.canRevenue) parts.push(`ФД ${num(r.fd)}`, `РД ${num(r.rd)}`, money(r.revenue));
         lines.push(`• ${escapeTelegramHtml(r.name)} — ${parts.join(' · ')}`);
       }
-      if (rows.length > MAX_PROJECT_LINES) lines.push(`…и ещё ${rows.length - MAX_PROJECT_LINES}`);
+      if (active.length > MAX_PROJECT_LINES) lines.push(`…и ещё ${active.length - MAX_PROJECT_LINES}`);
+      if (!active.length) lines.push('За период ни в одном проекте нет активности.');
+      if (idle > 0 && active.length) lines.push(`<i>Без активности: ${idle} ${plural(idle, 'проект', 'проекта', 'проектов')}</i>`);
     }
     return { html: lines.join('\n'), markup: MENU_KEYBOARD };
   }
