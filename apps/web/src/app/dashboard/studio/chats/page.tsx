@@ -722,7 +722,7 @@ function ProjectChat({
               <select
                 value={assignee}
                 onChange={(e) => setAssignee(e.target.value)}
-                className="h-7 min-w-0 flex-1 rounded-lg bg-[#F3F5F8] dark:bg-[#0F1620] px-2 text-xs text-[#131A24] dark:text-[#E9EDF3] outline-none"
+                className="h-7 min-w-[120px] flex-1 truncate rounded-lg bg-[#F3F5F8] dark:bg-[#0F1620] px-2 text-xs text-[#131A24] dark:text-[#E9EDF3] outline-none"
                 aria-label="Ответственный"
               >
                 <option value="">Все ответственные</option>
@@ -745,10 +745,11 @@ function ProjectChat({
                 <button
                   type="button"
                   onClick={() => setTransferFrom(assignee)}
-                  className="h-7 shrink-0 inline-flex items-center gap-1 rounded-lg px-2 text-xs font-medium bg-[#F3F5F8] dark:bg-[#0F1620] text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline"
+                  className="h-7 shrink-0 inline-flex items-center rounded-lg px-2 bg-[#F3F5F8] dark:bg-[#0F1620] text-[#1F4E9C] dark:text-[#7BA9EE] hover:bg-[#1F4E9C]/10"
                   title="Передать все чаты этого оператора другому или снять ответственного"
+                  aria-label="Передать все чаты оператора"
                 >
-                  <ArrowRightLeft className="w-3.5 h-3.5" /> Передать все
+                  <ArrowRightLeft className="w-3.5 h-3.5" />
                 </button>
               )}
               {canManage && (
@@ -766,8 +767,9 @@ function ProjectChat({
                       : 'bg-[#F3F5F8] dark:bg-[#0F1620] text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]',
                   )}
                   title="Выбрать несколько чатов и передать оператору"
+                  aria-label="Выбрать чаты"
                 >
-                  <CheckSquare className="w-3.5 h-3.5" /> Выбрать
+                  <CheckSquare className="w-3.5 h-3.5" />
                 </button>
               )}
               {canManage && (
