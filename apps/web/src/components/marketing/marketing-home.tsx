@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
+import { BrandMark } from '@/components/brand-mark';
 
 // Публичная домашняя страница (запрос пользователя 2026-08-04: мини-презентация + кнопки входа/
 // регистрации до логина). Редизайн 2026-08-05 — исходная версия (иконки в квадратиках + сетка
@@ -32,8 +33,13 @@ function BrowserFrame({ src, alt, address }: { src: string; alt: string; address
 
 function Logo() {
   return (
-    <span className="text-xl font-bold tracking-tight text-[#131A24] dark:text-white">
-      MW<span className="text-[#1F4E9C] dark:text-[#7BA9EE]">TRACK</span>
+    <span className="inline-flex items-center gap-2">
+      <span className="w-8 h-8 rounded-lg bg-[#1F4E9C] dark:bg-[#7BA9EE] flex items-center justify-center">
+        <BrandMark className="w-5 h-5 text-white dark:text-[#0F1620]" />
+      </span>
+      <span className="text-xl font-bold tracking-tight text-[#131A24] dark:text-white">
+        MW<span className="text-[#1F4E9C] dark:text-[#7BA9EE]">TRACK</span>
+      </span>
     </span>
   );
 }

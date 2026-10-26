@@ -1,6 +1,6 @@
 import { IsArray, IsBoolean, IsEmail, IsEnum, IsIn, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission } from '@prisma/client';
+import { ChatAccess, ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission, PixelsVisibilityScope } from '@prisma/client';
 import { CREATABLE_ROLES, CreatableRole, ProjectPermissionsDto } from './create-team-member.dto';
 
 export class UpdateTeamMemberDto {
@@ -58,6 +58,21 @@ export class UpdateTeamMemberDto {
   @IsOptional()
   @IsEnum(ClientsVisibilityScope)
   clientsVisibilityScope?: ClientsVisibilityScope;
+
+  // Видимость пикселей (запрос пользователя 2026-10-24) — только для BUYER, см. User.pixelsVisibilityScope.
+  @IsOptional()
+  @IsEnum(PixelsVisibilityScope)
+  pixelsVisibilityScope?: PixelsVisibilityScope;
+
+  // Доступ к встроенному чату (запрос пользователя 2026-10-24) — для ADMIN/OPERATOR_ADMIN/OPERATOR.
+  @IsOptional()
+  @IsEnum(ChatAccess)
+  chatAccess?: ChatAccess;
+
+  // «Скрытый оператор» (запрос пользователя 2026-10-25) — только для OPERATOR, см. User.chatAnonymous.
+  @IsOptional()
+  @IsBoolean()
+  chatAnonymous?: boolean;
 
   // Редактирование данных сотрудника после создания (запрос пользователя 2026-08-03:
   // "иметь возможность редактировать всю информацию... возможность менять пароль") — раньше

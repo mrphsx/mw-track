@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { Permission, UserRole } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -8,9 +8,10 @@ import { SubscriptionGuard } from '../../common/guards/subscription.guard';
 import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { resolveScopedBuyerId } from '../../common/buyer-scope.util';
+import { resolvePixelOwnerId, resolveScopedBuyerId } from '../../common/buyer-scope.util';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { UpdateProjectDto } from './dto/update-project.dto';
+import { UpdateFunnelDto } from './dto/update-funnel.dto';
 import { LeaderboardFunnelQueryDto } from './dto/leaderboard-funnel-query.dto';
 import { PaymentDetailsLogFiltersDto } from './dto/payment-details-log-filters.dto';
 import { ProjectsService } from './projects.service';
@@ -23,9 +24,23 @@ export class ProjectsController {
     private prisma: PrismaService,
   ) {}
 
+  // Видимость пикселей баера (запрос пользователя 2026-10-24) — null, если ограничения нет,
+  // иначе id пикселей проекта, которые баер добавил сам. Список, карточка проекта (оттуда же
+  // берут пиксели настройки, ссылки лендингов и фильтр клиентов), лидерборды и журнал пикселей
+  // фильтруются здесь, в одном месте, а не в каждом методе сервиса.
+  private async visiblePixelIds(projectIds: string[], user: AuthUser): Promise<Set<string> | null> {
+    const ownerId = await resolvePixelOwnerId(this.prisma, user.userId, user.role);
+    if (!ownerId) return null;
+    const own = await this.prisma.trackingPixel.findMany({ where: { projectId: { in: projectIds }, createdById: ownerId }, select: { id: true } });
+    return new Set(own.map((p) => p.id));
+  }
+
   @Get()
-  findAll(@Company() companyId: string, @CurrentUser() user: AuthUser) {
-    return this.projectsService.findAll(companyId, user.userId, user.role);
+  async findAll(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    const projects = await this.projectsService.findAll(companyId, user.userId, user.role);
+    const visible = await this.visiblePixelIds(projects.map((p) => p.id), user);
+    if (!visible) return projects;
+    return projects.map((p) => ({ ...p, pixels: p.pixels.filter((px) => visible.has(px.id)) }));
   }
 
   // Компания-wide сводка на главной странице (запрос пользователя 2026-08-06) — литеральный
@@ -55,7 +70,10 @@ export class ProjectsController {
   @Get(':id')
   async findOne(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
-    return this.projectsService.findOne(id, companyId);
+    const project = await this.projectsService.findOne(id, companyId);
+    const visible = await this.visiblePixelIds([id], user);
+    if (!visible) return project;
+    return { ...project, pixels: project.pixels.filter((px) => visible.has(px.id)) };
   }
 
   // Багфикс 2026-07-28 (аудит разрешений сотрудников, дыра найдена — ни assertAccess, ни
@@ -65,6 +83,20 @@ export class ProjectsController {
   async update(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: UpdateProjectDto) {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.PROJECTS_EDIT]);
     return this.projectsService.update(id, companyId, dto);
+  }
+
+  // Воронка проекта (2026-10-24): смотреть — любой с доступом к проекту, менять — PROJECTS_EDIT,
+  // как и остальные настройки проекта.
+  @Get(':id/funnel')
+  async getFunnel(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role);
+    return this.projectsService.getFunnel(id, companyId);
+  }
+
+  @Put(':id/funnel')
+  async updateFunnel(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: UpdateFunnelDto) {
+    await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.PROJECTS_EDIT]);
+    return this.projectsService.updateFunnel(id, companyId, dto.config ?? null);
   }
 
   // Архивация/перегенерация токенов — необратимо/чувствительно, сознательно НЕ разрешение
@@ -118,6 +150,8 @@ export class ProjectsController {
     await this.projectsService.assertAccess(id, companyId, user.userId, user.role, [Permission.STATS_VIEW]);
     const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
     const data = await this.projectsService.getLeaderboards(id, companyId, period, scopedBuyerId);
+    const visiblePixels = await this.visiblePixelIds([id], user);
+    if (visiblePixels) data.pixels = data.pixels.filter((p) => visiblePixels.has(p.pixelId));
 
     // "Только свои клиенты" (запрос пользователя 2026-08-03) — категория "buyers" ранжирует
     // против других баеров, при активном скоупе это бессмысленно (и утечка чужих имён/выручки),
@@ -174,7 +208,11 @@ export class ProjectsController {
       return { items: [] };
     }
 
-    const items = await this.projectsService.getLeaderboardFull(id, companyId, category as (typeof categories)[number], period, scopedBuyerId);
+    let items = await this.projectsService.getLeaderboardFull(id, companyId, category as (typeof categories)[number], period, scopedBuyerId);
+    if (category === 'pixels') {
+      const visiblePixels = await this.visiblePixelIds([id], user);
+      if (visiblePixels) items = items.filter((i) => visiblePixels.has(i.id));
+    }
 
     if (!(await this.permissionsService.hasPermission(user.userId, id, user.role, Permission.STATS_VIEW_REVENUE))) {
       return { items: items.map((i) => ({ ...i, revenue: 0 })) };
@@ -213,11 +251,15 @@ export class ProjectsController {
     // ВСЕХ строк полного списка, не только top-5) — тот же потолок, что у самого полного списка
     // (getLeaderboardFull), запросы внутри getLeaderboardFunnel уже батчат IN (...ids) одним
     // запросом на категорию, не по одному id, так что рост с 10 до 200 не даёт N+1.
-    const ids = (query.ids || '')
+    let ids = (query.ids || '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
       .slice(0, 200);
+    if (category === 'pixels') {
+      const visiblePixels = await this.visiblePixelIds([id], user);
+      if (visiblePixels) ids = ids.filter((pixelId) => visiblePixels.has(pixelId));
+    }
 
     const data = await this.projectsService.getLeaderboardFunnel(id, companyId, category as (typeof categories)[number], ids, query, scopedBuyerId);
 
@@ -253,6 +295,7 @@ export class ProjectsController {
       // Owner мог просто взять ссылку и вставить в cmd") — секрет, поэтому строго только для
       // роли OWNER, не ADMIN и не остальных.
       user.role === 'OWNER',
+      await resolvePixelOwnerId(this.prisma, user.userId, user.role),
     );
   }
 

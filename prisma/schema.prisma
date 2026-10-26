@@ -198,6 +198,19 @@ model User {
   // Enum сознательно не переиспользует LandingsVisibilityScope — разное число вариантов и разная
   // семантика (тут нет промежуточного "по проектам", проектный скоуп уже даёт ProjectAccess).
   clientsVisibilityScope ClientsVisibilityScope @default(ALL_CLIENTS)
+  // Какие пиксели видит баер (запрос пользователя 2026-10-24): только добавленные им самим
+  // (TrackingPixel.createdById) или все пиксели его проектов. Дефолт и значение для всех, кто
+  // существовал на момент появления поля, — только свои. Действует только на роль BUYER, как и
+  // clientsVisibilityScope.
+  pixelsVisibilityScope PixelsVisibilityScope @default(OWN_PIXELS)
+  // Доступ к встроенному чату (запрос пользователя 2026-10-24) — для ADMIN/OPERATOR_ADMIN/OPERATOR:
+  // нет доступа / только чат бота / только чат лички / оба. BUYER чатов не видит никогда,
+  // OWNER/SUPER_ADMIN — всегда все (см. ChatService.chatSourcesFor). Дефолт ALL сохраняет доступ,
+  // который у этих ролей был до появления настройки.
+  chatAccess ChatAccess @default(ALL)
+  // «Скрытый оператор» (2026-10-25, как Hide Operator в Chatterfy): работает с чатами, но не видит
+  // имя, @username, Telegram ID, телефон и фото лида — вместо имени «Лид #…». Только для OPERATOR.
+  chatAnonymous Boolean @default(false)
 
   // Короткий код баера в трекинг-ссылках (запрос пользователя 2026-08-20: "сократим значения
   // z=... но обязательно с обратной совместимостью для старых ссылок") — заменяет полный User.id
@@ -236,6 +249,18 @@ enum LandingsVisibilityScope {
   OWN_LANDINGS // только созданные самим сотрудником (Landing.createdById = его id)
   PROJECT_LANDINGS // только проекты, где выдан LANDINGS_VIEW — текущее поведение, дефолт
   ALL_LANDINGS // company-wide, без ограничения по проектам
+}
+
+enum ChatAccess {
+  NONE
+  BOT
+  PERSONAL
+  ALL
+}
+
+enum PixelsVisibilityScope {
+  OWN_PIXELS // только пиксели, добавленные самим сотрудником (TrackingPixel.createdById), дефолт
+  PROJECT_PIXELS // все пиксели проектов, к которым у него есть доступ
 }
 
 enum ClientsVisibilityScope {
@@ -347,6 +372,8 @@ model Project {
   id          String        @id @default(cuid())
   companyId   String
   name        String
+  // Папка проекта (2026-10-25, как «спейсы» Chatterfy: группировка по гео/источнику трафика).
+  folderId    String?
   description String?
   status      ProjectStatus @default(ACTIVE)
 
@@ -378,6 +405,13 @@ model Project {
   // только пересылка на внешние площадки (см. TrackingService.recordEvent).
   disabledTrackingEvents String[] @default([])
 
+  // Воронка проекта (запрос пользователя 2026-10-24, вкладка «Воронка») — что считается лидом и
+  // диалогом: { leadBotStart, leadChannelJoin, leadPersonalMessage, dialogueBotMessage,
+  // dialoguePersonalMessage }, см. apps/api/src/common/funnel-config.ts. null — настройка не
+  // сохранялась: всё считается так же, как до её появления (выводится из Channel.tgMode и
+  // tgDirectTraffic функцией legacyFunnelConfig). Существующие проекты намеренно не заполнялись.
+  funnelConfig Json?
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -403,6 +437,8 @@ model Project {
   storyPosts            StoryPost[]
   personalBroadcasts    PersonalBroadcast[]
   paymentDetailsLogs    PaymentDetailsLog[]
+  botLinks              BotLink[]
+  extraBots             ProjectBot[]
 
   @@index([companyId])
   @@index([publicToken])
@@ -535,6 +571,13 @@ model Channel {
   // временной недоступности сайта.
   websiteFaviconUrl String?
 
+  // Трафик напрямую в бота, без лендинга (запрос пользователя 2026-10-23). По умолчанию человек,
+  // который сам нажал Start мимо нашей воронки, не считается подписчиком (баг-репорт 2026-07-17,
+  // см. ClientsService.recordInboundMessage). Включённый флаг — реклама ведёт прямо в бота, и
+  // каждый новый /start и есть лид: клиент сразу получает subscribedAt и попадает в статистику.
+  // Пришедшие по ссылке на бота (BotLink) считаются лидами независимо от флага.
+  tgDirectTraffic Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -542,6 +585,7 @@ model Channel {
   botScenarios         BotScenario[]
   scenarioAbTestGroups ScenarioAbTestGroup[]
   storyPosts           StoryPost[]
+  conversations        Conversation[]
 
   // Enforcing 1:1 — см. Project.channel выше.
   @@unique([projectId])
@@ -1296,6 +1340,10 @@ model Client {
   // Без @relation — та же мягкая ссылка, что и у pixelId выше, не формальный FK.
   buyerId String?
 
+  // Ссылка на бота, по которой пришёл клиент при трафике напрямую в бота (2026-10-23) — см.
+  // BotLink. Для клиентов с лендинга всегда null.
+  botLinkId String?
+
   // Технические данные
   ipAddress   String?
   userAgent   String?
@@ -1389,6 +1437,7 @@ model Client {
   automationEnrollments AutomationEnrollment[]
   personalBroadcastLogs PersonalBroadcastLog[]
   paymentDetailsLogs    PaymentDetailsLog[]
+  botLink               BotLink?               @relation(fields: [botLinkId], references: [id])
 
   @@index([companyId, projectId])
   @@index([tgUserId, projectId])
@@ -1396,6 +1445,7 @@ model Client {
   @@index([abTestGroupId])
   @@index([fbclid])
   @@index([visitorId])
+  @@index([botLinkId])
 }
 
 // ============================================================
@@ -2247,4 +2297,542 @@ model NotificationAlertState {
 
   @@unique([companyId, type, subjectId])
   @@index([companyId])
+}
+
+// ============================================================
+// ТРАФИК НАПРЯМУЮ В БОТА (запрос пользователя 2026-10-23)
+// ============================================================
+
+enum BotLinkSource {
+  FACEBOOK
+  TIKTOK
+  TELEGRAM_ADS
+  OTHER
+}
+
+// Ссылка на бота для рекламы без лендинга: https://t.me/<bot>?start=go_<code>[_<adId>[_<campaignId>]].
+// Статичная часть (code) несёт всё, что задаётся при создании ссылки (баер, пиксель, площадка,
+// название), динамические хвосты подставляет рекламный кабинет макросами ({{ad.id}}/__CID__ и
+// т.п.) — разбор в TelegramProvider.handleStart. Telegram пропускает в start только
+// [A-Za-z0-9_-] и не больше 64 символов, поэтому из макросов берутся только id, не названия.
+model BotLink {
+  id          String        @id @default(cuid())
+  companyId   String
+  projectId   String
+  name        String
+  code        String        @unique
+  source      BotLinkSource @default(OTHER)
+  buyerId     String? // мягкая ссылка на User, как Client.buyerId
+  pixelId     String? // мягкая ссылка на TrackingPixel.id, как Client.pixelId
+  createdById String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  project Project  @relation(fields: [projectId], references: [id])
+  clients Client[]
+
+  @@index([projectId])
+}
+
+// ============================================================
+// ЧАТ (запрос пользователя 2026-10-23)
+// ============================================================
+
+// BOT — переписка через бота канала; PERSONAL — личный MTProto-аккаунт (следующий этап, модель
+// уже рассчитана на него, чтобы не переделывать хранилище).
+enum ConversationSource {
+  BOT
+  PERSONAL
+}
+
+enum ChatDirection {
+  IN
+  OUT
+}
+
+enum ChatSenderType {
+  CLIENT
+  OPERATOR
+  BOT
+  // Служебная запись в ленте переписки (2026-10-25): «Тимлид передал чат оператору» и т.п.
+  // В Telegram не отправляется, на lastMessage*/unreadCount диалога не влияет.
+  SYSTEM
+}
+
+// Один диалог = один собеседник в одном канале. Создаётся первым входящим сообщением; ответы
+// бота по сценариям пишутся только в уже существующий диалог, чтобы приветствие каждому
+// подписчику канала не плодило пустые чаты. lastMessage*/unreadCount — денормализация для
+// списка диалогов (без неё список пришлось бы собирать агрегатом по всем сообщениям).
+model Conversation {
+  id                   String             @id @default(cuid())
+  companyId            String
+  projectId            String
+  channelId            String
+  source               ConversationSource @default(BOT)
+  peerId               String // Telegram user id собеседника
+  // Через какого бота идёт переписка (2026-10-24): '' — основной бот проекта (Channel), иначе
+  // id дополнительного бота (ProjectBot). Строка, а не nullable FK: участвует в уникальном ключе
+  // диалога, а NULL в уникальных индексах Postgres не совпадает сам с собой.
+  botKey               String             @default("")
+  clientId             String?
+  peerFirstName        String?
+  peerLastName         String?
+  peerUsername         String?
+  lastMessageAt        DateTime           @default(now())
+  lastMessageText      String?
+  lastMessageDirection ChatDirection?
+  lastIncomingAt       DateTime?
+  unreadCount          Int                @default(0)
+  // Последняя ошибка отправки ответа (бот заблокирован и т.п.) — показывается в чате.
+  lastError            String?
+  // Ответственный оператор (запрос пользователя 2026-10-25, роль «Тимлид»): тимлид/админ
+  // передаёт диалог оператору, тот видит его даже без доступа ко всему ресурсу (ChatResourceAccess).
+  // assignedAt — момент ПЕРВОГО назначения; остаётся и после возврата чата тимлиду, чтобы
+  // авто-распределение (ChatAutoAssignRule) срабатывало только на ни разу не назначенные диалоги.
+  assignedUserId       String?
+  assignedAt           DateTime?
+  // Статус работы с диалогом (2026-10-25, вкладки как в Chatterfy): OPEN — в работе, WAITING —
+  // ждём ответа лида, FINISHED — завершён. Ставит оператор; новое входящее возвращает в OPEN.
+  status               ChatStatus         @default(OPEN)
+  // Значения своих полей лида (2026-10-25, ChatCustomField): { "<fieldId>": значение }.
+  customFields         Json?
+  // Заметка о лиде (2026-10-25: «просто добавь поле для заметок») — общая для всех, кто ведёт диалог.
+  note                 String?
+  // Этап лида (2026-10-25, как флоу Chatterfy: «один оператор ведёт FD, другой RD»).
+  stageId              String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  channel  Channel       @relation(fields: [channelId], references: [id])
+  messages ChatMessage[]
+
+  @@unique([channelId, source, botKey, peerId])
+  @@index([companyId, lastMessageAt])
+  @@index([projectId, lastMessageAt])
+  @@index([clientId])
+  @@index([assignedUserId])
+  @@index([projectId, stageId])
+}
+
+enum ChatStatus {
+  OPEN
+  WAITING
+  FINISHED
+}
+
+// Теги лидов в чате (2026-10-25, как в Chatterfy): справочник тегов проекта с цветом, на диалог
+// ставится любой набор. По тегам фильтруется список диалогов.
+model ChatTag {
+  id        String   @id @default(cuid())
+  companyId String
+  projectId String
+  resource  String // см. ChatStage.resource
+  name      String
+  color     String // hex, напр. "#1F4E9C"
+  createdAt DateTime @default(now())
+
+  conversations ConversationTag[]
+
+  @@unique([projectId, resource, name])
+}
+
+model ConversationTag {
+  conversationId String
+  tagId          String
+  createdAt      DateTime @default(now())
+
+  tag ChatTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, tagId])
+  @@index([tagId])
+}
+
+// Закреплённые диалоги (2026-10-25) — у каждого сотрудника свои, всегда наверху списка, как в Telegram.
+model ChatPin {
+  userId         String
+  conversationId String
+  createdAt      DateTime @default(now())
+
+  @@id([userId, conversationId])
+  @@index([conversationId])
+}
+
+// Избранные диалоги — у каждого сотрудника свои (вкладка «Избранное»).
+model ChatFavorite {
+  userId         String
+  conversationId String
+  createdAt      DateTime @default(now())
+
+  @@id([userId, conversationId])
+  @@index([conversationId])
+}
+
+// Папки проектов (2026-10-25, как «спейсы» в Chatterfy) — группировка проектов компании по гео
+// или источнику трафика. На доступы не влияет: доступ по-прежнему по проектам.
+model ProjectFolder {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([companyId])
+}
+
+// Избранные проекты — у каждого сотрудника свои, показываются первыми.
+model ProjectFavorite {
+  userId    String
+  projectId String
+  createdAt DateTime @default(now())
+
+  @@id([userId, projectId])
+}
+
+enum ChatBroadcastStatus {
+  PENDING // ждёт времени отправки
+  RUNNING
+  DONE
+  CANCELLED
+}
+
+enum ChatBroadcastRecipientStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+// Рассылка прямо из чата (2026-10-25: «нужна рассылка прям в чате»): выбранным диалогам или всем
+// по текущему фильтру — текст и/или шаблон (цепочка с медиа). Каждое сообщение ложится в переписку
+// как обычный ответ, от имени создателя и с его правами на момент отправки (ChatBroadcastService).
+model ChatBroadcast {
+  id          String              @id @default(cuid())
+  companyId   String
+  projectId   String
+  createdById String
+  text        String?
+  templateId  String?
+  // Варианты сообщения (2026-10-25: «несколько вариантов, чтобы не было идентично») —
+  // [{ text, templateId }], получатели получают их по очереди (ChatBroadcastRecipient.variant).
+  // Пусто — один вариант из text/templateId выше.
+  variants    Json?
+  // Пауза между отправками, секунды (случайная в пределах); пусто — по умолчанию для источника.
+  delayMinSec Int?
+  delayMaxSec Int?
+  // Фильтр, по которому отобраны получатели, — для показа в истории.
+  filter      Json?
+  sendAt      DateTime
+  status      ChatBroadcastStatus @default(PENDING)
+  total       Int                 @default(0)
+  sent        Int                 @default(0)
+  failed      Int                 @default(0)
+  createdAt   DateTime            @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  recipients ChatBroadcastRecipient[]
+
+  @@index([status, sendAt])
+  @@index([projectId, createdAt])
+}
+
+model ChatBroadcastRecipient {
+  id             String                       @id @default(cuid())
+  broadcastId    String
+  conversationId String
+  variant        Int                          @default(0)
+  status         ChatBroadcastRecipientStatus @default(PENDING)
+  error          String?
+  sentAt         DateTime?
+
+  broadcast ChatBroadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@index([broadcastId, status])
+}
+
+enum ChatStageTrigger {
+  MANUAL // только ручной перевод
+  NEW_CHAT // новый диалог
+  FIRST_PURCHASE // первая покупка клиента
+  REPEAT_PURCHASE // повторная покупка (purchaseNumber — конкретная по счёту, null — любая)
+  TAG // поставлен тег tagId
+  FIELD // своё поле fieldId получило значение fieldValue
+}
+
+// Этапы лида в чате проекта (2026-10-25, по образцу флоу Chatterfy, но без ИИ-скриптов): свои
+// этапы с любыми названиями, у каждого — операторы с долями. Лид попадает на этап по событию
+// (trigger) или вручную; при переходе диалог уходит оператору этапа по долям, прежний оператор
+// его теряет (если у него нет доступа ко всему ресурсу).
+model ChatStage {
+  id             String           @id @default(cuid())
+  companyId      String
+  projectId      String
+  // Ресурс чата (2026-10-25: «бот и личка не должны быть связаны по настройкам»): 'BOT' — основной
+  // бот, 'BOT:<id>' — дополнительный, 'PERSONAL' — личка. У каждого свои этапы/теги/поля/шаблоны.
+  resource       String
+  name           String
+  color          String           @default("#1F4E9C")
+  sortOrder      Int              @default(0)
+  trigger        ChatStageTrigger @default(MANUAL)
+  purchaseNumber Int?
+  tagId          String?
+  fieldId        String?
+  fieldValue     String?
+  createdAt      DateTime         @default(now())
+
+  operators ChatStageOperator[]
+
+  @@index([projectId, resource])
+}
+
+model ChatStageOperator {
+  id      String @id @default(cuid())
+  stageId String
+  userId  String
+  weight  Int
+
+  stage ChatStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  @@unique([stageId, userId])
+}
+
+enum ChatFieldType {
+  TEXT
+  LONG_TEXT
+  LINK
+  NUMBER
+  DATE
+  SELECT
+  MULTISELECT
+}
+
+// Свои поля лида в чате (2026-10-25, как «кастомные поля» в Chatterfy): справочник полей проекта,
+// значения — в Conversation.customFields. Поля задаёт тимлид/админ, заполняет любой, кто ведёт
+// диалог; по значению фильтруется список диалогов.
+model ChatCustomField {
+  id        String        @id @default(cuid())
+  companyId String
+  projectId String
+  resource  String // см. ChatStage.resource
+  name      String
+  type      ChatFieldType
+  options   String[]      @default([])
+  sortOrder Int           @default(0)
+  createdAt DateTime      @default(now())
+
+  @@index([projectId, resource])
+}
+
+// Шаблоны ответов (2026-10-25, как в Chatterfy): папки → шаблоны. Папка без projectId — общая для
+// всех проектов компании, с projectId — только для чатов этого проекта. code — короткий код для
+// вызова прямо в поле ввода (#код), уникален в компании. Медиа шаблона лежит в приватном бакете
+// MinIO (StorageService) и при отправке берётся оттуда.
+model ChatTemplateFolder {
+  id        String   @id @default(cuid())
+  companyId String
+  projectId String?
+  // Ресурс (2026-10-25): у папки проекта — точный ресурс чата (см. ChatStage.resource); у общей
+  // папки компании (projectId = null) — вид ресурса: 'BOT' (любой бот) или 'PERSONAL' (любая личка).
+  resource  String
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  templates ChatTemplate[]
+
+  @@index([companyId])
+}
+
+model ChatTemplate {
+  id            String   @id @default(cuid())
+  companyId     String
+  folderId      String
+  code          String
+  title         String
+  text          String?
+  // photo | video | document | voice | video_note
+  mediaKind     String?
+  mediaKey      String?
+  mediaFileName String?
+  mediaMime     String?
+  sortOrder     Int      @default(0)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  folder   ChatTemplateFolder    @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  // Цепочка сообщений шаблона (2026-10-25: «по одному скрипту откидывать сразу несколько
+  // сообщений»). text/media* самого шаблона выше — прежний формат одного сообщения; с этой даты
+  // содержимое живёт только здесь (старый шаблон перенесён миграцией первым сообщением).
+  messages ChatTemplateMessage[]
+
+  @@unique([companyId, code])
+  @@index([folderId])
+}
+
+model ChatTemplateMessage {
+  id            String   @id @default(cuid())
+  templateId    String
+  sortOrder     Int
+  text          String?
+  // photo | video | document | voice | video_note
+  mediaKind     String?
+  mediaKey      String?
+  mediaFileName String?
+  mediaMime     String?
+  createdAt     DateTime @default(now())
+
+  template ChatTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId, sortOrder])
+}
+
+enum ChatScheduledStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+// Отложенные сообщения (2026-10-25): отправляются раз в минуту (ChatScheduledCron) от имени
+// создателя и с его правами на момент отправки — убрали доступ к чату, сообщение не уйдёт.
+model ChatScheduledMessage {
+  id             String              @id @default(cuid())
+  companyId      String
+  conversationId String
+  text           String?
+  templateId     String?
+  sendAt         DateTime
+  status         ChatScheduledStatus @default(PENDING)
+  error          String?
+  sentAt         DateTime?
+  createdById    String
+  createdAt      DateTime            @default(now())
+
+  @@index([status, sendAt])
+  @@index([conversationId])
+}
+
+// Авто-распределение новых диалогов ресурса между операторами (2026-10-25, как в Chatterfy):
+// доля weight (проценты) на оператора. resource — тот же формат, что в ChatResourceAccess
+// ('BOT' | 'BOT:<id>' | 'PERSONAL'). Нет строк с weight > 0 — распределение у ресурса выключено.
+model ChatAutoAssignRule {
+  id          String   @id @default(cuid())
+  companyId   String
+  projectId   String
+  resource    String
+  userId      String
+  weight      Int
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, resource, userId])
+  @@index([projectId, resource])
+}
+
+// Сообщения не удаляются и не редактируются — это журнал переписки, как TrackingEvent.
+model ChatMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  direction      ChatDirection
+  senderType     ChatSenderType
+  senderUserId   String? // оператор, отправивший ответ
+  text           String?
+  // photo | video | voice | video_note | audio | document | sticker | animation
+  mediaType      String?
+  mediaFileId    String? // Telegram file_id — сам файл не копируется, отдаётся через прокси
+  mediaFileName  String?
+  externalId     String? // Telegram message_id
+  error          String?
+  // Кэш переводов (2026-10-24): { "<язык>": { text, from } } — повторный перевод на тот же язык
+  // не тратит лимит сервиса перевода.
+  translations   Json?
+  createdAt      DateTime       @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId, createdAt])
+}
+
+// ============================================================
+// ДОПОЛНИТЕЛЬНЫЕ БОТЫ ПРОЕКТА (запрос пользователя 2026-10-24)
+// ============================================================
+
+// Основной бот проекта по-прежнему живёт в Channel (заявки в канал, статус «запускал/заблокировал»
+// у клиента, обычные рассылки). Дополнительные боты — свои сценарии, чат, менеджеры и рассылка
+// по своим подписчикам; заявки в канал не принимают и на Client.botActivatedAt/isBotActive не
+// влияют. Вебхук — /webhooks/telegram-bot/:id (ExtraBotsService).
+model ProjectBot {
+  id                 String    @id @default(cuid())
+  companyId          String
+  projectId          String
+  tgBotToken         String
+  tgBotId            String
+  tgBotUsername      String?
+  tgBotFirstName     String?
+  tgAvatarFileId     String?
+  // Менеджеры этого бота — как Channel.tgManagerUsernames у основного: их пересланные сообщения
+  // регистрируют диалоги и депозиты клиентов проекта.
+  tgManagerUsernames String[]  @default([])
+  isActive           Boolean   @default(true)
+  lastError          String?
+  lastWebhookAt      DateTime?
+  createdById        String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  project     Project                @relation(fields: [projectId], references: [id])
+  subscribers ProjectBotSubscriber[]
+
+  @@index([projectId])
+}
+
+// Кто запускал дополнительного бота — его собственная аудитория (для рассылки через него).
+// clientId — если человек уже есть в CRM этого проекта; клиентом автоматически не становится.
+model ProjectBotSubscriber {
+  id            String    @id @default(cuid())
+  botId         String
+  tgUserId      String
+  tgUsername    String?
+  tgFirstName   String?
+  tgLastName    String?
+  clientId      String?
+  startedAt     DateTime  @default(now())
+  lastMessageAt DateTime?
+  isBlocked     Boolean   @default(false)
+  blockedAt     DateTime?
+
+  bot ProjectBot @relation(fields: [botId], references: [id])
+
+  @@unique([botId, tgUserId])
+  @@index([clientId])
+}
+
+// Какие чаты ведёт оператор (запрос пользователя 2026-10-24: «добавить оператора под каждый
+// ресурс — бот, личка»). resource: 'BOT' — основной бот проекта, 'BOT:<ProjectBot.id>' —
+// дополнительный бот, 'PERSONAL' — личка. Для роли OPERATOR это единственный источник доступа к
+// чатам (ChatService.chatScope); владелец, админы и оператор-админы видят чаты как раньше.
+// Строка — выдача доступа, а не данные клиента, поэтому при снятии удаляется физически (как
+// TeamInvite и NotificationRecipient), без deletedAt; не в modelsWithCompany — каждый запрос
+// фильтрует companyId явно.
+model ChatResourceAccess {
+  id          String   @id @default(cuid())
+  companyId   String
+  projectId   String
+  userId      String
+  resource    String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([projectId, resource, userId])
+  @@index([userId])
 }

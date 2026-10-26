@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { ChannelsService } from '../channels/channels.service';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
+import { ChatStagesEngine } from '../chat/chat-stages.engine';
 
 @Injectable()
 export class PurchasesService {
@@ -14,6 +15,7 @@ export class PurchasesService {
     private prisma: PrismaService,
     private trackingService: TrackingService,
     private moduleRef: ModuleRef,
+    private chatStages: ChatStagesEngine,
   ) {}
 
   // ChannelsService резолвится лениво через ModuleRef, а не конструкторной инъекцией —
@@ -126,6 +128,10 @@ export class PurchasesService {
     } catch (error) {
       this.logger.warn(`Failed to trigger deposit bot scenario for purchase ${purchase.id}: ${(error as Error).message}`);
     }
+
+    // Этап лида в чатах (2026-10-25): первая/повторная покупка переводит диалоги клиента на этап,
+    // настроенный под это событие (например, к оператору повторных депозитов). Сам ловит ошибки.
+    if (clientBefore) await this.chatStages.onPurchase(projectId, clientId, clientBefore.purchasesCount + 1);
 
     return purchase;
   }

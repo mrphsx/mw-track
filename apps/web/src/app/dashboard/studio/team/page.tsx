@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { TransferChatsDialog } from '@/components/transfer-chats-dialog';
 import { AssignOperatorProjectsDialog, InviteLinkCell, ProjectSummary, ROLE_LABELS, TeamInvite, TeamMember } from '../../../(dashboard)/team/shared';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../ui';
 
@@ -19,6 +20,7 @@ export default function StudioTeamPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const [assigningOperator, setAssigningOperator] = useState<TeamMember | null>(null);
+  const [removingOperator, setRemovingOperator] = useState<TeamMember | null>(null);
   // Свой пилюльный переключатель вместо общего <Tabs> (запрос пользователя 2026-07-31: "не под
   // наш дизайн, цвета другие") — тот же паттерн, что уже используется в настройках проекта
   // Studio (projects/[id]/settings/page.tsx): inline-flex с p-1/gap-0.5, активная пилюля —
@@ -281,7 +283,8 @@ export default function StudioTeamPage() {
                                 type="button"
                                 disabled={removeMember.isPending}
                                 onClick={() => {
-                                  if (confirm(`Отключить доступ оператору ${m.email}?`)) removeMember.mutate(m.id);
+                                  // Перед отключением — решить, что с его чатами (2026-10-26): передать или снять ответственного.
+                                  setRemovingOperator(m);
                                 }}
                                 className="text-[#5F6B7A] dark:text-[#92A0AF] hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
                               >
@@ -304,6 +307,17 @@ export default function StudioTeamPage() {
       <AssignOperatorProjectsDialog operator={assigningOperator} projects={projects || []} onClose={() => setAssigningOperator(null)} />
 
       <TeamAnalyticsSection />
+      {removingOperator && (
+        <TransferChatsDialog
+          fromUserId={removingOperator.id}
+          beforeRemove="и отключить"
+          onClose={() => setRemovingOperator(null)}
+          onDone={() => {
+            removeMember.mutate(removingOperator.id);
+            setRemovingOperator(null);
+          }}
+        />
+      )}
     </div>
   );
 }

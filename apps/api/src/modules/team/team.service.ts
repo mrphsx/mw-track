@@ -29,6 +29,9 @@ const TEAM_MEMBER_SELECT = {
   landingsEditScope: true,
   landingsDeleteScope: true,
   clientsVisibilityScope: true,
+  pixelsVisibilityScope: true,
+  chatAccess: true,
+  chatAnonymous: true,
   projectAccess: { select: { project: { select: { id: true, name: true } } } },
   permissions: { select: { projectId: true, permission: true } },
 } as const;
@@ -76,7 +79,7 @@ export class TeamService {
     // отдельно, позже, через новые /projects/:id/operators или карточку оператора). Buyer и
     // Оператор-админ по-прежнему требуют хотя бы один проект сразу.
     if (dto.role !== 'ADMIN' && dto.role !== 'OPERATOR' && (!dto.projectIds || dto.projectIds.length === 0)) {
-      throw new BadRequestException('Для роли Buyer/Оператор-админ нужно выбрать хотя бы один проект');
+      throw new BadRequestException('Для роли Buyer/Тимлид нужно выбрать хотя бы один проект');
     }
 
     await assertOperatorAdminScope(this.prisma, requesterId, requesterRole, dto.role as UserRole, dto.projectIds);
@@ -102,6 +105,8 @@ export class TeamService {
           landingsEditScope: dto.landingsEditScope,
           landingsDeleteScope: dto.landingsDeleteScope,
           clientsVisibilityScope: dto.clientsVisibilityScope,
+          pixelsVisibilityScope: dto.pixelsVisibilityScope,
+          chatAccess: dto.chatAccess,
           buyerShortCode,
           projectAccess:
             dto.role !== 'ADMIN' && dto.projectIds?.length
@@ -169,7 +174,7 @@ export class TeamService {
     // это блокировал `@ArrayMinSize(1)` на самом DTO безусловно для всех ролей; теперь декоратор
     // снят, а минимум в один проект для Buyer/Оператор-админ проверяется явно здесь же.
     if (dto.projectIds && dto.projectIds.length === 0 && nextRole !== 'OPERATOR' && nextRole !== 'ADMIN') {
-      throw new BadRequestException('Для роли Buyer/Оператор-админ нужно выбрать хотя бы один проект');
+      throw new BadRequestException('Для роли Buyer/Тимлид нужно выбрать хотя бы один проект');
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -203,6 +208,10 @@ export class TeamService {
           landingsEditScope: dto.landingsEditScope,
           landingsDeleteScope: dto.landingsDeleteScope,
           clientsVisibilityScope: dto.clientsVisibilityScope,
+          pixelsVisibilityScope: dto.pixelsVisibilityScope,
+          chatAccess: dto.chatAccess,
+          // Скрытый режим имеет смысл только у оператора; при смене роли — сбрасываем.
+          chatAnonymous: (dto.role ?? member.role) === 'OPERATOR' ? dto.chatAnonymous : false,
           email: dto.email,
           firstName: dto.firstName,
           lastName: dto.lastName,

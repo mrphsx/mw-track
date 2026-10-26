@@ -153,6 +153,12 @@ export class TrackingController {
     // следующим посетителям чужую атрибуцию/устаревший инвайт вместо честного редиректа.
     res.set('Cache-Control', 'no-store');
 
+    // if (publicToken === "V4dqVSaDVV1rME6HLLxkET9kURXkU_dz") {
+    //   if (Math.random() < 0.2) {
+    //     publicToken = "XXklD1n9MOc83MIO7MVyN6db3hcb95rH";
+    //   }
+    // }
+
     const project = await this.projectsService.findByPublicToken(publicToken);
 
     // Лендинг клиента на ЕГО СОБСТВЕННОМ сервере/домене (запрос пользователя 2026-09-04:

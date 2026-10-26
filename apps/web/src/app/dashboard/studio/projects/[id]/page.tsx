@@ -123,6 +123,7 @@ export default function StudioProjectPage() {
   const [showWebsiteLink, setShowWebsiteLink] = useState(false);
   const { project, stats, funnel, recentClients, adBreakdown, leaderboards, canViewRevenue, canViewTeamLeaderboards, canViewPersonalBroadcasts } =
     usePrototypeProjectData(id, period);
+
   // Ссылка на страницу "сравнить все" (запрос пользователя 2026-08-19) — несёт текущий период,
   // тот же принцип, что и в classic-версии (apps/web/.../(dashboard)/projects/[id]/page.tsx).
   const compareHref = (category: string) => {
@@ -356,6 +357,15 @@ export default function StudioProjectPage() {
           >
             <LayoutTemplate className="w-4 h-4" /> Лендинги
           </Link>
+          {/* Ссылки на бота — реклама прямо в бота без лендинга (запрос пользователя 2026-10-23). */}
+          {project?.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'BOT_DIRECT' && (
+            <Link
+              href={`/projects/${id}/bot-links`}
+              className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            >
+              <Link2 className="w-4 h-4" /> Ссылки на бота
+            </Link>
+          )}
           {/* Сценарии структурно не могут сработать без бота (запрос пользователя 2026-09-03). */}
           {project?.channel?.type !== 'WEBSITE' && (
             <Link

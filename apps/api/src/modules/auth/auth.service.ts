@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { Company, SubscriptionPlan, User } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { addDays } from 'date-fns';
@@ -28,6 +28,8 @@ const REFRESH_TOKEN_GRACE_MS = 30 * 1000;
 // main.ts enableCors без credentials). TTL короткий: ровно на время "открыть новую вкладку и
 // сделать один запрос", дальше бесполезен, даже если осядет где-то в логах/истории.
 const IMPERSONATION_CODE_TTL_SECONDS = 60;
+// Срок сессии входа из админки (запрос пользователя 2026-10-23: 15 минут мало → 1 день).
+const IMPERSONATION_ACCESS_TOKEN_TTL: JwtSignOptions['expiresIn'] = '1d';
 
 @Injectable()
 export class AuthService {
@@ -187,10 +189,11 @@ export class AuthService {
   }
 
   // Impersonation — вызывается AdminCompanyService.impersonate() (SUPER_ADMIN-only роут).
-  // Осознанно НЕ issueTokens(): только короткоживущий (15 мин) access-токен, без refresh и без
-  // строки в RefreshToken — это разовый дебаг-инструмент, а не постоянная альтернативная сессия;
-  // по истечении 15 минут apps/web сам корректно разлогинит (обычный refreshAccessToken() упадёт
-  // без refresh-токена → logout()), доп. код на фронте для этого не нужен.
+  // Осознанно НЕ issueTokens(): только access-токен на IMPERSONATION_ACCESS_TOKEN_TTL (1 день,
+  // до 2026-10-23 было 15 мин), без refresh и без строки в RefreshToken — это дебаг-инструмент,
+  // а не постоянная альтернативная сессия; по истечении срока apps/web сам корректно разлогинит
+  // (обычный refreshAccessToken() упадёт без refresh-токена → logout()), доп. код на фронте для
+  // этого не нужен.
   // Возвращает не только {code}, а и данные владельца — AdminCompanyService.impersonate нужен
   // targetUserId/targetUserEmail для синхронного audit-лога сразу, без повторного похода в БД.
   async startImpersonation(companyId: string): Promise<{ code: string; targetUserId: string; targetUserEmail: string }> {
@@ -202,7 +205,7 @@ export class AuthService {
       throw new BadRequestException('У компании нет активного владельца — некого впустить');
     }
 
-    const accessToken = this.signAccessToken(owner);
+    const accessToken = this.signAccessToken(owner, IMPERSONATION_ACCESS_TOKEN_TTL);
     const code = randomUUID();
     await this.redis.set(
       `impersonation:${code}`,
@@ -227,7 +230,7 @@ export class AuthService {
 
   // Вынесено из issueTokens, чтобы startImpersonation ниже подписывал access-токен ровно тем
   // же способом (тот же секрет/TTL/форма payload), не дублируя опции jwt.sign в двух местах.
-  private signAccessToken(user: User): string {
+  private signAccessToken(user: User, expiresIn: JwtSignOptions['expiresIn'] = '15m'): string {
     const payload: JwtPayload = {
       sub: user.id,
       companyId: user.companyId,
@@ -235,7 +238,7 @@ export class AuthService {
     };
     return this.jwt.sign(payload, {
       secret: this.config.get<string>('JWT_SECRET'),
-      expiresIn: '15m',
+      expiresIn,
     });
   }
 

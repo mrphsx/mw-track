@@ -10,7 +10,7 @@
 //
 // Сырой axios, не через store.login()/lib/api — здесь нет пароля, только одноразовый код, и
 // ответ уже в форме {accessToken, user} (без refreshToken — см. startImpersonation: сессия
-// живёт ровно 15 минут, без записи в RefreshToken, никакого доп. кода на фронте для истечения
+// живёт 1 день (до 2026-10-23 — 15 минут), без записи в RefreshToken, никакого доп. кода на фронте для истечения
 // не нужно, обычный refreshAccessToken() просто упадёт при первом протухшем access-токене и
 // штатно разлогинит через logout()). Не пишем shared cookie (setSharedRefreshCookie) — раз нет
 // refreshToken, сессия и не должна тихо переползать на old.mw-track.com.

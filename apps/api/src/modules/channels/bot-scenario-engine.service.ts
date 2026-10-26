@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { checkSubscriptionLimit } from '../../common/guards/subscription.util';
 import { renderMessagePlaceholders } from '../../common/message-placeholders.util';
 import { TelegramProvider } from './providers/telegram.provider';
+import { ChatStoreService } from '../chat/chat-store.service';
 
 // Тот же граф-приём и та же защита от циклов, что уже проверены в AutomationEngineService
 // (apps/api/src/modules/automations/automation-engine.service.ts) — сознательно СЕСТРИНСКИЙ
@@ -26,6 +27,7 @@ export class BotScenarioEngineService {
     private prisma: PrismaService,
     private moduleRef: ModuleRef,
     @InjectQueue('bot-scenario-steps') private queue: Queue,
+    private chatStore: ChatStoreService,
   ) {}
 
   // TelegramProvider резолвится лениво через ModuleRef, а не конструкторной инъекцией —
@@ -167,7 +169,7 @@ export class BotScenarioEngineService {
     const buttons = (step.buttons as Array<{ text: string; url: string }> | null)?.map((b) => ({ ...b, text: renderMessagePlaceholders(b.text, source) }));
 
     try {
-      await this.getTelegramProvider().sendMessage(
+      const result = await this.getTelegramProvider().sendMessage(
         tgUserId,
         {
           text,
@@ -178,6 +180,8 @@ export class BotScenarioEngineService {
         },
         channel,
       );
+      // Ответ бота виден оператору во встроенном чате (2026-10-23), если диалог уже есть.
+      if (result.success) await this.chatStore.recordBotMessage(channel, tgUserId, text, media?.[0]?.type);
     } catch (error) {
       this.logger.warn(`Scenario SEND_MESSAGE failed for tgUserId ${tgUserId}: ${(error as Error).message}`);
     }

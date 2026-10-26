@@ -7,12 +7,16 @@ import { isAxiosError } from 'axios';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { TransferChatsDialog } from '@/components/transfer-chats-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   ClientsVisibilityScopeSection,
+  PixelsVisibilityScopeSection,
+  ChatAccessSection,
+  CHAT_ACCESS_ROLES,
   CreatableRole,
   CredRow,
   DomainsPermissionsSection,
@@ -60,6 +64,7 @@ export default function StudioEditTeamMemberPage() {
   const [lastName, setLastName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [savedPassword, setSavedPassword] = useState<string | null>(null);
+  const [chatAnonymous, setChatAnonymous] = useState(false);
 
   const member = members?.find((m) => m.id === userId) ?? null;
 
@@ -69,6 +74,7 @@ export default function StudioEditTeamMemberPage() {
     setFirstName(member.firstName);
     setLastName(member.lastName || '');
     setNewPassword('');
+    setChatAnonymous(!!member.chatAnonymous);
     const { projectPermissions, domainsPermissions } = buildPermissionsState(member.permissions);
     form.load(
       member.role === 'OWNER' ? 'ADMIN' : (member.role as CreatableRole),
@@ -79,9 +85,19 @@ export default function StudioEditTeamMemberPage() {
       member.clientsVisibilityScope,
       member.landingsEditScope,
       member.landingsDeleteScope,
+      member.pixelsVisibilityScope,
+      member.chatAccess,
     );
     setLoadedFor(member.id);
   }
+
+  // Оператора блокируют или переводят в другую роль — сначала решить, что с его чатами (2026-10-26).
+  const [chatsDecision, setChatsDecision] = useState(false);
+  const save = () => {
+    const losesChats = member?.role === 'OPERATOR' && ((member.isActive && !isActive) || form.role !== 'OPERATOR');
+    if (losesChats) setChatsDecision(true);
+    else update.mutate();
+  };
 
   const update = useMutation({
     mutationFn: () => {
@@ -104,6 +120,10 @@ export default function StudioEditTeamMemberPage() {
         landingsEditScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsEditScope,
         landingsDeleteScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsDeleteScope,
         clientsVisibilityScope: form.role === 'BUYER' ? form.clientsVisibilityScope : undefined,
+        pixelsVisibilityScope: form.role === 'BUYER' ? form.pixelsVisibilityScope : undefined,
+        // Владелец видит все чаты всегда — его настройку не трогаем.
+        chatAccess: CHAT_ACCESS_ROLES.includes(form.role) && member?.role !== 'OWNER' ? form.chatAccess : undefined,
+        chatAnonymous: form.role === 'OPERATOR' ? chatAnonymous : undefined,
         email,
         firstName,
         lastName: lastName || undefined,
@@ -211,7 +231,7 @@ export default function StudioEditTeamMemberPage() {
                       {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
                       <SelectItem value="BUYER">Байер</SelectItem>
                       <SelectItem value="OPERATOR">Оператор</SelectItem>
-                      <SelectItem value="OPERATOR_ADMIN">Оператор-админ</SelectItem>
+                      <SelectItem value="OPERATOR_ADMIN">Тимлид</SelectItem>
                     </>
                   )}
                 </SelectContent>
@@ -229,6 +249,26 @@ export default function StudioEditTeamMemberPage() {
               <Switch id="tm-active" checked={isActive} onCheckedChange={setIsActive} />
             </div>
           </div>
+
+          {CHAT_ACCESS_ROLES.includes(form.role) && member?.role !== 'OWNER' && (
+            <div className={`${STUDIO_CARD} p-5 space-y-2`}>
+              <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Доступ к чатам</h2>
+              <ChatAccessSection value={form.chatAccess} onChange={form.setChatAccess} />
+            </div>
+          )}
+
+          {form.role === 'OPERATOR' && (
+            <div className={`${STUDIO_CARD} p-5 flex items-start justify-between gap-4`}>
+              <div>
+                <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Скрытый оператор</h2>
+                <p className="mt-1 text-xs text-[#5F6B7A] dark:text-[#92A0AF]">
+                  Работает с чатами и своими клиентами, но не видит имя, @username, Telegram ID, телефон и фото лида — вместо имени «Лид #…».
+                  Выгрузка клиентов ему недоступна. Защищает базу от слива.
+                </p>
+              </div>
+              <Switch id="tm-anon" checked={chatAnonymous} onCheckedChange={setChatAnonymous} />
+            </div>
+          )}
 
           {needsProjects && (
             <>
@@ -271,18 +311,37 @@ export default function StudioEditTeamMemberPage() {
                   <ClientsVisibilityScopeSection value={form.clientsVisibilityScope} onChange={form.setClientsVisibilityScope} />
                 </div>
               )}
+
+              {form.role === 'BUYER' && (
+                <div className={`${STUDIO_CARD} p-5 space-y-2`}>
+                  <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Видимость пикселей</h2>
+                  <PixelsVisibilityScopeSection value={form.pixelsVisibilityScope} onChange={form.setPixelsVisibilityScope} />
+                </div>
+              )}
+
             </>
           )}
 
           {error && <p className="text-sm text-red-500">{error}</p>}
 
           <div className="flex gap-2">
-            <StudioLinkButton variant="primary" onClick={() => update.mutate()} disabled={(needsProjects && form.projectIds.length === 0) || update.isPending}>
+            <StudioLinkButton variant="primary" onClick={save} disabled={(needsProjects && form.projectIds.length === 0) || update.isPending}>
               {update.isPending ? 'Сохраняем...' : 'Сохранить'}
             </StudioLinkButton>
             <StudioLinkButton onClick={() => router.push('/team')}>Отмена</StudioLinkButton>
           </div>
         </>
+      )}
+      {chatsDecision && member && (
+        <TransferChatsDialog
+          fromUserId={member.id}
+          beforeRemove="и сохранить"
+          onClose={() => setChatsDecision(false)}
+          onDone={() => {
+            setChatsDecision(false);
+            update.mutate();
+          }}
+        />
       )}
     </div>
   );

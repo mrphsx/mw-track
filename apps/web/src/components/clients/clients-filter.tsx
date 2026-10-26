@@ -79,7 +79,7 @@ export function writeClientsFiltersToSearchParams(filters: ClientsFilterState, p
 }
 
 // Подпись роли рядом с именем, если баером у клиентов записан не баер (админ по своей ссылке).
-const ROLE_HINT: Record<string, string> = { OWNER: 'владелец', ADMIN: 'админ', SUPER_ADMIN: 'суперадмин', OPERATOR: 'оператор', OPERATOR_ADMIN: 'админ операторов' };
+const ROLE_HINT: Record<string, string> = { OWNER: 'владелец', ADMIN: 'админ', SUPER_ADMIN: 'суперадмин', OPERATOR: 'оператор', OPERATOR_ADMIN: 'тимлид' };
 
 interface FilterOptions {
   buyers?: { id: string; name: string; role: string; isDeleted: boolean }[];

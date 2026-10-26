@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { GrammyError, HttpError } from 'grammy';
+import { Api, GrammyError, HttpError } from 'grammy';
 import { Cron } from '@nestjs/schedule';
 import { Response } from 'express';
-import { BotScenarioTrigger, Channel, ChannelType, Client } from '@prisma/client';
+import { BotScenarioTrigger, Channel, ChannelType, Client, TelegramMode } from '@prisma/client';
+import { FunnelConfigService } from '../funnel/funnel-config.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { escapeTelegramHtml } from '../../common/telegram-html.util';
 import { ChannelProvider, SendMessageOptions, SendMessageResult } from './providers/channel.provider.interface';
@@ -41,6 +42,7 @@ export class ChannelsService implements OnModuleInit {
     private whatsAppProvider: WhatsAppProvider,
     private instagramProvider: InstagramProvider,
     private websiteProvider: WebsiteProvider,
+    private funnelConfig: FunnelConfigService,
   ) {
     this.providers = {
       TELEGRAM: this.telegramProvider,
@@ -305,6 +307,93 @@ export class ChannelsService implements OnModuleInit {
   // tgPersonalUsername меняет, что должен делать provider.initialize() (например,
   // создать invite-ссылку для нового PRIVATE_CHANNEL_REQUEST) — без повторного вызова
   // изменение осело бы только в БД, реального эффекта на бота/вебхук не было бы.
+  // Проверка токена до создания/сохранения канала (запрос пользователя 2026-10-23: «сразу
+  // добавить + проверить токен бота»). Ничего не сохраняет и вебхук не ставит — только getMe.
+  // Бот, уже подключённый к другому проекту, — предупреждение, а не отказ: так было и раньше,
+  // но setWebhook перехватит его у того проекта, и пользователь должен знать это заранее.
+  async checkBotToken(companyId: string, rawToken: string) {
+    const token = rawToken.trim();
+    if (!/^\d+:[\w-]{30,}$/.test(token)) {
+      throw new BadRequestException('Это не похоже на токен бота — скопируйте его целиком из @BotFather (вида 123456:ABC…)');
+    }
+    const botId = token.split(':')[0];
+    if (await this.prisma.notificationBot.findUnique({ where: { tgBotId: botId }, select: { id: true } })) {
+      throw new BadRequestException('Этот бот уже подключён для служебных оповещений компании. Для канала нужен отдельный бот из @BotFather.');
+    }
+
+    let me: Awaited<ReturnType<Api['getMe']>>;
+    try {
+      me = await new Api(token).getMe();
+    } catch (error) {
+      if (error instanceof GrammyError && (error.error_code === 401 || error.error_code === 404)) {
+        throw new BadRequestException('Telegram не принял токен — проверьте его в @BotFather или выпустите новый (/token)');
+      }
+      throw new BadRequestException('Не удалось связаться с Telegram, попробуйте ещё раз');
+    }
+
+    const usedBy = await this.prisma.channel.findFirst({
+      where: { type: 'TELEGRAM', isActive: true, tgBotToken: { startsWith: `${botId}:` }, project: { deletedAt: null } },
+      select: { project: { select: { name: true, companyId: true } } },
+    });
+    // Дополнительный бот проекта (2026-10-24) — тот же перехват вебхука.
+    const usedAsExtra = await this.prisma.projectBot.findFirst({
+      where: { tgBotId: botId, deletedAt: null },
+      select: { project: { select: { name: true, companyId: true } } },
+    });
+    const warning = usedAsExtra
+      ? usedAsExtra.project.companyId === companyId
+        ? `Этот бот уже работает дополнительным ботом проекта «${usedAsExtra.project.name}»`
+        : 'Этот бот уже подключён в другом аккаунте'
+      : usedBy
+      ? usedBy.project.companyId === companyId
+        ? `Этот бот уже работает в проекте «${usedBy.project.name}» — подключение здесь отключит его там`
+        : 'Этот бот уже подключён в другом аккаунте — подключение здесь отключит его там'
+      : null;
+
+    return { botId: String(me.id), username: me.username, firstName: me.first_name, warning };
+  }
+
+  // Куда ведёт лендинг (запрос пользователя 2026-10-24: «выбирать в один клик куда пойдёт лид с
+  // лендинга из подключений»). Отдельно от update(): там неудачный перезапуск помечает канал
+  // отключённым, а смена входа не должна ронять работающего бота. Поэтому сначала проверяются
+  // требования нового входа, а если перезапуск всё же не удался — вход откатывается на прежний.
+  async switchEntry(id: string, companyId: string, mode: TelegramMode): Promise<Channel> {
+    const channel = await this.findOne(id, companyId);
+    if (channel.type !== 'TELEGRAM') throw new BadRequestException('Вход выбирается только для Telegram-проекта');
+    if (channel.tgMode === mode) return channel;
+
+    const data: Partial<Channel> = { tgMode: mode };
+    if (mode === 'BOT_DIRECT' && !channel.tgBotToken) throw new BadRequestException('У проекта нет бота');
+    if (mode === 'PUBLIC_CHANNEL_DIRECT' && !channel.tgChannelUsername) {
+      throw new BadRequestException('Укажите публичный @username канала в настройках канала');
+    }
+    if (mode === 'PRIVATE_CHANNEL_REQUEST' || mode === 'PUBLIC_CHANNEL_DIRECT') {
+      try {
+        await this.telegramProvider.assertBotIsChannelAdmin(channel);
+      } catch (error) {
+        throw new BadRequestException((error as Error).message);
+      }
+    }
+    if (mode === 'PERSONAL_DM' && !channel.tgPersonalUsername) {
+      // Подключённая личка знает свой @ — подставляем его как адрес для кнопки лендинга.
+      const label = await this.telegramPersonalService.getAccountLabel(channel);
+      if (!label?.startsWith('@')) throw new BadRequestException('Укажите @username лички в её настройках — на него поведёт лендинг');
+      data.tgPersonalUsername = label.slice(1);
+    }
+
+    const updated = await this.prisma.channel.update({ where: { id }, data });
+    try {
+      await this.telegramProvider.initialize(updated);
+    } catch (error) {
+      const reverted = await this.prisma.channel.update({ where: { id }, data: { tgMode: channel.tgMode, tgPersonalUsername: channel.tgPersonalUsername } });
+      await this.telegramProvider.initialize(reverted).catch((e) => this.logger.warn(`switchEntry revert init failed for ${id}: ${(e as Error).message}`));
+      this.funnelConfig.invalidate(channel.projectId);
+      throw new BadRequestException(`Не удалось переключить вход: ${(error as Error).message}. Оставлен прежний.`);
+    }
+    this.funnelConfig.invalidate(channel.projectId);
+    return this.prisma.channel.update({ where: { id }, data: { isActive: true, lastError: null } });
+  }
+
   async update(id: string, companyId: string, dto: UpdateChannelDto): Promise<Channel> {
     await this.findOne(id, companyId);
     const updated = await this.prisma.channel.update({ where: { id }, data: dto });

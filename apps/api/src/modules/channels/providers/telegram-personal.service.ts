@@ -13,6 +13,35 @@ import { ClientsService } from '../../clients/clients.service';
 import { VideoProcessingService } from '../video-processing.service';
 import { CustomFile } from 'telegram/client/uploads';
 import { containsPaymentDetails } from '../../../common/payment-detail-patterns.util';
+import { ChatStoreService } from '../../chat/chat-store.service';
+import { FunnelConfigService } from '../../funnel/funnel-config.service';
+import { TrackingService } from '../../tracking/tracking.service';
+
+// Медиа сообщения MTProto для встроенного чата — тот же набор типов, что и у бота
+// (chat-store.service.ts extractTelegramMedia). Специфичные документы (стикер, GIF, кружок,
+// голосовое) проверяются раньше общего document — у GramJS они все одновременно и document.
+function extractMtprotoMedia(message: Api.Message): { type: string; fileName?: string } | null {
+  const fileName = message.file?.name ?? undefined;
+  if (message.sticker) return { type: 'sticker', fileName: message.file?.emoji ?? undefined };
+  if (message.gif) return { type: 'animation' };
+  if (message.videoNote) return { type: 'video_note' };
+  if (message.voice) return { type: 'voice' };
+  if (message.audio) return { type: 'audio', fileName };
+  if (message.video) return { type: 'video', fileName };
+  if (message.photo) return { type: 'photo' };
+  if (message.document) return { type: 'document', fileName };
+  return null;
+}
+
+// Ответ из CRM приходит обратно событием «исходящее сообщение» почти сразу — даём send-пути
+// время сохранить свой externalId, чтобы не записать то же сообщение второй раз.
+const OUTGOING_DEDUP_DELAY_MS = 2500;
+
+// Тег подключённого аккаунта для чатов (2026-10-23) — нигде не хранится (tgPersonalUsername —
+// это адрес для кнопки лендинга в режиме PERSONAL_DM, у остальных режимов пуст), спрашиваем у
+// живой сессии и держим в памяти.
+const ACCOUNT_LABEL_TTL_MS = 60 * 60 * 1000;
+const ACCOUNT_LABEL_TIMEOUT_MS = 3000;
 
 interface PendingConnection {
   client: TelegramClient;
@@ -47,6 +76,7 @@ export class TelegramPersonalService {
   private liveClients = new Map<string, TelegramClient>();
   private dialogsCache = new Map<string, { data: DialogEntry[]; fetchedAt: number }>();
   private dialogsInFlight = new Map<string, Promise<DialogEntry[]>>();
+  private accountLabels = new Map<string, { label: string | null; fetchedAt: number }>();
 
   constructor(
     private config: ConfigService,
@@ -55,6 +85,9 @@ export class TelegramPersonalService {
     private encryption: EncryptionService,
     private clientsService: ClientsService,
     private videoProcessing: VideoProcessingService,
+    private chatStore: ChatStoreService,
+    private funnelConfig: FunnelConfigService,
+    private trackingService: TrackingService,
   ) {}
 
   private getApiCredentials(): { apiId: number; apiHash: string } {
@@ -175,6 +208,11 @@ export class TelegramPersonalService {
     // Журнал реквизитов (запрос пользователя 2026-08-27) — см. handlePaymentDetailsLog ниже.
     client.addEventHandler(
       (event: NewMessageEvent) => this.handlePaymentDetailsLog(channel, event),
+      new NewMessage({ outgoing: true }),
+    );
+    // Встроенный чат (2026-10-23) — ответы оператора с телефона тоже видны в CRM.
+    client.addEventHandler(
+      (event: NewMessageEvent) => this.handleOutgoingChat(channel, event),
       new NewMessage({ outgoing: true }),
     );
 
@@ -533,6 +571,10 @@ export class TelegramPersonalService {
       (event: NewMessageEvent) => this.handlePaymentDetailsLog(channel, event),
       new NewMessage({ outgoing: true }),
     );
+    attempt.client.addEventHandler(
+      (event: NewMessageEvent) => this.handleOutgoingChat(channel, event),
+      new NewMessage({ outgoing: true }),
+    );
   }
 
   // Не блокирует и не бросает наружу — сбой обработки одного сообщения не должен убить
@@ -574,6 +616,11 @@ export class TelegramPersonalService {
         }
       }
 
+      // Воронка проекта (2026-10-24): лид ли первое сообщение в личку и диалог ли оно. Без
+      // сохранённой воронки — как раньше: не лид (см. комментарий ниже), всегда диалог.
+      const funnel = await this.funnelConfig.forChannel(channel);
+      const wasLead = !!existingClient?.subscribedAt;
+
       await this.clientsService.recordInboundMessage(channel.projectId, {
         tgUserId,
         tgUsername: user.username ?? undefined,
@@ -593,16 +640,157 @@ export class TelegramPersonalService {
         // dialogueMessageCount, см. viaBot: false ниже), реальная подписка (если она вообще
         // возможна для этого режима) остаётся только за её настоящим механизмом
         // (handleJoinRequest/handleChatMemberUpdate в TelegramProvider).
-        treatAsSubscriber: false,
+        treatAsSubscriber: funnel.leadPersonalMessage,
         // viaBot: false — это личный MTProto-аккаунт, не бот. Пуши отправляются только через
         // Bot API (ChannelsService.sendMessage → TelegramProvider), у которого с этим
         // клиентом чата может вообще не быть — считать его "активировавшим бота" и включать
         // в аудиторию пушей неверно (баг-репорт 2026-07-17: массовые "chat not found").
         viaBot: false,
+        countPersonalAsDialogue: funnel.dialoguePersonalMessage,
+      });
+
+      if (funnel.leadPersonalMessage && !wasLead) await this.registerPersonalLead(channel, tgUserId, buyerId);
+
+      // Встроенный чат (2026-10-23) — после recordInboundMessage, чтобы диалог сразу привязался
+      // к уже созданному клиенту.
+      await this.chatStore.recordIncoming(channel, 'PERSONAL', {
+        peerId: tgUserId,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        username: user.username,
+        text: event.message.message || null,
+        media: extractMtprotoMedia(event.message),
+        externalId: String(event.message.id),
+        sentAt: new Date(event.message.date * 1000),
       });
     } catch (error) {
       this.logger.warn(`handleIncomingMessage failed for channel ${channel.id}: ${(error as Error).message}`);
     }
+  }
+
+  // Человек впервые стал лидом через личку (воронка: leadPersonalMessage). Новому клиенту
+  // subscribedAt уже поставил findOrCreate; тому, кто был в базе раньше без подписки, — здесь.
+  // Событие Subscribe — как при вступлении в канал: пиксели и автоворонки.
+  private async registerPersonalLead(channel: Channel, tgUserId: string, buyerId: string | undefined): Promise<void> {
+    try {
+      const client = await this.clientsService.findByTgId(tgUserId, channel.projectId);
+      if (!client) return;
+      if (!client.subscribedAt) {
+        await this.prisma.client.update({ where: { id: client.id }, data: { subscribedAt: new Date(), isSubscribed: true } });
+      }
+      await this.trackingService.recordEvent(channel.projectId, {
+        eventName: 'Subscribe',
+        clientId: client.id,
+        tgUserId,
+        buyerRef: buyerId,
+        source: 'SERVER',
+      });
+    } catch (error) {
+      this.logger.warn(`registerPersonalLead failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
+  }
+
+  private async handleOutgoingChat(channel: Channel, event: NewMessageEvent): Promise<void> {
+    if (!event.isPrivate) return;
+    const peer = event.message.peerId;
+    if (!peer || peer.className !== 'PeerUser') return;
+    const message = event.message;
+    setTimeout(() => {
+      void this.chatStore.recordOutgoingPersonal(channel, {
+        peerId: String(peer.userId),
+        text: message.message || null,
+        media: extractMtprotoMedia(message),
+        externalId: String(message.id),
+        sentAt: new Date(message.date * 1000),
+      });
+    }, OUTGOING_DEDUP_DELAY_MS);
+  }
+
+  // @username подключённого аккаунта, а если его нет — имя. null — сессия недоступна или не
+  // ответила за ACCOUNT_LABEL_TIMEOUT_MS (список проектов не должен ждать Telegram дольше).
+  async getAccountLabel(channel: Channel): Promise<string | null> {
+    if (!channel.tgSessionEncrypted) return null;
+    const cached = this.accountLabels.get(channel.id);
+    if (cached && Date.now() - cached.fetchedAt < ACCOUNT_LABEL_TTL_MS) return cached.label;
+    try {
+      const lookup = (async () => {
+        const client = await this.getLiveClient(channel);
+        if (!client) return null;
+        const me = await client.getMe();
+        return me.username ? `@${me.username}` : [me.firstName, me.lastName].filter(Boolean).join(' ') || null;
+      })();
+      const label = await Promise.race([
+        lookup,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ACCOUNT_LABEL_TIMEOUT_MS)),
+      ]);
+      // Таймаут не кэшируем — следующий запрос попробует снова.
+      if (label !== null) this.accountLabels.set(channel.id, { label, fetchedAt: Date.now() });
+      return label;
+    } catch {
+      return null;
+    }
+  }
+
+  // Собеседник по id: StringSession не хранит кэш сущностей между рестартами, а без access_hash
+  // GramJS не может адресовать пользователя — прогрев списком диалогов восстанавливает его для
+  // всех, с кем аккаунт переписывался.
+  private async resolvePeer(client: TelegramClient, peerId: string): Promise<Api.TypeInputPeer> {
+    try {
+      return await client.getInputEntity(Number(peerId));
+    } catch {
+      await client.getDialogs({ limit: 300 });
+      return client.getInputEntity(Number(peerId));
+    }
+  }
+
+  // Ответ оператора из встроенного чата через личный аккаунт (2026-10-23).
+  async sendChatMessage(
+    channel: Channel,
+    peerId: string,
+    payload: { text?: string; file?: { buffer: Buffer; filename: string; mimetype: string; kind?: 'voice' | 'video_note' } },
+  ): Promise<{ messageId: string; mediaType?: string }> {
+    const client = await this.getLiveClient(channel);
+    if (!client) throw new Error('Личный аккаунт не подключён');
+    try {
+      const entity = await this.resolvePeer(client, peerId);
+      const text = payload.text?.trim() || '';
+      if (!payload.file) {
+        const sent = await client.sendMessage(entity, { message: text });
+        return { messageId: String(sent.id) };
+      }
+      const file = new CustomFile(payload.file.filename, payload.file.buffer.length, '', payload.file.buffer);
+      // Голосовое и кружок (2026-10-25, шаблоны ответов) — файл уже подготовлен (ogg/opus,
+      // квадратное mp4). У кружка подписи не бывает — текст уходит отдельным сообщением.
+      if (payload.file.kind === 'voice') {
+        const sent = await client.sendFile(entity, { file, caption: text, voiceNote: true, workers: 1 });
+        return { messageId: String(sent.id), mediaType: 'voice' };
+      }
+      if (payload.file.kind === 'video_note') {
+        const sent = await client.sendFile(entity, { file, videoNote: true, workers: 1 });
+        if (text) await client.sendMessage(entity, { message: text });
+        return { messageId: String(sent.id), mediaType: 'video_note' };
+      }
+      const isPhoto = /^image\/(jpeg|png|webp)$/.test(payload.file.mimetype);
+      const isVideo = payload.file.mimetype === 'video/mp4';
+      const sent = await client.sendFile(entity, { file, caption: text, forceDocument: !isPhoto && !isVideo, workers: 1 });
+      return { messageId: String(sent.id), mediaType: isPhoto ? 'photo' : isVideo ? 'video' : 'document' };
+    } catch (error) {
+      await this.handleDeadSession(channel, error);
+      throw error;
+    }
+  }
+
+  // Файл из переписки лички — по id сообщения, скачивается заново из Telegram при просмотре.
+  async downloadChatMedia(channel: Channel, peerId: string, messageId: string): Promise<{ buffer: Buffer; mimeType: string }> {
+    const client = await this.getLiveClient(channel);
+    if (!client) throw new BadRequestException('Личный аккаунт не подключён');
+    const entity = await this.resolvePeer(client, peerId);
+    const [message] = await client.getMessages(entity, { ids: [Number(messageId)] });
+    if (!message?.media) throw new BadRequestException('Файл недоступен');
+    const data = await client.downloadMedia(message, {});
+    if (!data || typeof data === 'string') throw new BadRequestException('Файл недоступен');
+    const mimeType = message.photo ? 'image/jpeg' : (message.document?.mimeType ?? 'application/octet-stream');
+    return { buffer: data, mimeType };
   }
 
   // Журнал реквизитов (запрос пользователя 2026-08-27, "сервис который поможет отслеживать

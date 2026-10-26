@@ -1,6 +1,6 @@
 import { ArrayMinSize, IsArray, IsEnum, IsIn, IsEmail, IsOptional, IsString, MinLength, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission } from '@prisma/client';
+import { ChatAccess, ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission, PixelsVisibilityScope } from '@prisma/client';
 
 // role=OWNER не входит в допустимые значения намеренно — смена/создание второго Owner не
 // поддерживается в Фазе 1 (см. память/15_PHASES.md, "Team/роли Фаза 1"). OPERATOR_ADMIN — новая
@@ -90,4 +90,14 @@ export class CreateTeamMemberDto {
   @IsOptional()
   @IsEnum(ClientsVisibilityScope)
   clientsVisibilityScope?: ClientsVisibilityScope;
+
+  // Видимость пикселей (запрос пользователя 2026-10-24) — только для BUYER, см. User.pixelsVisibilityScope.
+  @IsOptional()
+  @IsEnum(PixelsVisibilityScope)
+  pixelsVisibilityScope?: PixelsVisibilityScope;
+
+  // Доступ к встроенному чату (запрос пользователя 2026-10-24) — для ADMIN/OPERATOR_ADMIN/OPERATOR.
+  @IsOptional()
+  @IsEnum(ChatAccess)
+  chatAccess?: ChatAccess;
 }

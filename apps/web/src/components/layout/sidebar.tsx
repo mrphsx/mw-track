@@ -19,7 +19,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Zap,
   LogOut,
   Sun,
   Moon,
@@ -54,6 +53,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { BrandMark } from '@/components/brand-mark';
 
 const THEME_OPTIONS = [
   { value: 'light', label: 'Светлая', icon: Sun },
@@ -167,7 +167,7 @@ export function Sidebar() {
               настоящий акцентный цвет в приложении сейчас — этот хардкод, оставляем как есть,
               просто добавляем тёмный вариант, где иначе терялась контрастность. */}
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-            <Zap className="w-4 h-4 text-white" />
+            <BrandMark className="w-5 h-5 text-white" dotFillClassName="fill-blue-600" />
           </div>
           {!collapsed && <span className="font-bold text-lg">MWTRACK</span>}
         </div>

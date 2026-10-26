@@ -39,6 +39,29 @@ export const CLIENTS_VISIBILITY_SCOPE_LABELS: Record<ClientsVisibilityScope, str
   OWN_CLIENTS: 'Только свои клиенты (кто пришёл от него)',
 };
 
+// Видимость пикселей (запрос пользователя 2026-10-24) — только для Buyer, дефолт «только свои».
+export type PixelsVisibilityScope = 'OWN_PIXELS' | 'PROJECT_PIXELS';
+
+export const PIXELS_VISIBILITY_SCOPE_LABELS: Record<PixelsVisibilityScope, string> = {
+  OWN_PIXELS: 'Только пиксели, которые он добавил сам',
+  PROJECT_PIXELS: 'Все пиксели своих проектов',
+};
+
+// Доступ к встроенному чату (запрос пользователя 2026-10-24) — для Admin, Operator-admin и
+// Operator. Баер чатов не видит никогда, владелец — всегда все.
+export type ChatAccess = 'NONE' | 'BOT' | 'PERSONAL' | 'ALL';
+
+export const CHAT_ACCESS_LABELS: Record<ChatAccess, string> = {
+  ALL: 'Чат бота и чат лички',
+  BOT: 'Только чат бота',
+  PERSONAL: 'Только чат лички',
+  NONE: 'Нет доступа к чатам',
+};
+
+// Оператор сюда не входит с 2026-10-24: его чаты назначаются со стороны ресурса (бот, личка) — в
+// «Чатах» и в «Подключениях» проекта (ChatResourceAccess).
+export const CHAT_ACCESS_ROLES: CreatableRole[] = ['ADMIN', 'OPERATOR_ADMIN'];
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -62,6 +85,10 @@ export interface TeamMember {
   landingsEditScope: LandingsActionScope;
   landingsDeleteScope: LandingsActionScope;
   clientsVisibilityScope: ClientsVisibilityScope;
+  pixelsVisibilityScope: PixelsVisibilityScope;
+  chatAccess: ChatAccess;
+  // «Скрытый оператор» (2026-10-25) — только у OPERATOR.
+  chatAnonymous?: boolean;
 }
 
 export interface TeamInvite {
@@ -79,14 +106,14 @@ export const ROLE_LABELS: Record<TeamRole, string> = {
   ADMIN: 'Администратор',
   BUYER: 'Байер',
   OPERATOR: 'Оператор',
-  OPERATOR_ADMIN: 'Оператор-админ',
+  OPERATOR_ADMIN: 'Тимлид',
 };
 
 export const ROLE_HINTS: Record<CreatableRole, string> = {
   ADMIN: 'Полный доступ ко всем проектам и команде компании, кроме биллинга.',
   BUYER: 'Лендинги, канал/бот, пуши и статистика — только выбранных проектов.',
   OPERATOR: 'Клиенты и депозиты — только выбранных проектов.',
-  OPERATOR_ADMIN: 'Создаёт и настраивает Операторов в своих проектах — сам не работает с лендингами/пушами/клиентами.',
+  OPERATOR_ADMIN: 'Ведёт операторов своих проектов: добавляет их, раздаёт чаты и настраивает авто-распределение. Сам не работает с лендингами/пушами/клиентами.',
 };
 
 export function genPassword(): string {
@@ -123,6 +150,8 @@ export function usePermissionsForm(initialRole: CreatableRole) {
   const [landingsEditScope, setLandingsEditScope] = useState<LandingsActionScope>('NONE');
   const [landingsDeleteScope, setLandingsDeleteScope] = useState<LandingsActionScope>('NONE');
   const [clientsVisibilityScope, setClientsVisibilityScope] = useState<ClientsVisibilityScope>('ALL_CLIENTS');
+  const [pixelsVisibilityScope, setPixelsVisibilityScope] = useState<PixelsVisibilityScope>('OWN_PIXELS');
+  const [chatAccess, setChatAccess] = useState<ChatAccess>('ALL');
 
   const setRole = (r: CreatableRole) => {
     setRoleState(r);
@@ -179,6 +208,8 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     setLandingsEditScope('NONE');
     setLandingsDeleteScope('NONE');
     setClientsVisibilityScope('ALL_CLIENTS');
+    setPixelsVisibilityScope('OWN_PIXELS');
+    setChatAccess('ALL');
   };
 
   const load = (
@@ -190,6 +221,8 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     clientsScope: ClientsVisibilityScope = 'ALL_CLIENTS',
     landingsEdit: LandingsActionScope = 'NONE',
     landingsDelete: LandingsActionScope = 'NONE',
+    pixelsScope: PixelsVisibilityScope = 'OWN_PIXELS',
+    chat: ChatAccess = 'ALL',
   ) => {
     setRoleState(r);
     setProjectIds(ids);
@@ -199,6 +232,8 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     setLandingsEditScope(landingsEdit);
     setLandingsDeleteScope(landingsDelete);
     setClientsVisibilityScope(clientsScope);
+    setPixelsVisibilityScope(pixelsScope);
+    setChatAccess(chat);
   };
 
   return {
@@ -218,6 +253,10 @@ export function usePermissionsForm(initialRole: CreatableRole) {
     setLandingsDeleteScope,
     clientsVisibilityScope,
     setClientsVisibilityScope,
+    pixelsVisibilityScope,
+    setPixelsVisibilityScope,
+    chatAccess,
+    setChatAccess,
     copyToAll,
     reset,
     load,
@@ -597,6 +636,52 @@ export function ClientsVisibilityScopeSection({
           <label key={opt} className="flex items-center gap-2 text-sm cursor-pointer">
             <input type="radio" checked={value === opt} onChange={() => onChange(opt)} />
             {CLIENTS_VISIBILITY_SCOPE_LABELS[opt]}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Видимость пикселей (запрос пользователя 2026-10-24) — тот же вид, что ClientsVisibilityScopeSection,
+// только для Buyer: пиксели в настройках проекта, ссылках, фильтрах, лидербордах и журнале пикселей.
+export function PixelsVisibilityScopeSection({
+  value,
+  onChange,
+}: {
+  value: PixelsVisibilityScope;
+  onChange: (v: PixelsVisibilityScope) => void;
+}) {
+  const options: PixelsVisibilityScope[] = ['OWN_PIXELS', 'PROJECT_PIXELS'];
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-muted-foreground">Какие пиксели баер видит и может выбрать в ссылках, фильтрах и статистике.</p>
+      <div className="space-y-1">
+        {options.map((opt) => (
+          <label key={opt} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" checked={value === opt} onChange={() => onChange(opt)} />
+            {PIXELS_VISIBILITY_SCOPE_LABELS[opt]}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Доступ к чатам (запрос пользователя 2026-10-24) — проекты определяются ролью и доступом к ним,
+// здесь выбирается только, какие чаты сотрудник открывает.
+export function ChatAccessSection({ value, onChange }: { value: ChatAccess; onChange: (v: ChatAccess) => void }) {
+  const options: ChatAccess[] = ['ALL', 'BOT', 'PERSONAL', 'NONE'];
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-muted-foreground">
+        Какие чаты сотрудник видит и где может отвечать клиентам. Проекты — те, к которым у него есть доступ (у админа — все).
+      </p>
+      <div className="space-y-1">
+        {options.map((opt) => (
+          <label key={opt} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="radio" checked={value === opt} onChange={() => onChange(opt)} />
+            {CHAT_ACCESS_LABELS[opt]}
           </label>
         ))}
       </div>

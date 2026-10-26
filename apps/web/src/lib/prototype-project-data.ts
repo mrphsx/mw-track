@@ -64,6 +64,8 @@ export interface PrototypeProject {
     isActive: boolean;
     tgAvatarFileId: string | null;
     tgPersonalConnected: boolean;
+    // Режим Telegram-канала — по нему страница проекта показывает «Ссылки на бота» (2026-10-23).
+    tgMode?: string | null;
     // Запрос пользователя 2026-08-05 — см. ProjectsService.sanitizeChannel для полного
     // комментария: true, если от Telegram давно не приходило вообще никаких вебхуков для
     // этого канала, хотя раньше они были (реальный ~20-часовой инцидент, обнаруженный только

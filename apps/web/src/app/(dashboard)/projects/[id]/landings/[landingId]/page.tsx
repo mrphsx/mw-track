@@ -15,6 +15,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { StatsCard } from '@/components/shared/stats-card';
 import { ClientsTable, ClientRow } from '@/components/clients/clients-table';
+import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
 import {
   LandingBehaviorFields,
   LandingBehaviorState,
@@ -198,6 +199,8 @@ export default function LandingStatsPage() {
 
   const [showGetLink, setShowGetLink] = useState(false);
   const [showDomainDialog, setShowDomainDialog] = useState(false);
+  // Карточка клиента по клику на строку (2026-10-24: раньше клик ничего не открывал).
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showAbTestDialog, setShowAbTestDialog] = useState(false);
 
   // /landings/:id/preview требует авторизации (JWT) — обычный <a href> не донесёт токен,
@@ -382,12 +385,14 @@ export default function LandingStatsPage() {
             <ClientsTable
               projectId={projectId}
               clients={clients.items}
-              onSelect={() => {}}
+              onSelect={setSelectedClientId}
               showTrafficSource={user?.role !== 'OPERATOR'}
             />
           </div>
         )}
       </div>
+
+      <ClientDetailDrawer projectId={projectId} clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
 
       <GetLinkDialog landing={showGetLink ? landingRef : null} attachment={stats.attachment} onClose={() => setShowGetLink(false)} />
       <LandingDomainDialog

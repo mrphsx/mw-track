@@ -20,7 +20,7 @@ export default function StudioNewProjectPage() {
   const router = useRouter();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [channelForm, setChannelForm] = useState<ChannelFormState>(EMPTY_CHANNEL_FORM);
+  const [channelForm, setChannelForm] = useState<ChannelFormState>({ ...EMPTY_CHANNEL_FORM, directTraffic: false });
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
   const [error, setError] = useState('');
 
@@ -61,7 +61,7 @@ export default function StudioNewProjectPage() {
 
       <div className={`${STUDIO_CARD} p-5 space-y-4`}>
         <h2 className="text-base font-semibold text-[#131A24] dark:text-[#E9EDF3]">Канал</h2>
-        <ChannelFieldsEditor value={channelForm} onChange={setChannelForm} />
+        <ChannelFieldsEditor value={channelForm} onChange={setChannelForm} studio />
       </div>
 
       {error && <p className="text-sm text-red-500">{error}</p>}

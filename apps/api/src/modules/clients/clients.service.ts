@@ -447,6 +447,9 @@ export class ClientsService {
       // (PRIVATE_CHANNEL_REQUEST/PUBLIC_CHANNEL_DIRECT) по-прежнему считают диалог только через
       // личный аккаунт — там бот отвечает за подписку/канал, а личка за настоящий диалог.
       countBotAsDialogue?: boolean;
+      // Сообщение в личку — диалог (воронка проекта, 2026-10-24: dialoguePersonalMessage).
+      // undefined = true — как было до настройки воронки.
+      countPersonalAsDialogue?: boolean;
     },
   ): Promise<void> {
     let client = await this.findByTgId(data.tgUserId, projectId);
@@ -516,6 +519,8 @@ export class ClientsService {
         await this.prisma.client.update({ where: { id: client.id }, data: patch });
       }
     }
+
+    if (!data.viaBot && data.countPersonalAsDialogue === false) return;
 
     await this.applyDialogueUpdate(
       projectId,
@@ -611,10 +616,12 @@ export class ClientsService {
   async getClientDetail(id: string, companyId: string, canViewTrafficSource: boolean) {
     const client = await this.findOne(id, companyId);
 
-    const [landing, buyer, pixel] = await Promise.all([
+    const [landing, buyer, pixel, botLink] = await Promise.all([
       client.landingId ? this.prisma.landing.findUnique({ where: { id: client.landingId }, select: { name: true } }) : null,
       client.buyerId ? this.prisma.user.findUnique({ where: { id: client.buyerId }, select: { firstName: true, lastName: true } }) : null,
       client.pixelId ? this.prisma.trackingPixel.findUnique({ where: { id: client.pixelId }, select: { label: true, platform: true } }) : null,
+      // Ссылка на бота — источник клиента при трафике напрямую в бота (2026-10-23).
+      client.botLinkId ? this.prisma.botLink.findUnique({ where: { id: client.botLinkId }, select: { name: true } }) : null,
     ]);
 
     return {
@@ -622,6 +629,7 @@ export class ClientsService {
       landingName: landing?.name ?? null,
       buyerName: buyer ? formatUserName(buyer) : null,
       pixelLabel: pixel ? pixel.label || pixel.platform : null,
+      botLinkName: botLink?.name ?? null,
       canViewTrafficSource,
     };
   }

@@ -10,6 +10,8 @@ import { ChannelsService } from './channels.service';
 import { TelegramPersonalService } from './providers/telegram-personal.service';
 import { UpdateChannelDto } from './dto/update-channel.dto';
 import { TestMessageDto } from './dto/test-message.dto';
+import { CheckBotTokenDto } from './dto/check-bot-token.dto';
+import { SwitchEntryDto } from './dto/switch-entry.dto';
 import { ConnectPersonalCodeDto, ConnectPersonalPasswordDto, ConnectPersonalPhoneDto } from './dto/personal-connect.dto';
 
 // Нет POST / (создание канала как отдельного действия) — под 1:1 канал создаётся только
@@ -33,6 +35,18 @@ export class ChannelsController {
   private async assertAccess(channelId: string, companyId: string, user: AuthUser, requiredPermissions?: Permission[]): Promise<void> {
     const channel = await this.channelsService.findOne(channelId, companyId);
     await this.getProjectsService().assertAccess(channel.projectId, companyId, user.userId, user.role, requiredPermissions);
+  }
+
+  // Куда ведёт лендинг (2026-10-24) — см. ChannelsService.switchEntry.
+  @Post(':id/entry')
+  async switchEntry(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: SwitchEntryDto) {
+    await this.assertAccess(id, companyId, user, [Permission.CHANNEL_MANAGE]);
+    return this.channelsService.switchEntry(id, companyId, dto.mode);
+  }
+
+  @Post('check-bot-token')
+  checkBotToken(@Company() companyId: string, @Body() dto: CheckBotTokenDto) {
+    return this.channelsService.checkBotToken(companyId, dto.token);
   }
 
   @Get(':id')

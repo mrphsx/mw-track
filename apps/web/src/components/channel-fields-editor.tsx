@@ -1,7 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Check, Copy, Eye, EyeOff } from 'lucide-react';
+import { isAxiosError } from 'axios';
+import { AlertTriangle, Check, CheckCircle2, Copy, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { api } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -57,6 +59,9 @@ export interface ChannelFormState {
   igPageId: string;
   igAccessToken: string;
   websiteUrl: string;
+  // Трафик напрямую в бота (2026-10-23, см. Channel.tgDirectTraffic). Необязательное: формы,
+  // которые его не заполняют (classic), не отправляют поле вовсе и не сбрасывают флаг.
+  directTraffic?: boolean;
 }
 
 // tgMode по умолчанию — приватный канал с заявкой (запрос пользователя 2026-08-18: "пусть
@@ -93,7 +98,53 @@ export function channelFormToPayload(f: ChannelFormState) {
     igPageId: f.type === 'INSTAGRAM' ? f.igPageId : undefined,
     igAccessToken: f.type === 'INSTAGRAM' ? f.igAccessToken : undefined,
     websiteUrl: f.type === 'WEBSITE' ? f.websiteUrl || undefined : undefined,
+    tgDirectTraffic: f.type === 'TELEGRAM' && f.tgMode === 'BOT_DIRECT' ? f.directTraffic : undefined,
   };
+}
+
+// Проверка токена бота до сохранения (запрос пользователя 2026-10-23) — POST
+// /channels/check-bot-token, только getMe, ничего не сохраняет.
+function BotTokenCheck({ token }: { token: string }) {
+  const [state, setState] = useState<
+    { status: 'idle' } | { status: 'loading' } | { status: 'ok'; username?: string; firstName: string; warning: string | null } | { status: 'error'; message: string }
+  >({ status: 'idle' });
+  const [checkedToken, setCheckedToken] = useState('');
+  const stale = checkedToken !== token.trim();
+
+  const check = async () => {
+    const value = token.trim();
+    setCheckedToken(value);
+    setState({ status: 'loading' });
+    try {
+      const { data } = await api.post<{ username?: string; firstName: string; warning: string | null }>('/channels/check-bot-token', { token: value });
+      setState({ status: 'ok', ...data });
+    } catch (err) {
+      setState({ status: 'error', message: (isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось проверить токен' });
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <Button type="button" size="sm" variant="outline" disabled={!token.trim() || state.status === 'loading'} onClick={check}>
+        {state.status === 'loading' ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />}
+        Проверить токен
+      </Button>
+      {!stale && state.status === 'ok' && (
+        <div className="space-y-1">
+          <p className="text-xs text-emerald-600 dark:text-emerald-400">
+            Токен рабочий: {state.firstName}
+            {state.username && ` (@${state.username})`}
+          </p>
+          {state.warning && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 flex items-start gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" /> {state.warning}
+            </p>
+          )}
+        </div>
+      )}
+      {!stale && state.status === 'error' && <p className="text-xs text-red-500">{state.message}</p>}
+    </div>
+  );
 }
 
 export function channelFormCanSubmit(f: ChannelFormState): boolean {
@@ -166,11 +217,18 @@ export function ChannelFieldsEditor({
   onChange,
   lockType,
   secretsRevealable,
+  studio,
+  lockMode,
 }: {
   value: ChannelFormState;
   onChange: (next: ChannelFormState) => void;
   lockType?: boolean;
   secretsRevealable?: boolean;
+  // Проверка токена и трафик напрямую в бота (2026-10-23) — только в Studio, classic не трогаем.
+  studio?: boolean;
+  // Studio-редактирование (2026-10-24): вход с лендинга меняется только кнопкой «Сделать входом» в
+  // «Подключениях» (с проверкой и откатом, ChannelsService.switchEntry), а не этим полем.
+  lockMode?: boolean;
 }) {
   const set = <K extends keyof ChannelFormState>(key: K, v: ChannelFormState[K]) => onChange({ ...value, [key]: v });
 
@@ -197,6 +255,11 @@ export function ChannelFieldsEditor({
 
       {value.type === 'TELEGRAM' && (
         <>
+          {lockMode ? (
+            <p className="text-xs text-muted-foreground">
+              Вход с лендинга: <span className="font-medium text-foreground">{TG_MODE_LABEL[value.tgMode]}</span> — меняется в «Подключениях» кнопкой «Сделать входом».
+            </p>
+          ) : (
           <div className="space-y-1.5">
             <Label htmlFor="channel-tg-mode">Способ вступления</Label>
             <Select value={value.tgMode} onValueChange={(v) => v && set('tgMode', v as TgMode)}>
@@ -219,6 +282,7 @@ export function ChannelFieldsEditor({
             </Select>
             <p className="text-xs text-muted-foreground">{TG_MODE_HINT[value.tgMode]}</p>
           </div>
+          )}
 
           {value.tgMode === 'PERSONAL_DM' ? (
             <div className="space-y-1.5">
@@ -244,15 +308,21 @@ export function ChannelFieldsEditor({
                 revealable={!!secretsRevealable}
                 placeholder="123456:ABC-..."
               />
+              {studio && <BotTokenCheck token={value.botToken} />}
+              {/* Переключатель «Реклама ведёт прямо в бота» (2026-10-23) переехал во вкладку «Воронка»
+                  (2026-10-24, вариант «Каждый, кто нажал Start»). directTraffic по-прежнему уходит
+                  в PATCH неизменённым, так что сохранение канала флаг не сбрасывает. */}
               <div className="space-y-1.5">
                 <Label htmlFor="channel-id">
                   Channel ID (числовой){value.tgMode === 'BOT_DIRECT' ? ', опционально' : ''}
                 </Label>
                 <Input id="channel-id" value={value.channelId} onChange={(e) => set('channelId', e.target.value)} placeholder="-1001234567890" />
               </div>
-              {value.tgMode === 'PUBLIC_CHANNEL_DIRECT' && (
+              {(value.tgMode === 'PUBLIC_CHANNEL_DIRECT' || lockMode) && (
                 <div className="space-y-1.5">
-                  <Label htmlFor="channel-username">Публичный username канала</Label>
+                  <Label htmlFor="channel-username">
+                    Публичный username канала{value.tgMode !== 'PUBLIC_CHANNEL_DIRECT' ? ' (если канал публичный)' : ''}
+                  </Label>
                   <Input
                     id="channel-username"
                     value={value.channelUsername}

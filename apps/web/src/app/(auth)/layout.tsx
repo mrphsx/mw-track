@@ -1,5 +1,6 @@
 'use client';
 
+import { BrandMark } from '@/components/brand-mark';
 import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth.store';
@@ -22,8 +23,13 @@ function AuthBrandPanel() {
           пространства, скрин снизу с отрицательными полями/наклоном для эффекта "вылезает за
           край" — без риска наложения на текст, который был при absolute-позиционировании. */}
       <div className="relative z-10 flex flex-col h-full w-full p-10 xl:p-14">
-        <span className="text-xl font-bold tracking-tight text-white shrink-0">
-          MW<span className="text-[#9CC1F5]">TRACK</span>
+        <span className="inline-flex items-center gap-2 shrink-0">
+          <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center">
+            <BrandMark className="w-5 h-5 text-white" />
+          </span>
+          <span className="text-xl font-bold tracking-tight text-white">
+            MW<span className="text-[#9CC1F5]">TRACK</span>
+          </span>
         </span>
 
         <div className="flex-1 flex flex-col justify-center max-w-sm min-h-0">

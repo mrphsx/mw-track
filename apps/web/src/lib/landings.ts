@@ -489,6 +489,14 @@ export async function downloadCloakingPrelandingZip(landingId: string): Promise<
   downloadBlob(res.data as Blob, 'prelanding.zip');
 }
 
+// Скачать загруженный ZIP CUSTOM-лендинга обратно (запрос пользователя 2026-10-23) — тем же
+// авторизованным blob-способом, что и скачивание white page выше.
+export async function downloadLandingZip(landing: { id: string; name: string }): Promise<void> {
+  const res = await api.get(`/landings/${landing.id}/download-zip`, { responseType: 'blob' });
+  const safeName = landing.name.replace(/[\\/:*?"<>|]+/g, '_').trim() || landing.id;
+  downloadBlob(res.data as Blob, `${safeName}.zip`);
+}
+
 // Привязывает лендинг к домену через upsert-путь эндпоинт (POST /domains/:id/paths) — путь
 // вычисляется автоматически из id проекта и лендинга (см. buildAutoPath). Берёт голые id,
 // а не LandingItem целиком — при создании лендинга есть только что созданный id и projectId

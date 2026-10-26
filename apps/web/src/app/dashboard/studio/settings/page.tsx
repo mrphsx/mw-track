@@ -23,7 +23,7 @@ const ROLE_LABELS: Record<string, string> = {
   ADMIN: 'Администратор',
   BUYER: 'Байер',
   OPERATOR: 'Оператор',
-  OPERATOR_ADMIN: 'Оператор-админ',
+  OPERATOR_ADMIN: 'Тимлид',
 };
 
 // Studio-версия личных настроек аккаунта (запрос пользователя 2026-07-30: "добей остальные

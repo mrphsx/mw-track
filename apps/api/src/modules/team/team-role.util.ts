@@ -11,7 +11,7 @@ export function assertCanAssignRole(requesterRole: UserRole, targetRole: string)
   // Оператор-админ (запрос пользователя 2026-07-30) может назначать только роль Operator —
   // не Admin, не Buyer, не другого оператор-админа.
   if (requesterRole === UserRole.OPERATOR_ADMIN && targetRole !== 'OPERATOR') {
-    throw new ForbiddenException('Оператор-админ может назначать только роль Operator');
+    throw new ForbiddenException('Тимлид может назначать только роль Operator');
   }
 }
 
@@ -53,7 +53,7 @@ export async function assertOperatorAdminScope(
 ): Promise<void> {
   if (requesterRole !== UserRole.OPERATOR_ADMIN) return;
   if (targetRole !== UserRole.OPERATOR) {
-    throw new ForbiddenException('Оператор-админ может управлять только участниками с ролью Operator');
+    throw new ForbiddenException('Тимлид может управлять только участниками с ролью Operator');
   }
   const own = await prisma.projectAccess.findMany({ where: { userId: requesterId }, select: { projectId: true } });
   const ownIds = new Set(own.map((a) => a.projectId));

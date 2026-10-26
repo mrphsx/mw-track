@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { Plus, Send, Users, UserX } from 'lucide-react';
+import { Bot, Megaphone, Plus, Send, User, Users, UserX } from 'lucide-react';
 import { api } from '@/lib/api';
 import { ChannelAvatar } from '@/components/channel-avatar';
 import { hasChannelAvatar } from '@/lib/landings';
@@ -27,6 +27,8 @@ interface ProjectSummary {
     webhookStale?: boolean;
   } | null;
   _count: { clients: number; pushes: number };
+  // Сколько подключено (2026-10-24) — иконками на карточке.
+  connections?: { bots: number; personal: number; channels: number };
   activeClientsCount: number;
   unsubscribedClientsCount: number;
 }
@@ -90,6 +92,7 @@ export default function StudioProjectsPage() {
                 <span className="flex items-center gap-1">
                   <Send className="w-3.5 h-3.5" /> {project._count.pushes}
                 </span>
+                {project.channel?.type === 'TELEGRAM' && project.connections && <ConnectionIcons {...project.connections} />}
               </div>
               {project.channel && (
                 <div className="flex gap-1.5 flex-wrap">
@@ -113,5 +116,26 @@ export default function StudioProjectsPage() {
         ))}
       </div>
     </div>
+  );
+}
+
+// Подключения проекта одними иконками с числом (запрос пользователя 2026-10-24: «2 бота, 1 личка,
+// 1 канал, но только иконками»). Подпись — в подсказке при наведении.
+function ConnectionIcons({ bots, personal, channels }: { bots: number; personal: number; channels: number }) {
+  const items = [
+    { icon: Bot, count: bots, title: `Ботов: ${bots}` },
+    { icon: User, count: personal, title: 'Личный аккаунт подключён' },
+    { icon: Megaphone, count: channels, title: 'Канал подключён' },
+  ].filter((i) => i.count > 0);
+  if (!items.length) return null;
+  return (
+    <span className="ml-auto flex items-center gap-2">
+      {items.map(({ icon: Icon, count, title }) => (
+        <span key={title} title={title} className="flex items-center gap-0.5 text-[#1F4E9C] dark:text-[#7BA9EE]">
+          <Icon className="w-3.5 h-3.5" />
+          {count > 1 && <span className="text-xs font-medium">{count}</span>}
+        </span>
+      ))}
+    </span>
   );
 }

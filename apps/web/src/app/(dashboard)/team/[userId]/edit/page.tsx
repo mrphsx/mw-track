@@ -7,6 +7,7 @@ import { isAxiosError } from 'axios';
 import { ArrowLeft } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { TransferChatsDialog } from '@/components/transfer-chats-dialog';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -84,6 +85,14 @@ export default function EditTeamMemberPage() {
     );
     setLoadedFor(member.id);
   }
+
+  // Оператора блокируют или переводят в другую роль — сначала решить, что с его чатами (2026-10-26).
+  const [chatsDecision, setChatsDecision] = useState(false);
+  const save = () => {
+    const losesChats = member?.role === 'OPERATOR' && ((member.isActive && !isActive) || form.role !== 'OPERATOR');
+    if (losesChats) setChatsDecision(true);
+    else update.mutate();
+  };
 
   const update = useMutation({
     mutationFn: () => {
@@ -222,7 +231,7 @@ export default function EditTeamMemberPage() {
                         {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
                         <SelectItem value="BUYER">Байер</SelectItem>
                         <SelectItem value="OPERATOR">Оператор</SelectItem>
-                        <SelectItem value="OPERATOR_ADMIN">Оператор-админ</SelectItem>
+                        <SelectItem value="OPERATOR_ADMIN">Тимлид</SelectItem>
                       </>
                     )}
                   </SelectContent>
@@ -292,7 +301,7 @@ export default function EditTeamMemberPage() {
           {error && <p className="text-sm text-red-500">{error}</p>}
 
           <div className="flex gap-2">
-            <Button onClick={() => update.mutate()} disabled={(needsProjects && form.projectIds.length === 0) || update.isPending}>
+            <Button onClick={save} disabled={(needsProjects && form.projectIds.length === 0) || update.isPending}>
               {update.isPending ? 'Сохраняем...' : 'Сохранить'}
             </Button>
             <Button variant="outline" onClick={() => router.push('/team')}>
@@ -300,6 +309,17 @@ export default function EditTeamMemberPage() {
             </Button>
           </div>
         </>
+      )}
+      {chatsDecision && member && (
+        <TransferChatsDialog
+          fromUserId={member.id}
+          beforeRemove="и сохранить"
+          onClose={() => setChatsDecision(false)}
+          onDone={() => {
+            setChatsDecision(false);
+            update.mutate();
+          }}
+        />
       )}
     </div>
   );

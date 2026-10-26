@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
 import { Public } from '../../common/decorators/public.decorator';
 import { TelegramProvider } from '../channels/providers/telegram.provider';
+import { ExtraBotsService } from '../channels/extra-bots.service';
 import { WhatsAppProvider } from '../channels/providers/whatsapp.provider';
 import { InstagramProvider } from '../channels/providers/instagram.provider';
 
@@ -13,12 +14,21 @@ export class WebhooksController {
     private whatsAppProvider: WhatsAppProvider,
     private instagramProvider: InstagramProvider,
     private config: ConfigService,
+    private extraBots: ExtraBotsService,
   ) {}
 
   @Public()
   @Post('telegram/:channelId')
   async telegramWebhook(@Param('channelId') channelId: string, @Body() update: object) {
     await this.telegramProvider.handleWebhook(channelId, update);
+    return { ok: true };
+  }
+
+  // Дополнительные боты проекта (2026-10-24) — отдельный путь, чтобы id бота не путался с id канала.
+  @Public()
+  @Post('telegram-bot/:botId')
+  async telegramExtraBotWebhook(@Param('botId') botId: string, @Body() update: object) {
+    await this.extraBots.handleWebhook(botId, update);
     return { ok: true };
   }
 

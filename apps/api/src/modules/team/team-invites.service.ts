@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission, Prisma, TeamInvite, UserRole } from '@prisma/client';
+import { ChatAccess, ClientsVisibilityScope, LandingsActionScope, LandingsVisibilityScope, Permission, PixelsVisibilityScope, Prisma, TeamInvite, UserRole } from '@prisma/client';
 import { addDays } from 'date-fns';
 import { nanoid } from 'nanoid';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,6 +30,8 @@ interface InvitePermissionsPayload {
   landingsEditScope?: LandingsActionScope;
   landingsDeleteScope?: LandingsActionScope;
   clientsVisibilityScope?: ClientsVisibilityScope;
+  pixelsVisibilityScope?: PixelsVisibilityScope;
+  chatAccess?: ChatAccess;
 }
 
 @Injectable()
@@ -64,7 +66,7 @@ export class TeamInvitesService {
     // Operator — то же исключение, что и в TeamService.create (2026-07-31): приглашение с
     // ролью Operator не требует projectIds, accept() ниже уже переживает пустой список.
     if (dto.role !== 'ADMIN' && dto.role !== 'OPERATOR' && (!dto.projectIds || dto.projectIds.length === 0)) {
-      throw new BadRequestException('Для роли Buyer/Оператор-админ нужно выбрать хотя бы один проект');
+      throw new BadRequestException('Для роли Buyer/Тимлид нужно выбрать хотя бы один проект');
     }
 
     await assertOperatorAdminScope(this.prisma, requesterId, requesterRole, dto.role as UserRole, dto.projectIds);
@@ -80,6 +82,8 @@ export class TeamInvitesService {
       landingsEditScope: dto.landingsEditScope,
       landingsDeleteScope: dto.landingsDeleteScope,
       clientsVisibilityScope: dto.clientsVisibilityScope,
+      pixelsVisibilityScope: dto.pixelsVisibilityScope,
+      chatAccess: dto.chatAccess,
     };
 
     return this.prisma.teamInvite.create({
@@ -148,6 +152,8 @@ export class TeamInvitesService {
           landingsEditScope: payload?.landingsEditScope,
           landingsDeleteScope: payload?.landingsDeleteScope,
           clientsVisibilityScope: payload?.clientsVisibilityScope,
+          pixelsVisibilityScope: payload?.pixelsVisibilityScope,
+          chatAccess: payload?.chatAccess,
           buyerShortCode,
           projectAccess: invite.role !== 'ADMIN' && projectIds.length ? { create: projectIds.map((projectId) => ({ projectId })) } : undefined,
         },

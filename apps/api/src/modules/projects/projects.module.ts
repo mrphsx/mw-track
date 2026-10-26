@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ChannelsModule } from '../channels/channels.module';
+import { FunnelModule } from '../funnel/funnel.module';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
 
@@ -7,7 +8,7 @@ import { ProjectsService } from './projects.service';
 // импортируют ProjectsModule (нужен им для своих сервисов), так что прямой import ChannelsModule
 // здесь замыкает цикл ProjectsModule -> ChannelsModule -> ClientsModule -> ProjectsModule.
 @Module({
-  imports: [forwardRef(() => ChannelsModule)],
+  imports: [forwardRef(() => ChannelsModule), FunnelModule],
   controllers: [ProjectsController],
   providers: [ProjectsService],
   exports: [ProjectsService],

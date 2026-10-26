@@ -110,7 +110,8 @@ export interface Project {
 // Все возможные значения вкладки — используется и для валидации ?tab= из URL (запрос
 // пользователя 2026-07-27: "при обновлении страницы слетает вкладка"), и как fallback.
 // 'operators' — 2026-07-31, см. OperatorsTab ниже.
-export const SETTINGS_TABS = ['general', 'channels', 'bot', 'personal', 'pixels', 'pixel-logs', 'events', 'integration', 'operators', 'danger'] as const;
+// 'funnel' — только Studio (2026-10-24, вкладка «Воронка»), классическая страница её не рисует.
+export const SETTINGS_TABS = ['general', 'channels', 'bot', 'personal', 'funnel', 'pixels', 'pixel-logs', 'events', 'integration', 'operators', 'danger'] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export function readTabFromSearchParams(params: URLSearchParams): SettingsTab {

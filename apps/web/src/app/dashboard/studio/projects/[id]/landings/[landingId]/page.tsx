@@ -5,13 +5,14 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isAxiosError } from 'axios';
-import { ArrowLeft, Eye, Wand2, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users, Layers } from 'lucide-react';
+import { ArrowLeft, Download, Eye, Wand2, Globe, Link2, MessageCircle, MousePointerClick, Shield, SplitSquareHorizontal, UserCheck, UserMinus, Users, Layers } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
-import { STATUS_LABEL, TYPE_LABEL, DomainOption, previewLanding } from '@/lib/landings';
+import { STATUS_LABEL, TYPE_LABEL, DomainOption, downloadLandingZip, previewLanding } from '@/lib/landings';
 import { StatsCard } from '@/components/shared/stats-card';
-import { ClientsTable, ClientRow } from '@/components/clients/clients-table';
+import { ClientRow } from '@/components/clients/clients-table';
+import { ClientDetailDrawer } from '@/components/clients/client-detail-drawer';
 import {
   LandingBehaviorFields,
   LandingBehaviorState,
@@ -26,6 +27,7 @@ import { AbTestDialogTarget, AbTestGroupDialog, LandingDomainDialog, LandingDoma
 import { AbTestComparisonCard, AbTestMemberStats, LandingVariantStats } from '@/components/landings/ab-test-comparison-card';
 import { STUDIO_CARD, StudioLinkButton, StudioPill } from '../../../../ui';
 import { StudioClientsSummary } from '../../../../clients-summary';
+import { StudioClientsTable } from '../../../../clients-table';
 import { useAuthStore } from '@/store/auth.store';
 
 // Приглушённый текст Studio (запрос пользователя 2026-08-03: "карточки просмотров, кликов итд
@@ -208,6 +210,9 @@ export default function StudioLandingStatsPage() {
 
   const [showGetLink, setShowGetLink] = useState(false);
   const [showDomainDialog, setShowDomainDialog] = useState(false);
+  // Карточка клиента по клику на строку — как в списке клиентов проекта (2026-10-24: раньше клик
+  // на странице лендинга ничего не открывал).
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [showAbTestDialog, setShowAbTestDialog] = useState(false);
 
   const preview = () => previewLanding(landingId);
@@ -304,6 +309,14 @@ export default function StudioLandingStatsPage() {
             <StudioLinkButton icon={Eye} onClick={preview}>
               Предпросмотр
             </StudioLinkButton>
+            {stats.landing.type === 'CUSTOM' && (
+              <StudioLinkButton
+                icon={Download}
+                onClick={() => downloadLandingZip(stats.landing).catch(() => window.alert('Не удалось скачать ZIP'))}
+              >
+                Скачать ZIP
+              </StudioLinkButton>
+            )}
             {/* Клоакинг — отдельная страница (запрос пользователя 2026-09-23), не карточка/
                 вкладка: вариантов клоакинга будет всё больше. */}
             <StudioLinkButton icon={Shield} href={`/projects/${projectId}/landings/${landingId}/cloaking`}>
@@ -430,16 +443,18 @@ export default function StudioLandingStatsPage() {
             Пока нет подписчиков, привязанных именно к этому лендингу.
           </div>
         ) : (
-          <div className={STUDIO_CARD}>
-            <ClientsTable
-              projectId={projectId}
-              clients={clients.items}
-              onSelect={() => {}}
-              showTrafficSource={user?.role !== 'OPERATOR'}
-            />
-          </div>
+          // Та же таблица, что в списке клиентов проекта (2026-10-24: раньше здесь стояла таблица
+          // классического интерфейса и визуально отличалась).
+          <StudioClientsTable
+            projectId={projectId}
+            clients={clients.items}
+            onSelect={setSelectedClientId}
+            showTrafficSource={user?.role !== 'OPERATOR'}
+          />
         )}
       </div>
+
+      <ClientDetailDrawer projectId={projectId} clientId={selectedClientId} onClose={() => setSelectedClientId(null)} />
 
       <GetLinkDialog landing={showGetLink ? landingRef : null} attachment={stats.attachment} onClose={() => setShowGetLink(false)} />
       <LandingDomainDialog

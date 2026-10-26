@@ -11,6 +11,9 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   ClientsVisibilityScopeSection,
+  PixelsVisibilityScopeSection,
+  ChatAccessSection,
+  CHAT_ACCESS_ROLES,
   CreatableRole,
   CredRow,
   DomainsPermissionsSection,
@@ -59,6 +62,8 @@ export default function StudioNewInvitePage() {
         landingsEditScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsEditScope,
         landingsDeleteScope: form.role === 'ADMIN' || form.role === 'OPERATOR' ? undefined : form.landingsDeleteScope,
         clientsVisibilityScope: form.role === 'BUYER' ? form.clientsVisibilityScope : undefined,
+        pixelsVisibilityScope: form.role === 'BUYER' ? form.pixelsVisibilityScope : undefined,
+        chatAccess: CHAT_ACCESS_ROLES.includes(form.role) ? form.chatAccess : undefined,
       }),
     onSuccess: ({ data }) => {
       queryClient.invalidateQueries({ queryKey: ['team-invites'] });
@@ -112,7 +117,7 @@ export default function StudioNewInvitePage() {
                   {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
                   <SelectItem value="BUYER">Байер</SelectItem>
                   <SelectItem value="OPERATOR">Оператор</SelectItem>
-                  <SelectItem value="OPERATOR_ADMIN">Оператор-админ</SelectItem>
+                  <SelectItem value="OPERATOR_ADMIN">Тимлид</SelectItem>
                 </>
               )}
             </SelectContent>
@@ -126,6 +131,13 @@ export default function StudioNewInvitePage() {
           )}
         </div>
       </div>
+
+      {CHAT_ACCESS_ROLES.includes(form.role) && (
+        <div className={`${STUDIO_CARD} p-5 space-y-2`}>
+          <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Доступ к чатам</h2>
+          <ChatAccessSection value={form.chatAccess} onChange={form.setChatAccess} />
+        </div>
+      )}
 
       {needsProjects && (
         <>
@@ -166,6 +178,13 @@ export default function StudioNewInvitePage() {
             <div className={`${STUDIO_CARD} p-5 space-y-2`}>
               <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Видимость клиентов и статистики</h2>
               <ClientsVisibilityScopeSection value={form.clientsVisibilityScope} onChange={form.setClientsVisibilityScope} />
+            </div>
+          )}
+
+          {form.role === 'BUYER' && (
+            <div className={`${STUDIO_CARD} p-5 space-y-2`}>
+              <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Видимость пикселей</h2>
+              <PixelsVisibilityScopeSection value={form.pixelsVisibilityScope} onChange={form.setPixelsVisibilityScope} />
             </div>
           )}
         </>

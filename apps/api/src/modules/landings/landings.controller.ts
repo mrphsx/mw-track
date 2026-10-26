@@ -198,6 +198,19 @@ export class LandingsController {
     await this.rendererService.streamPreviewAsset(id, companyId, subPath, res);
   }
 
+  // Скачать загруженный ZIP CUSTOM-лендинга обратно (запрос пользователя 2026-10-23) — тот же
+  // LANDINGS_VIEW, что у /preview выше.
+  @Get(':id/download-zip')
+  async downloadZip(
+    @Param('id') id: string,
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ) {
+    await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
+    await this.landingsService.streamCustomLandingZipDownload(id, companyId, res);
+  }
+
   @Get(':id/stats')
   async stats(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);

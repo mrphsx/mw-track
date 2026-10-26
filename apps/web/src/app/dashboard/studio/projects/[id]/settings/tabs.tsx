@@ -207,9 +207,10 @@ interface ChannelFull {
   igPageId: string | null;
   igAccessToken: string | null;
   websiteUrl: string | null;
+  tgDirectTraffic: boolean;
 }
 
-function EditChannelDialog({ channelId, projectId, onClose }: { channelId: string | null; projectId: string; onClose: () => void }) {
+export function EditChannelDialog({ channelId, projectId, onClose }: { channelId: string | null; projectId: string; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<ChannelFormState | null>(null);
   const [error, setError] = useState('');
@@ -237,6 +238,7 @@ function EditChannelDialog({ channelId, projectId, onClose }: { channelId: strin
       igPageId: full.igPageId || '',
       igAccessToken: full.igAccessToken || '',
       websiteUrl: full.websiteUrl || '',
+      directTraffic: full.tgDirectTraffic ?? false,
     });
   }, [full]);
 
@@ -251,6 +253,10 @@ function EditChannelDialog({ channelId, projectId, onClose }: { channelId: strin
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
       queryClient.invalidateQueries({ queryKey: ['channel-avatar', channelId] });
+      // Блок «Бот» и вкладка «Воронка» читают канал своими запросами — после смены токена/режима
+      // они должны обновиться так же, как карточка канала.
+      queryClient.invalidateQueries({ queryKey: ['channel', channelId] });
+      queryClient.invalidateQueries({ queryKey: ['project-funnel', projectId] });
       close();
     },
     onError: (err) => setError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось сохранить канал'),
@@ -265,7 +271,7 @@ function EditChannelDialog({ channelId, projectId, onClose }: { channelId: strin
         {isLoading && <p className="text-sm text-muted-foreground">Загрузка...</p>}
         {form && (
           <div className="space-y-3">
-            <ChannelFieldsEditor value={form} onChange={setForm} lockType secretsRevealable />
+            <ChannelFieldsEditor value={form} onChange={setForm} lockType secretsRevealable studio lockMode />
             {error && <p className="text-sm text-red-500">{error}</p>}
             <div className="flex gap-2">
               <StudioLinkButton variant="primary" onClick={() => save.mutate()} disabled={!channelFormCanSubmit(form) || save.isPending}>
@@ -1396,6 +1402,7 @@ export function BotSettingsTab({ projectId, channelId, channelType }: { projectI
     queryKey: ['channel', channelId, 'bot-settings'],
     queryFn: async () => (await api.get<ChannelBotSettings>(`/channels/${channelId}`)).data,
   });
+  const [editingToken, setEditingToken] = useState(false);
 
   if (channelType !== 'TELEGRAM') {
     return <div className={`${STUDIO_CARD} p-5 text-sm ${MUTED}`}>Настройки бота доступны только для Telegram-канала.</div>;
@@ -1406,21 +1413,32 @@ export function BotSettingsTab({ projectId, channelId, channelType }: { projectI
   return (
     <div className="space-y-4">
       <div className={`${STUDIO_CARD} p-5 space-y-3`}>
-        <h2 className={`text-sm font-semibold ${FG}`}>Токен бота</h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className={`text-sm font-semibold ${FG}`}>Токен бота</h2>
+          <StudioLinkButton size="sm" onClick={() => setEditingToken(true)}>
+            Сменить токен
+          </StudioLinkButton>
+        </div>
         <BotTokenField token={full.tgBotToken} />
+        <EditChannelDialog channelId={editingToken ? channelId : null} projectId={projectId} onClose={() => setEditingToken(false)} />
       </div>
 
-      {full.tgMode !== 'PRIVATE_CHANNEL_REQUEST' ? (
-        <div className={`${STUDIO_CARD} p-5 text-sm ${MUTED}`}>
-          Приветственное сообщение отправляется только в режиме «Приватный канал (заявка)» — это единственный
-          режим, в котором Telegram сообщает боту момент одобрения заявки. Для личных сообщений и публичного
-          канала бот не участвует в подключении пользователя, и отправить приветствие некому.
-        </div>
-      ) : (
+      {/* Приветствие (сценарий «Подписка») — 2026-10-24: устаревшая плашка «только для приватного
+          канала» убрана. Бот шлёт его и тому, кто стал лидом через Start в боте (воронка проекта,
+          TelegramProvider.registerDirectLead). Задержка одобрения — по-прежнему только для заявок. */}
+      {full.tgMode === 'PRIVATE_CHANNEL_REQUEST' ? (
         <>
           <JoinDelayCard channelId={channelId} projectId={projectId} full={full} />
-          <SubscribeScenarioCard channelId={channelId} projectId={projectId} />
+          <SubscribeScenarioCard channelId={channelId} projectId={projectId} when="при одобрении заявки на вступление" />
         </>
+      ) : (
+        full.tgMode !== 'PERSONAL_DM' && (
+          <SubscribeScenarioCard
+            channelId={channelId}
+            projectId={projectId}
+            when="когда человек становится лидом через Start в боте (см. вкладку «Воронка»)"
+          />
+        )
       )}
 
       {full.tgMode !== 'PERSONAL_DM' && <ManagersCard channelId={channelId} projectId={projectId} full={full} />}
@@ -1545,7 +1563,7 @@ function BotTokenField({ token }: { token: string | null }) {
   );
 }
 
-function SubscribeScenarioCard({ channelId, projectId }: { channelId: string; projectId: string }) {
+function SubscribeScenarioCard({ channelId, projectId, when }: { channelId: string; projectId: string; when: string }) {
   const { data: scenarios } = useQuery({
     queryKey: ['channel', channelId, 'scenarios'],
     queryFn: async () => (await api.get<BotScenarioListItem[]>(`/channels/${channelId}/scenarios`)).data,
@@ -1565,7 +1583,7 @@ function SubscribeScenarioCard({ channelId, projectId }: { channelId: string; pr
           {configured ? (
             <>
               <CheckCircle2 className="w-4 h-4 text-[#1F7A6C] dark:text-[#6FCBBA] shrink-0" />
-              <span className={FG}>Настроено — отправится при одобрении заявки на вступление</span>
+              <span className={FG}>Настроено — отправится {when}</span>
             </>
           ) : (
             <>

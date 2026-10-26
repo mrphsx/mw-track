@@ -64,6 +64,8 @@ export interface User {
   // только для очень старых записей до этой правки (buildTrackedLink тогда просто подставляет
   // обычный id, ссылка чуть длиннее, но рабочая).
   buyerShortCode?: string | null;
+  // Доступ к встроенному чату (2026-10-24) — см. User.chatAccess на бэкенде и canUseChats.
+  chatAccess?: 'NONE' | 'BOT' | 'PERSONAL' | 'ALL';
   company?: Company;
   // Гранулярные права, per-project (запрос пользователя 2026-07-28) — {} для elevated ролей
   // (OWNER/ADMIN/SUPER_ADMIN, см. @/lib/permissions.ts hasPermission — они не проверяются по

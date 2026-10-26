@@ -3,7 +3,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BotScenario, BotScenarioTrigger, Channel, Client } from '@prisma/client';
 import { Queue } from 'bull';
-import { Bot, Context, GrammyError, InputFile } from 'grammy';
+import { Api, Bot, Context, GrammyError, InputFile } from 'grammy';
 import { ClientLimitReachedException, ClientsService } from '../../clients/clients.service';
 import { PurchasesService } from '../../clients/purchases.service';
 import { TrackingService } from '../../tracking/tracking.service';
@@ -14,6 +14,9 @@ import { ApproveJoinRequestJob } from '../join-request-approval.processor';
 import { BotScenarioEngineService } from '../bot-scenario-engine.service';
 import { VideoProcessingService } from '../video-processing.service';
 import { extractInviteHash } from '../telegram-link.util';
+import { BOT_LINK_UTM_SOURCE, parseBotLinkStart } from '../bot-link.util';
+import { ChatStoreService } from '../../chat/chat-store.service';
+import { FunnelConfigService } from '../../funnel/funnel-config.service';
 import { MAX_PURCHASE_AMOUNT_USD } from '../../../common/purchase-amount.const';
 import {
   ClientIdentifier,
@@ -160,6 +163,15 @@ function stripCardQuestion(text: string | undefined): string {
 // file_id в Telegram долгоживущий; 7 дней с запасом покрывают любую рассылку.
 const TG_FILE_ID_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+// Файл ответа из встроенного чата. kind — явный тип для голосового/кружка; без него тип
+// определяется по mimetype (фото/видео/документ).
+export interface ChatOutgoingFile {
+  buffer: Buffer;
+  filename: string;
+  mimetype: string;
+  kind?: 'voice' | 'video_note';
+}
+
 @Injectable()
 export class TelegramProvider implements ChannelProvider {
   private readonly logger = new Logger(TelegramProvider.name);
@@ -178,6 +190,8 @@ export class TelegramProvider implements ChannelProvider {
     // потому что обратное ребро не участвует в графе Nest вообще.
     private scenarioEngine: BotScenarioEngineService,
     @InjectQueue('join-request-approval') private joinRequestQueue: Queue<ApproveJoinRequestJob>,
+    private chatStore: ChatStoreService,
+    private funnelConfig: FunnelConfigService,
   ) {}
 
   getBot(channelId: string): Bot | undefined {
@@ -195,7 +209,9 @@ export class TelegramProvider implements ChannelProvider {
       if (!channel.tgPersonalUsername) {
         throw new Error('Укажите username личного аккаунта — без него лендинг не будет знать, куда вести');
       }
-      return;
+      // Вход через личку не выключает бота проекта (2026-10-24, вход выбирается в «Подключениях»):
+      // если бот есть, он продолжает работать — рассылки, сценарии, чат. Без токена — как раньше.
+      if (!channel.tgBotToken) return;
     }
 
     if (!channel.tgBotToken) throw new Error('Bot token required');
@@ -209,6 +225,11 @@ export class TelegramProvider implements ChannelProvider {
     const notifierClash = await this.prisma.notificationBot.findUnique({ where: { tgBotId: tokenBotId }, select: { id: true } });
     if (notifierClash) {
       throw new Error('Этот бот уже подключён для служебных оповещений компании. Для канала нужен отдельный бот из @BotFather.');
+    }
+    // Тот же перехват вебхука, что и выше, — бот уже работает дополнительным ботом проекта (2026-10-24).
+    const extraClash = await this.prisma.projectBot.findFirst({ where: { tgBotId: tokenBotId, deletedAt: null }, select: { id: true } });
+    if (extraClash) {
+      throw new Error('Этот бот уже подключён как дополнительный бот проекта. Для канала нужен отдельный бот из @BotFather.');
     }
 
     if (mode === 'PUBLIC_CHANNEL_DIRECT' && !channel.tgChannelUsername) {
@@ -225,37 +246,18 @@ export class TelegramProvider implements ChannelProvider {
     // (пересланное медиа без подписи не дошло бы до message:text) и не дать ему создать Client
     // /попасть в сценарии — иначе менеджер мог бы случайно получить пуш/автоворонку этого бота.
     // Быстрый выход, если у канала вообще нет менеджеров — основной путь для всех остальных.
+    this.useManagerInterceptor(bot, channel);
+
+    // Встроенный чат (запрос пользователя 2026-10-23) — каждое личное сообщение человека боту
+    // пишется в переписку ДО обработчиков ниже, чтобы ответы сценария, которые они отправят,
+    // легли в диалог после него. Сообщения менеджеров сюда не доходят — их перехватывает
+    // middleware выше. Сбой записи не мешает обработке (recordIncomingBotMessage глотает ошибки).
     bot.use(async (ctx, next) => {
-      if (
-        (channel.tgManagerUsernames?.length ?? 0) > 0 &&
-        ctx.message &&
-        this.isManager(channel, ctx.from?.username)
-      ) {
-        await this.handleManagerMessage(ctx, channel);
-        return;
-      }
+      if (ctx.message) await this.chatStore.recordIncomingBotMessage(channel, ctx.message);
       await next();
     });
 
-    // Кнопки под карточкой клиента в чате менеджера (см. handleManagerMessage).
-    bot.callbackQuery(/^mgr_dlg:(.+)$/, async (ctx) => {
-      await this.handleManagerDialogueButton(ctx, channel, ctx.match[1]);
-    });
-    bot.callbackQuery(/^mgr_buy:(.+)$/, async (ctx) => {
-      await this.handleManagerPurchaseButton(ctx, channel, ctx.match[1]);
-    });
-    bot.callbackQuery('mgr_cancel', async (ctx) => {
-      await this.handleManagerCancelButton(ctx, channel);
-    });
-    // Кнопки из карточек, отправленных до 2026-09-17 ("✅ Да, диалог" / "❌ Нет"), — в чатах
-    // менеджеров они остались и должны продолжать работать.
-    bot.callbackQuery(/^mgr_dlg_yes:(.+)$/, async (ctx) => {
-      await this.handleManagerDialogueButton(ctx, channel, ctx.match[1]);
-    });
-    bot.callbackQuery('mgr_dlg_no', async (ctx) => {
-      await ctx.answerCallbackQuery();
-      await ctx.editMessageReplyMarkup();
-    });
+    this.useManagerCallbacks(bot, channel);
 
     bot.on('chat_join_request', async (ctx) => {
       await this.handleJoinRequest(ctx, channel);
@@ -876,16 +878,46 @@ export class TelegramProvider implements ChannelProvider {
       }
     }
 
+    // Трафик напрямую в бота (запрос пользователя 2026-10-23): реклама ведёт сразу в бота по
+    // ссылке go_<code>…, атрибуция берётся из самой ссылки (BotLink) и макросов кабинета в её
+    // хвосте. Код с лендинга (start:<code> выше) приоритетнее и сюда не доходит. Кто из нажавших
+    // Start — лид, решает воронка проекта (2026-10-24, funnel-config.ts: leadBotStart); без
+    // сохранённой воронки — как раньше: в режиме «Сразу в бота» по ссылке на бота всегда, любой —
+    // при tgDirectTraffic.
+    const funnel = await this.funnelConfig.forChannel(channel);
+    const fromLanding = !!attribution;
+    const botLink = !attribution && funnel.leadBotStart !== 'OFF' ? await this.resolveBotLink(channel, startParam) : null;
+    if (botLink) {
+      attribution = botLink.attribution;
+      if (ctx.from?.id) {
+        await this.clientsService.updateTracking(String(ctx.from.id), channel.projectId, {
+          utmSource: attribution.utmSource,
+          utmCampaign: attribution.utmCampaign,
+          pixelId: attribution.pixelId,
+          adId: attribution.adId,
+          campaignId: attribution.campaignId,
+          buyerId: attribution.buyerRef,
+        });
+      }
+    }
+    const isDirectLead =
+      funnel.leadBotStart === 'ALL' ||
+      (funnel.leadBotStart === 'TRACKED' && (fromLanding || !!botLink)) ||
+      (funnel.leadBotStart === 'LINKS' && !!botLink);
+
     if (ctx.from?.id) {
+      const wasLead = isDirectLead
+        ? !!(await this.clientsService.findByTgId(String(ctx.from.id), channel.projectId))?.subscribedAt
+        : true;
       try {
         await this.clientsService.recordInboundMessage(channel.projectId, {
           tgUserId: String(ctx.from.id),
           tgUsername: ctx.from.username,
           tgFirstName: ctx.from.first_name,
           tgLastName: ctx.from.last_name,
-          treatAsSubscriber: false,
+          treatAsSubscriber: isDirectLead,
           viaBot: true,
-          countBotAsDialogue: channel.tgMode === 'BOT_DIRECT',
+          countBotAsDialogue: funnel.dialogueBotMessage,
           buyerId: attribution?.buyerRef,
           fbclid: attribution?.fbclid,
           ttclid: attribution?.ttclid,
@@ -908,6 +940,10 @@ export class TelegramProvider implements ChannelProvider {
       } catch (error) {
         this.logger.warn(`recordInboundMessage (start) failed for channel ${channel.id}: ${(error as Error).message}`);
       }
+      if (isDirectLead && !wasLead) {
+        await this.registerDirectLead(channel, String(ctx.from.id), botLink?.id, attribution?.buyerRef);
+      }
+      await this.chatStore.linkClient(channel, String(ctx.from.id));
     }
 
     // Убрано 2026-07-21 (запрос пользователя): раньше здесь для PRIVATE_CHANNEL_REQUEST
@@ -917,6 +953,55 @@ export class TelegramProvider implements ChannelProvider {
     // тому же ошибочно переиспользовало channel.tgWelcomeMessage (тот предназначен для
     // отправки ПОСЛЕ одобрения заявки, см. sendWelcomeMessage), из-за чего выглядело так, будто
     // приветственное сообщение уже ушло, хотя реальная отправка после approve могла не сработать.
+  }
+
+  private async resolveBotLink(channel: Channel, startParam: string | undefined) {
+    const parsed = parseBotLinkStart(startParam);
+    if (!parsed) return null;
+    const link = await this.prisma.botLink.findFirst({
+      where: { code: parsed.code, projectId: channel.projectId, deletedAt: null },
+    });
+    if (!link) return null;
+    return {
+      id: link.id,
+      attribution: {
+        utmSource: BOT_LINK_UTM_SOURCE[link.source],
+        utmCampaign: link.name,
+        pixelId: link.pixelId ?? undefined,
+        adId: parsed.adId,
+        campaignId: parsed.campaignId,
+        buyerRef: link.buyerId ?? undefined,
+      },
+    };
+  }
+
+  // Человек впервые стал лидом прямого трафика: subscribedAt (с ним он попадает в статистику
+  // проекта — у нового клиента его уже поставил findOrCreate, у того, кто раньше писал боту мимо
+  // воронки, ставим здесь), ссылка на бота, затем то же, что при вступлении в канал: событие
+  // Subscribe (пиксели, автоворонки) и сценарий «Подписка» — приветствие.
+  private async registerDirectLead(channel: Channel, tgUserId: string, botLinkId: string | undefined, buyerId: string | undefined) {
+    try {
+      const client = await this.clientsService.findByTgId(tgUserId, channel.projectId);
+      if (!client) return; // лимит клиентов компании — findOrCreate отказал
+      await this.prisma.client.update({
+        where: { id: client.id },
+        data: {
+          subscribedAt: client.subscribedAt ?? new Date(),
+          isSubscribed: true,
+          botLinkId: client.botLinkId ?? botLinkId,
+        },
+      });
+      await this.trackingService.recordEvent(channel.projectId, {
+        eventName: 'Subscribe',
+        clientId: client.id,
+        tgUserId,
+        buyerRef: buyerId,
+        source: 'SERVER',
+      });
+      await this.triggerScenario(tgUserId, channel, 'SUBSCRIBE');
+    } catch (error) {
+      this.logger.warn(`registerDirectLead failed for channel ${channel.id}: ${(error as Error).message}`);
+    }
   }
 
   private async handlePurchaseCommand(ctx: Context, channel: Channel) {
@@ -972,6 +1057,68 @@ export class TelegramProvider implements ChannelProvider {
 
   // Список менеджеров (запрос пользователя 2026-07-21) — регистронезависимое сравнение,
   // username в БД уже нормализован без "@" (см. CreateChannelDto.tgManagerUsernames).
+  // Проверка перед сменой входа на канал (ChannelsService.switchEntry): бот проекта — админ канала.
+  // Через уже запущенного бота, а без него — по токену.
+  async assertBotIsChannelAdmin(channel: Channel): Promise<void> {
+    if (!channel.tgBotToken) throw new Error('У проекта нет бота — он нужен, чтобы принимать заявки и видеть вступления');
+    if (!channel.tgChannelId) throw new Error('Не указан ID канала — добавьте его в настройках канала');
+    const api = this.bots.get(channel.id)?.api ?? new Api(channel.tgBotToken);
+    const me = await api.getMe();
+    let member: Awaited<ReturnType<Api['getChatMember']>>;
+    try {
+      member = await api.getChatMember(channel.tgChannelId, me.id);
+    } catch (error) {
+      throw new Error(`Не удалось проверить права бота в канале: ${(error as Error).message}`);
+    }
+    if (!['administrator', 'creator'].includes(member.status)) {
+      throw new Error(`Бот @${me.username} не администратор канала — добавьте его в администраторы и повторите`);
+    }
+  }
+
+  // Перехват сообщений менеджера и кнопки под карточкой клиента — вынесены из initialize()
+  // (2026-10-24), чтобы те же обработчики вешались и на дополнительных ботов проекта
+  // (ExtraBotsService). channel для дополнительного бота — канал проекта с id и списком менеджеров
+  // этого бота: логика менеджера читает только id (ключи Redis), projectId и tgManagerUsernames.
+  //
+  // Менеджеры перехватываются ПЕРВЫМИ, до любых bot.command/bot.on, чтобы поймать сообщение
+  // менеджера независимо от его типа (пересланное медиа без подписи не дошло бы до message:text)
+  // и не дать ему стать Client / попасть в сценарии. Быстрый выход, если менеджеров нет.
+  useManagerInterceptor(bot: Bot, channel: Channel): void {
+    bot.use(async (ctx, next) => {
+      if (
+        (channel.tgManagerUsernames?.length ?? 0) > 0 &&
+        ctx.message &&
+        this.isManager(channel, ctx.from?.username)
+      ) {
+        await this.handleManagerMessage(ctx, channel);
+        return;
+      }
+      await next();
+    });
+  }
+
+  // Кнопки под карточкой клиента в чате менеджера (см. handleManagerMessage).
+  useManagerCallbacks(bot: Bot, channel: Channel): void {
+    bot.callbackQuery(/^mgr_dlg:(.+)$/, async (ctx) => {
+      await this.handleManagerDialogueButton(ctx, channel, ctx.match[1]);
+    });
+    bot.callbackQuery(/^mgr_buy:(.+)$/, async (ctx) => {
+      await this.handleManagerPurchaseButton(ctx, channel, ctx.match[1]);
+    });
+    bot.callbackQuery('mgr_cancel', async (ctx) => {
+      await this.handleManagerCancelButton(ctx, channel);
+    });
+    // Кнопки из карточек, отправленных до 2026-09-17 ("✅ Да, диалог" / "❌ Нет"), — в чатах
+    // менеджеров они остались и должны продолжать работать.
+    bot.callbackQuery(/^mgr_dlg_yes:(.+)$/, async (ctx) => {
+      await this.handleManagerDialogueButton(ctx, channel, ctx.match[1]);
+    });
+    bot.callbackQuery('mgr_dlg_no', async (ctx) => {
+      await ctx.answerCallbackQuery();
+      await ctx.editMessageReplyMarkup();
+    });
+  }
+
   private isManager(channel: Channel, username?: string): boolean {
     if (!username) return false;
     return (channel.tgManagerUsernames ?? []).some((u) => u.toLowerCase() === username.toLowerCase());
@@ -1320,7 +1467,9 @@ export class TelegramProvider implements ChannelProvider {
       // вручную, чужая ссылка и т.п.), — это ровно то, что пользователь просил отдельно видеть
       // 2026-07-21 ("внешние контакты... те кто подписался недавно, не по нашей воронке") —
       // фиксируем как внешнюю подписку (externalSubscribedAt), без Subscribe-события в воронку.
-      if (channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
+      // Какие вступления — лид, решает воронка (leadChannelJoin); без сохранённой воронки внешней
+      // подпиской они были только в режиме «Приватный канал» — legacyFunnelConfig это воспроизводит.
+      if ((await this.funnelConfig.forChannel(channel)).leadChannelJoin === 'OFF') {
         const existing = await this.clientsService.findByTgId(String(tgUser.id), channel.projectId);
         if (existing?.subscribedAt) return; // уже учтён через handleJoinRequest — не дублируем
 
@@ -1395,7 +1544,7 @@ export class TelegramProvider implements ChannelProvider {
         // напрямую, минуя нашу воронку.
         treatAsSubscriber: false,
         viaBot: true,
-        countBotAsDialogue: channel.tgMode === 'BOT_DIRECT',
+        countBotAsDialogue: (await this.funnelConfig.forChannel(channel)).dialogueBotMessage,
       });
     } catch (error) {
       this.logger.warn(`recordInboundMessage failed for channel ${channel.id}: ${(error as Error).message}`);
@@ -1460,6 +1609,79 @@ export class TelegramProvider implements ChannelProvider {
       if (roll <= 0) return m.id;
     }
     return members[members.length - 1].id;
+  }
+
+  // Ответ оператора из встроенного чата (запрос пользователя 2026-10-23). Не рассылка: одно
+  // сообщение одному человеку в ответ на его же сообщение, оператору нужен результат сразу
+  // (доставлено/ошибка), поэтому без очереди — как и ответы сценариев внутри вебхука. Текст
+  // уходит без parse_mode: оператор пишет обычный текст, и «<», «&» должны дойти как есть.
+  async sendChatMessage(
+    channel: Channel,
+    peerId: string,
+    payload: { text?: string; file?: ChatOutgoingFile },
+  ): Promise<{ messageId: string; mediaType?: string; fileId?: string }> {
+    const bot = this.bots.get(channel.id);
+    if (!bot) throw new Error('Бот проекта не подключён — ответить через него нельзя');
+    return this.sendChatMessageWithBot(bot, peerId, payload);
+  }
+
+  // Ядро отправки ответа из чата — общее для основного и дополнительных ботов (ExtraBotsService).
+  async sendChatMessageWithBot(
+    bot: Bot,
+    peerId: string,
+    payload: { text?: string; file?: ChatOutgoingFile },
+  ): Promise<{ messageId: string; mediaType?: string; fileId?: string }> {
+    const text = payload.text?.trim() || undefined;
+
+    if (!payload.file) {
+      const sent = await bot.api.sendMessage(peerId, text ?? '');
+      return { messageId: String(sent.message_id) };
+    }
+
+    const input = new InputFile(payload.file.buffer, payload.file.filename);
+    // Подпись к файлу в Telegram ограничена 1024 символами — длинный текст уходит вторым сообщением.
+    const caption = text && text.length <= 1024 ? text : undefined;
+    const { mimetype, kind } = payload.file;
+    let sent: { message_id: number };
+    let mediaType: string;
+    // Голосовое и кружок (2026-10-25, шаблоны ответов) — тип задан явно, файл уже подготовлен
+    // (ogg/opus и квадратное mp4 — см. ChatTemplatesService). У кружка подписи не бывает.
+    if (kind === 'voice') {
+      sent = await bot.api.sendVoice(peerId, input, { caption });
+      mediaType = 'voice';
+    } else if (kind === 'video_note') {
+      sent = await bot.api.sendVideoNote(peerId, input);
+      mediaType = 'video_note';
+      if (text) await bot.api.sendMessage(peerId, text);
+      return { messageId: String(sent.message_id), mediaType, fileId: this.extractFileId(sent) };
+    } else if (/^image\/(jpeg|png|webp)$/.test(mimetype)) {
+      sent = await bot.api.sendPhoto(peerId, input, { caption });
+      mediaType = 'photo';
+    } else if (mimetype === 'video/mp4') {
+      sent = await bot.api.sendVideo(peerId, input, { caption });
+      mediaType = 'video';
+    } else {
+      sent = await bot.api.sendDocument(peerId, input, { caption });
+      mediaType = 'document';
+    }
+    if (text && !caption) await bot.api.sendMessage(peerId, text);
+    return { messageId: String(sent.message_id), mediaType, fileId: this.extractFileId(sent) };
+  }
+
+  // Файл из переписки по file_id — для просмотра медиа во встроенном чате. Через Api по токену,
+  // а не через this.bots: канал мог быть отключён, а история переписки должна открываться.
+  async downloadChatFile(channel: Channel, fileId: string): Promise<{ body: ReadableStream<Uint8Array>; contentType: string | null; filePath: string }> {
+    if (!channel.tgBotToken) throw new NotFoundException('У канала нет бота');
+    return this.downloadFileByToken(channel.tgBotToken, fileId, this.bots.get(channel.id)?.api);
+  }
+
+  // Файл по file_id через любой бот — общий для основного и дополнительных ботов.
+  async downloadFileByToken(token: string, fileId: string, api?: Api): Promise<{ body: ReadableStream<Uint8Array>; contentType: string | null; filePath: string }> {
+    const file = await (api ?? new Api(token)).getFile(fileId);
+    if (!file.file_path) throw new NotFoundException('Файл недоступен');
+    const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+    if (!res.ok || !res.body) throw new NotFoundException('Файл недоступен');
+    return { body: res.body, contentType: res.headers.get('content-type'), filePath: file.file_path };
   }
 
   async sendMessage(channelUserId: string, options: SendMessageOptions, channel: Channel): Promise<SendMessageResult> {

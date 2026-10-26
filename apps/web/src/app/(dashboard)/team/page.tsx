@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link2, Plus, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { TransferChatsDialog } from '@/components/transfer-chats-dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
@@ -17,6 +18,7 @@ export default function TeamPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const [assigningOperator, setAssigningOperator] = useState<TeamMember | null>(null);
+  const [removingOperator, setRemovingOperator] = useState<TeamMember | null>(null);
 
   const { data: members, isLoading } = useQuery({
     queryKey: ['team'],
@@ -285,7 +287,8 @@ export default function TeamPage() {
                                   variant="ghost"
                                   disabled={removeMember.isPending}
                                   onClick={() => {
-                                    if (confirm(`Отключить доступ оператору ${m.email}?`)) removeMember.mutate(m.id);
+                                    // Перед отключением — решить, что с его чатами (2026-10-26): передать или снять ответственного.
+                                    setRemovingOperator(m);
                                   }}
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -307,6 +310,17 @@ export default function TeamPage() {
       <AssignOperatorProjectsDialog operator={assigningOperator} projects={projects || []} onClose={() => setAssigningOperator(null)} />
 
       <TeamAnalyticsSection />
+      {removingOperator && (
+        <TransferChatsDialog
+          fromUserId={removingOperator.id}
+          beforeRemove="и отключить"
+          onClose={() => setRemovingOperator(null)}
+          onDone={() => {
+            removeMember.mutate(removingOperator.id);
+            setRemovingOperator(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -522,6 +522,21 @@ export class LandingsService {
   // результат findOne (несёт createdBy), а getGroupStats/A/B-варианты выше передают лендинги
   // из обычного prisma.landing.findMany без include (createdBy не нужен для строк сравнения
   // вариантов — только для заголовка самого лендинга/группы).
+  // Число PageView/Lead лендинга (при groupId — только пришедших через сплит этой A/B-группы).
+  // Условие записано ровно как выражение индекса "TrackingEvent_projectId_eventName_landingId_idx"
+  // (миграция 20261024230000_tracking_event_landing_idx): раньше Prisma-фильтр по JSON-пути
+  // перебирал все события проекта, и страница лендинга у крупных проектов ждала статистику до
+  // ~8 с (жалоба пользователя 2026-10-24). Prisma такой индекс в schema.prisma описать не умеет.
+  private async countLandingEvents(projectId: string, eventName: 'PageView' | 'Lead', landingId: string, groupId?: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<{ count: number }[]>`
+      SELECT COUNT(*)::int AS count
+      FROM "TrackingEvent"
+      WHERE "projectId" = ${projectId} AND "eventName" = ${eventName} AND (payload->>'landingId') = ${landingId}
+        ${groupId ? Prisma.sql`AND (payload->>'abTestGroupId') = ${groupId}` : Prisma.empty}
+    `;
+    return rows[0]?.count ?? 0;
+  }
+
   private async computeLandingStats(
     landing: Landing & { createdBy?: { id: string; firstName: string; lastName: string | null } | null },
     timezone: string,
@@ -534,12 +549,8 @@ export class LandingsService {
       this.prisma.client.count({ where: { landingId: id, deletedAt: null } }),
       this.prisma.client.count({ where: { landingId: id, deletedAt: null, isSubscribed: true } }),
       this.prisma.client.count({ where: { landingId: id, deletedAt: null, isSubscribed: false } }),
-      this.prisma.trackingEvent.count({
-        where: { projectId: landing.projectId, eventName: 'PageView', payload: { path: ['landingId'], equals: id } },
-      }),
-      this.prisma.trackingEvent.count({
-        where: { projectId: landing.projectId, eventName: 'Lead', payload: { path: ['landingId'], equals: id } },
-      }),
+      this.countLandingEvents(landing.projectId, 'PageView', id),
+      this.countLandingEvents(landing.projectId, 'Lead', id),
       // Диалоги, атрибутированные этому лендингу (запрос пользователя 2026-07-04, "откуда
       // пришёл диалог") — Client.landingId уже несёт атрибуцию (invite-ссылка лендинга для
       // ботовых каналов, разобранный трекинг-код для PERSONAL_DM, см. TelegramPersonalService).
@@ -599,20 +610,8 @@ export class LandingsService {
       this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null } }),
       this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null, isSubscribed: true } }),
       this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null, isSubscribed: false } }),
-      this.prisma.trackingEvent.count({
-        where: {
-          projectId: landing.projectId,
-          eventName: 'PageView',
-          AND: [{ payload: { path: ['landingId'], equals: id } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
-        },
-      }),
-      this.prisma.trackingEvent.count({
-        where: {
-          projectId: landing.projectId,
-          eventName: 'Lead',
-          AND: [{ payload: { path: ['landingId'], equals: id } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
-        },
-      }),
+      this.countLandingEvents(landing.projectId, 'PageView', id, groupId),
+      this.countLandingEvents(landing.projectId, 'Lead', id, groupId),
       this.prisma.client.count({ where: { landingId: id, abTestGroupId: groupId, deletedAt: null, firstDialogueAt: { not: null } } }),
       this.prisma.$queryRaw<{ date: Date; count: number }[]>`
         SELECT ${subscribedBucket} as date, COUNT(*)::int as count
@@ -1078,7 +1077,19 @@ export class LandingsService {
 
   async streamCloakingPrelandingZipDownload(id: string, companyId: string, res: Response): Promise<void> {
     const landing = await this.assertPrelandingUploaded(id, companyId);
-    const basePath = landing.cloakingPrelandingBasePath as string;
+    await this.streamPrefixAsZip(landing.cloakingPrelandingBasePath as string, 'prelanding.zip', res);
+  }
+
+  // Скачивание загруженного ZIP основного контента CUSTOM-лендинга обратно (запрос пользователя
+  // 2026-10-23). Исходный архив нигде не хранится — архивируется то, что реально лежит под
+  // customBasePath (распакованное содержимое без обёрточной папки, см. processAndReviewZip).
+  async streamCustomLandingZipDownload(id: string, companyId: string, res: Response): Promise<void> {
+    const landing = await this.findOne(id, companyId);
+    if (landing.type !== 'CUSTOM' || !landing.customBasePath) throw new NotFoundException('ZIP лендинга ещё не загружен');
+    await this.streamPrefixAsZip(landing.customBasePath, `landing-${landing.id}.zip`, res);
+  }
+
+  private async streamPrefixAsZip(basePath: string, filename: string, res: Response): Promise<void> {
     const keys = await this.storage.listPrefix(basePath);
 
     const zip = new AdmZip();
@@ -1090,7 +1101,7 @@ export class LandingsService {
     }
 
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="prelanding.zip"');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(zip.toBuffer());
   }
 
@@ -1671,20 +1682,8 @@ export class LandingsService {
   private async computeAbTestMemberSnapshot(landingId: string, projectId: string, groupId: string, weight: number | null) {
     const [subscribes, pageViews, leads, dialogues] = await Promise.all([
       this.prisma.client.count({ where: { landingId, abTestGroupId: groupId, deletedAt: null } }),
-      this.prisma.trackingEvent.count({
-        where: {
-          projectId,
-          eventName: 'PageView',
-          AND: [{ payload: { path: ['landingId'], equals: landingId } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
-        },
-      }),
-      this.prisma.trackingEvent.count({
-        where: {
-          projectId,
-          eventName: 'Lead',
-          AND: [{ payload: { path: ['landingId'], equals: landingId } }, { payload: { path: ['abTestGroupId'], equals: groupId } }],
-        },
-      }),
+      this.countLandingEvents(projectId, 'PageView', landingId, groupId),
+      this.countLandingEvents(projectId, 'Lead', landingId, groupId),
       this.prisma.client.count({ where: { landingId, abTestGroupId: groupId, deletedAt: null, firstDialogueAt: { not: null } } }),
     ]);
     return { pageViews, leads, subscribes, dialogues, weight };

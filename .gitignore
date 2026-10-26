@@ -20,3 +20,13 @@ npm-debug.log*
 prisma/migrations/dev.db
 
 coverage/
+
+# Безопасный деплой: прежние/черновые сборки рядом с рабочей (см. README, scripts/deploy-web.sh)
+dist-prev/
+dist-build/
+dist-bad/
+.next-prev/
+.next-bad/
+
+# Резервные копии прод-окружения — в них секреты
+.env.prod.bak*

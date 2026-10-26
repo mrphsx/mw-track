@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
 import { ChannelType, TelegramMode } from '@prisma/client';
 
 export class CreateChannelDto {
@@ -56,6 +56,11 @@ export class CreateChannelDto {
     Array.isArray(value) ? value.map((v: string) => v.trim().replace(/^@/, '')).filter(Boolean) : value,
   )
   tgManagerUsernames?: string[];
+
+  // Трафик напрямую в бота — каждый новый /start считается лидом (см. Channel.tgDirectTraffic).
+  @IsOptional()
+  @IsBoolean()
+  tgDirectTraffic?: boolean;
 
   @IsOptional()
   @IsString()

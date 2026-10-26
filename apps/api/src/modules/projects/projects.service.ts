@@ -8,6 +8,8 @@ import { StatsPeriodDto } from '../../common/dto/stats-period.dto';
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { formatUserName } from '../../common/user-name.util';
 import { ChannelsService } from '../channels/channels.service';
+import { FunnelConfigService } from '../funnel/funnel-config.service';
+import { legacyFunnelConfig, leadStageLabel, parseFunnelConfigInput, resolveFunnelConfig } from '../../common/funnel-config';
 import { TelegramPersonalService } from '../channels/providers/telegram-personal.service';
 import { LINK_PARAM_KEYS, LINK_PARAM_NAME_REGEX, resolveParamMap } from '../tracking/link-params.const';
 import { buildPixelCurlCommand } from '../tracking/curl-command.util';
@@ -47,7 +49,48 @@ export class ProjectsService {
     private channelsService: ChannelsService,
     private permissionsService: PermissionsService,
     private telegramPersonalService: TelegramPersonalService,
+    private funnelConfigService: FunnelConfigService,
   ) {}
+
+  // Воронка проекта (запрос пользователя 2026-10-24) — см. common/funnel-config.ts. connections —
+  // что у проекта реально подключено: интерфейс предлагает только осуществимые варианты.
+  async getFunnel(id: string, companyId: string) {
+    const project = await this.prisma.project.findFirst({
+      where: { id, companyId, deletedAt: null },
+      select: {
+        funnelConfig: true,
+        channel: { select: { type: true, tgMode: true, tgDirectTraffic: true, tgChannelId: true, tgBotToken: true, tgSessionEncrypted: true } },
+      },
+    });
+    if (!project) throw new NotFoundException('Проект не найден');
+    const channel = project.channel;
+    const config = resolveFunnelConfig(project.funnelConfig, channel);
+    return {
+      config,
+      isCustom: project.funnelConfig !== null,
+      defaults: legacyFunnelConfig(channel),
+      leadLabel: leadStageLabel(config, channel),
+      connections: {
+        type: channel?.type ?? null,
+        mode: channel?.tgMode ?? null,
+        hasBot: channel?.type === 'TELEGRAM' && channel.tgMode !== 'PERSONAL_DM' && !!channel.tgBotToken,
+        hasChannel: !!channel?.tgChannelId,
+        hasPersonal: !!channel?.tgSessionEncrypted,
+      },
+    };
+  }
+
+  // input = null — сбросить к поведению по умолчанию (как до появления настройки).
+  async updateFunnel(id: string, companyId: string, input: unknown) {
+    await this.findOne(id, companyId);
+    const config = input === null ? null : parseFunnelConfigInput(input);
+    await this.prisma.project.update({
+      where: { id },
+      data: { funnelConfig: config === null ? Prisma.DbNull : (config as unknown as Prisma.InputJsonValue) },
+    });
+    this.funnelConfigService.invalidate(id);
+    return this.getFunnel(id, companyId);
+  }
 
   // Проект сам "становится" каналом (1:1 с 2026-07-02) — тип и конфигурация канала
   // запрашиваются один раз тут, никогда не добавляются отдельным шагом позже (см.
@@ -361,10 +404,12 @@ export class ProjectsService {
                 tgPersonalLastError: true,
                 websiteUrl: true,
                 websiteFaviconUrl: true,
+                tgBotToken: true,
+                tgChannelId: true,
               },
             },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
-            _count: { select: { pushes: true } },
+            _count: { select: { pushes: true, extraBots: { where: { deletedAt: null } } } },
           },
           orderBy: { createdAt: 'desc' },
         })
@@ -373,24 +418,44 @@ export class ProjectsService {
           where: { companyId, deletedAt: null, projectAccess: { some: { userId } } },
           include: {
             channel: {
-              select: { id: true, type: true, isActive: true, tgMode: true, tgSessionEncrypted: true, lastWebhookAt: true, tgPersonalLastError: true },
+              select: {
+                id: true,
+                type: true,
+                isActive: true,
+                tgMode: true,
+                tgSessionEncrypted: true,
+                lastWebhookAt: true,
+                tgPersonalLastError: true,
+                tgBotToken: true,
+                tgChannelId: true,
+              },
             },
             pixels: { select: { id: true, platform: true, pixelId: true, label: true, isActive: true } },
-            _count: { select: { pushes: true } },
+            _count: { select: { pushes: true, extraBots: { where: { deletedAt: null } } } },
           },
           orderBy: { createdAt: 'desc' },
         });
 
     const metrics = await this.getClientMetricsByProject(projects.map((p) => p.id));
-    return projects.map((p) => ({
+    return projects.map(({ channel: rawChannel, ...p }) => {
+      // Токен и id канала нужны только для счётчика подключений на карточке (2026-10-24) — наружу
+      // не отдаются.
+      const { tgBotToken, tgChannelId, ...channel } = rawChannel ?? ({} as NonNullable<typeof rawChannel>);
+      return {
       ...p,
-      channel: this.sanitizeChannel(p.channel),
+      channel: rawChannel ? this.sanitizeChannel(channel) : null,
+      connections: {
+        bots: (tgBotToken ? 1 : 0) + p._count.extraBots,
+        personal: rawChannel?.tgSessionEncrypted ? 1 : 0,
+        channels: tgChannelId ? 1 : 0,
+      },
       _count: { ...p._count, clients: metrics.get(p.id)?.total ?? 0 },
       activeClientsCount: metrics.get(p.id)?.active ?? 0,
       // Запрос пользователя 2026-07-28: "покажи количество отписок, за всё время как и
       // клиентов" — та же семантика "ours only", что и total/active выше.
       unsubscribedClientsCount: metrics.get(p.id)?.unsubscribed ?? 0,
-    }));
+      };
+    });
   }
 
   // "Молчащий" вебхук (запрос пользователя 2026-08-05, после реального ~20-часового инцидента —
@@ -1691,27 +1756,41 @@ requests.post(
     companyId: string,
     filters: { page?: number; limit?: number; pixelId?: string; status?: string; eventName?: string },
     includeCurlCommand = false,
+    // Баер с видимостью «только свои пиксели» (2026-10-24) — только отправки его пикселей.
+    pixelOwnerId?: string,
   ) {
     await this.findOne(id, companyId); // проверка владения + 404
 
     const page = filters.page || 1;
     const limit = Math.min(filters.limit || 50, 200);
 
-    const where: Prisma.TrackingEventDeliveryWhereInput = {
-      event: {
-        projectId: id,
-        eventName: filters.eventName ? filters.eventName : { notIn: ['PageView', 'Lead'] },
-      },
-      ...(filters.pixelId ? { pixelId: filters.pixelId } : {}),
-      ...(filters.status ? { status: filters.status } : {}),
-    };
+    // Скорость (жалоба 2026-10-25: «долго грузились» — у крупного проекта 19 с на страницу + 7 с на
+    // подсчёт). Prisma-фильтр через связь сортировал все 2,6 млн отправок по sentAt с диска, а события
+    // проекта проверял потом. Здесь наоборот: сначала события проекта по индексу (projectId,
+    // eventName) — «не PageView/Lead/TelegramRedirect» записано диапазонами, иначе индекс не
+    // работает (у этих событий отправок в пиксели не бывает вообще), — затем их отправки по индексу
+    // eventId. Результат сверен со старым запросом один в один.
+    const eventSql = filters.eventName
+      ? Prisma.sql`"eventName" = ${filters.eventName}`
+      : Prisma.sql`("eventName" < 'Lead' OR ("eventName" > 'Lead' AND "eventName" < 'PageView') OR ("eventName" > 'PageView' AND "eventName" < 'TelegramRedirect') OR "eventName" > 'TelegramRedirect')`;
+    const deliverySql = Prisma.sql`
+      ${filters.pixelId ? Prisma.sql`AND d."pixelId" = ${filters.pixelId}` : Prisma.empty}
+      ${filters.status ? Prisma.sql`AND d.status = ${filters.status}` : Prisma.empty}
+      ${pixelOwnerId ? Prisma.sql`AND d."pixelId" IN (SELECT tp.id FROM "TrackingPixel" tp WHERE tp."createdById" = ${pixelOwnerId})` : Prisma.empty}`;
+    const fromSql = Prisma.sql`
+      FROM (SELECT e.id FROM "TrackingEvent" e WHERE e."projectId" = ${id} AND ${eventSql}) ev
+      CROSS JOIN LATERAL (SELECT d.id, d."sentAt" FROM "TrackingEventDelivery" d WHERE d."eventId" = ev.id ${deliverySql}) d`;
 
-    const [items, total] = await Promise.all([
+    const [pageIds, countRows] = await Promise.all([
+      this.prisma.$queryRaw<{ id: string }[]>`SELECT d.id ${fromSql} ORDER BY d."sentAt" DESC, d.id DESC LIMIT ${limit} OFFSET ${(page - 1) * limit}`,
+      this.prisma.$queryRaw<{ n: number }[]>`SELECT COUNT(*)::int AS n ${fromSql}`,
+    ]);
+    const total = countRows[0]?.n ?? 0;
+    const order = new Map(pageIds.map((r, i) => [r.id, i]));
+
+    const [rows] = await Promise.all([
       this.prisma.trackingEventDelivery.findMany({
-        where,
-        orderBy: { sentAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
+        where: { id: { in: pageIds.map((r) => r.id) } },
         select: {
           id: true,
           status: true,
@@ -1743,8 +1822,8 @@ requests.post(
           },
         },
       }),
-      this.prisma.trackingEventDelivery.count({ where }),
     ]);
+    const items = rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 
     // curlCommand — готовая команда с настоящим access_token, чтобы можно было вставить прямо в
     // терминал (запрос пользователя 2026-07-29, доступ только у OWNER — includeCurlCommand
@@ -1768,7 +1847,8 @@ requests.post(
   // проекту больше не назначается один раз при создании участника, а выдаётся/снимается
   // отдельно, здесь. Живёт в ProjectsService, а не в TeamService, т.к. точка входа — карточка
   // проекта, не /team; переиспользует те же team-role.util хелперы, что и /team.
-  private async assertCanManageProjectOperators(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole): Promise<void> {
+  // Публичный с 2026-10-24 — им же проверяется назначение операторов на чаты (ChatAccessService).
+  async assertCanManageProjectOperators(projectId: string, companyId: string, requesterId: string, requesterRole: UserRole): Promise<void> {
     await this.findOne(projectId, companyId); // 404, если проект не в этой компании
     assertCanAccessTeamManagement(requesterRole);
     await assertOperatorAdminScope(this.prisma, requesterId, requesterRole, UserRole.OPERATOR, [projectId]);
@@ -1822,6 +1902,9 @@ requests.post(
     await this.prisma.$transaction([
       this.prisma.projectAccess.deleteMany({ where: { userId, projectId } }),
       this.prisma.userPermission.deleteMany({ where: { userId, projectId } }),
+      // И назначения на чаты проекта (2026-10-24) — по той же причине: иначе повторное добавление
+      // молча вернуло бы прежний доступ к чатам.
+      this.prisma.chatResourceAccess.deleteMany({ where: { userId, projectId } }),
     ]);
   }
 

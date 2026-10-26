@@ -1,10 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
+import { isAxiosError } from 'axios';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Star, Trash2 } from 'lucide-react';
+import { MessagesSquare, Star, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { canUseChats, openClientChat } from '@/lib/chat';
+import { useAuthStore } from '@/store/auth.store';
 import { Drawer, DrawerContent } from '@/components/ui/drawer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -56,6 +60,8 @@ interface ClientDetail {
   buyerName: string | null;
   landingId: string | null;
   landingName: string | null;
+  // Ссылка на бота — источник при трафике напрямую в бота (2026-10-23).
+  botLinkName: string | null;
   // Реальная invite-ссылка заявки на вступление (запрос пользователя 2026-08-31, "как у
   // конкурентов") — PRIVATE_CHANNEL_REQUEST only, см. Client.tgInviteLink в schema.prisma.
   tgInviteLink: string | null;
@@ -102,13 +108,25 @@ export function ClientDetailContent({
   clientId,
   onClose,
   readOnly,
+  hideDelete,
+  hideChatButton,
 }: {
   projectId: string;
   clientId: string;
   onClose: () => void;
   readOnly?: boolean;
+  // Встроенный чат (2026-10-23) показывает эту карточку рядом с перепиской — там не нужны ни
+  // удаление клиента, ни кнопка «Открыть чат».
+  hideDelete?: boolean;
+  hideChatButton?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
+  const currentUser = useAuthStore((s) => s.user);
+  // Страница чатов есть только в Studio — в classic-дереве (old.mw-track.com) кнопку не показываем.
+  const [isStudio, setIsStudio] = useState(false);
+  useEffect(() => setIsStudio(document.documentElement.classList.contains('studio')), []);
+  const [chatError, setChatError] = useState('');
   const [amount, setAmount] = useState('');
   const base = `/projects/${projectId}/clients/${clientId}`;
 
@@ -137,6 +155,12 @@ export function ClientDetailContent({
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       onClose();
     },
+  });
+
+  const openChat = useMutation({
+    mutationFn: () => openClientChat(projectId, clientId),
+    onSuccess: (conversationId) => router.push(`/chats?c=${conversationId}`),
+    onError: (err) => setChatError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось открыть чат'),
   });
 
   if (!client) return null;
@@ -185,6 +209,14 @@ export function ClientDetailContent({
               {client.dialogueSource && ` — ${DIALOGUE_SOURCE_LABEL[client.dialogueSource]}`}
             </div>
           )}
+          {!hideChatButton && isStudio && canUseChats(currentUser) && client.channelType === 'TELEGRAM' && client.tgUserId && (
+            <div className="pt-1">
+              <Button size="sm" variant="outline" disabled={openChat.isPending} onClick={() => openChat.mutate()}>
+                <MessagesSquare className="w-4 h-4 mr-1.5" /> Открыть чат
+              </Button>
+              {chatError && <p className="mt-1 text-xs text-red-500">{chatError}</p>}
+            </div>
+          )}
           <div>
             {!client.isBotActive ? (
               <Badge variant="destructive">Заблокировал бота</Badge>
@@ -205,6 +237,7 @@ export function ClientDetailContent({
               <div className="text-sm text-muted-foreground">Баер: {client.buyerName || (client.buyerId ? client.buyerId : 'Без баера')}</div>
               <div className="text-sm text-muted-foreground">Пиксель: {client.pixelLabel || '—'}</div>
               <div className="text-sm text-muted-foreground">Лендинг: {client.landingName || '—'}</div>
+              {client.botLinkName && <div className="text-sm text-muted-foreground">Ссылка на бота: {client.botLinkName}</div>}
               <div className="text-sm text-muted-foreground">
                 Invite-ссылка:{' '}
                 {client.tgInviteLink ? (
@@ -264,7 +297,7 @@ export function ClientDetailContent({
         </section>
       </div>
 
-      {!readOnly && (
+      {!readOnly && !hideDelete && (
         <div className="border-t p-4">
           <Button
             variant="destructive"

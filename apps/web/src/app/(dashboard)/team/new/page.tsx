@@ -151,7 +151,7 @@ export default function NewTeamMemberPage() {
                     {isOwner && <SelectItem value="ADMIN">Администратор</SelectItem>}
                     <SelectItem value="BUYER">Байер</SelectItem>
                     <SelectItem value="OPERATOR">Оператор</SelectItem>
-                    <SelectItem value="OPERATOR_ADMIN">Оператор-админ</SelectItem>
+                    <SelectItem value="OPERATOR_ADMIN">Тимлид</SelectItem>
                   </>
                 )}
               </SelectContent>

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { leadStageLabel, resolveFunnelConfig } from '../../common/funnel-config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { dailyBucketSql, resolveStatsPeriod } from '../../common/timezone.util';
@@ -406,9 +407,16 @@ export class ClientsRepository {
   async getConversionFunnel(projectId: string, periodQuery: StatsPeriodDto, buyerId?: string) {
     const project = await this.prisma.project.findUniqueOrThrow({
       where: { id: projectId },
-      select: { timezone: true, channel: { select: { type: true } } },
+      select: {
+        timezone: true,
+        funnelConfig: true,
+        channel: { select: { type: true, tgMode: true, tgDirectTraffic: true, tgChannelId: true } },
+      },
     });
     const { since, until } = await resolveStatsPeriod(this.prisma, project.timezone, periodQuery);
+    // Подпись стадии лида — по воронке проекта (2026-10-24): «Запустили бота», «Вступили в
+    // канал» и т.п. Сами цифры стадии от этого не зависят — это всё тот же subscribedAt.
+    const leadLabel = leadStageLabel(resolveFunnelConfig(project.funnelConfig, project.channel), project.channel);
     // Обычный сайт (ChannelType.WEBSITE, запрос пользователя 2026-09-03) — Client создаётся
     // ровно в момент Purchase (см. TrackingService.resolveOrCreateWebsiteClient), значит
     // subscribedAt всегда совпадает с моментом покупки. "Вступили в канал" в этом случае
@@ -498,7 +506,7 @@ export class ClientsRepository {
       {
         stage: 'Subscribe',
         count: subscribes,
-        label: isWebsite ? 'Стали клиентом' : 'Вступили в канал',
+        label: leadLabel,
         // Знаменатель — переходы, если они есть: подписка физически возможна только после
         // перехода, а не после клика (при авторедиректе клика может не быть вовсе).
         rate: redirects || leads ? Math.round((subscribes / (redirects || leads)) * 100) : 0,

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, Res } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { Permission, UserRole } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
@@ -16,6 +16,7 @@ import { ClientsRepository } from './clients.repository';
 import { PurchasesService } from './purchases.service';
 import { ClientFiltersDto } from './dto/client-filters.dto';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
+import { isAnonymousOperator, maskClientPersonal } from '../../common/anonymous-operator.util';
 
 @Controller('projects/:projectId/clients')
 export class ClientsController {
@@ -42,7 +43,10 @@ export class ClientsController {
     // оператора") — тот же критерий, что уже используется для canViewTrafficSource на карточке
     // одного клиента (getClientDetail ниже).
     const canViewTrafficSource = user.role !== UserRole.OPERATOR;
-    return this.clientsService.findMany(projectId, filters, companyId, canViewCrossProject, scopedBuyerId, canViewTrafficSource);
+    const result = await this.clientsService.findMany(projectId, filters, companyId, canViewCrossProject, scopedBuyerId, canViewTrafficSource);
+    // «Скрытый оператор» (2026-10-25) — без личных данных лидов.
+    if (await isAnonymousOperator(this.prisma, user)) return { ...result, items: result.items.map((c) => maskClientPersonal(c)) };
+    return result;
   }
 
   // Сводка по текущему фильтру списка (2026-10-21) — объявлен до ':clientId', та же проверка
@@ -180,6 +184,7 @@ export class ClientsController {
     @Res() res: Response,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EXPORT]);
+    if (await isAnonymousOperator(this.prisma, user)) throw new ForbiddenException('Скрытому оператору выгрузка клиентов недоступна');
     const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
     const canViewTrafficSource = user.role !== UserRole.OPERATOR;
     const csv = await this.clientsService.exportClientsCsv(projectId, filters, scopedBuyerId, canViewTrafficSource);
@@ -197,6 +202,7 @@ export class ClientsController {
     @Res() res: Response,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_EXPORT]);
+    if (await isAnonymousOperator(this.prisma, user)) throw new ForbiddenException('Скрытому оператору выгрузка клиентов недоступна');
     const scopedBuyerId = await resolveScopedBuyerId(this.prisma, user.userId, user.role);
     const csv = await this.clientsService.exportForLookalike(projectId, onlyBuyers !== 'false', scopedBuyerId);
     res.setHeader('Content-Type', 'text/csv');
@@ -207,7 +213,8 @@ export class ClientsController {
   @Get(':clientId')
   async findOne(@Param('clientId') clientId: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
-    return this.clientsService.getClientDetail(clientId, companyId, user.role !== UserRole.OPERATOR);
+    const detail = await this.clientsService.getClientDetail(clientId, companyId, user.role !== UserRole.OPERATOR);
+    return (await isAnonymousOperator(this.prisma, user)) ? maskClientPersonal(detail) : detail;
   }
 
   @Get(':clientId/purchases')
@@ -285,6 +292,7 @@ export class ClientsController {
     @Res() res: Response,
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.CLIENTS_VIEW]);
+    if (await isAnonymousOperator(this.prisma, user)) throw new NotFoundException('Фото недоступно');
     const client = await this.clientsService.findOne(clientId, companyId);
     const channel = client.tgPhotoUrl ? await this.clientsService.getChannelBotToken(client.projectId) : null;
 

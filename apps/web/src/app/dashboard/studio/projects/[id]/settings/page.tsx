@@ -6,18 +6,14 @@ import { useState } from 'react';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
 import { Project, readTabFromSearchParams, SettingsTab } from '../../../../../(dashboard)/projects/[id]/settings/tabs';
-import {
-  BotSettingsTab,
-  DangerTab,
-  EventsTab,
-  GeneralTab,
-  ChannelsTab,
-  IntegrationTab,
-  OperatorsTab,
-  PersonalAccountConnect,
-  PixelLogsTab,
-  PixelsTab,
-} from './tabs';
+import { DangerTab, EventsTab, GeneralTab, IntegrationTab, OperatorsTab, PixelLogsTab, PixelsTab } from './tabs';
+import { ConnectionsBoard } from './connections-board';
+import { FunnelTab } from './funnel-tab';
+
+// «Канал», «Бот» и «Личный аккаунт» — одна вкладка с 2026-10-24 (см. ChannelAccountsTab). Старые
+// ссылки ?tab=bot / ?tab=personal (Истории, индикатор личного аккаунта, закладки) открывают её же
+// с прокруткой к нужному блоку.
+const MERGED_INTO_CHANNELS: Partial<Record<SettingsTab, 'primary' | 'personal'>> = { bot: 'primary', personal: 'personal' };
 
 // Studio-версия настроек проекта. Первый проход (2026-07-30, "давай дальше") переиспользовал
 // содержимое вкладок из классического файла без изменений — только оболочка (шапка, пилюли).
@@ -43,7 +39,9 @@ export default function StudioProjectSettingsPage() {
     currentUser?.role === 'SUPER_ADMIN' ||
     currentUser?.role === 'OPERATOR_ADMIN';
 
-  const [tab, setTab] = useState<SettingsTab>(() => readTabFromSearchParams(searchParams));
+  const initialTab = readTabFromSearchParams(searchParams);
+  const [tab, setTab] = useState<SettingsTab>(MERGED_INTO_CHANNELS[initialTab] ? 'channels' : initialTab);
+  const [channelsFocus] = useState<'primary' | 'personal' | undefined>(MERGED_INTO_CHANNELS[initialTab]);
 
   const handleTabChange = (value: SettingsTab) => {
     setTab(value);
@@ -59,13 +57,12 @@ export default function StudioProjectSettingsPage() {
 
   if (!project) return <p className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">Загрузка...</p>;
 
-  const isTelegram = project.channel?.type === 'TELEGRAM';
-
   const tabs: { value: SettingsTab; label: string; hidden?: boolean }[] = [
     { value: 'general', label: 'Основные' },
-    { value: 'channels', label: 'Каналы' },
-    { value: 'bot', label: 'Бот', hidden: !isTelegram },
-    { value: 'personal', label: 'Личный аккаунт', hidden: !isTelegram },
+    // «Подключения» — бот, канал и личка; «Воронка» — что из них считается лидом и диалогом
+    // (запрос пользователя 2026-10-24).
+    { value: 'channels', label: 'Подключения' },
+    { value: 'funnel', label: 'Воронка', hidden: project.channel?.type !== 'TELEGRAM' },
     { value: 'pixels', label: 'Пиксели' },
     { value: 'pixel-logs', label: 'Логи' },
     { value: 'events', label: 'События' },
@@ -99,11 +96,10 @@ export default function StudioProjectSettingsPage() {
 
       <div>
         {tab === 'general' && <GeneralTab project={project} />}
-        {tab === 'channels' && <ChannelsTab projectId={id} channel={project.channel} />}
-        {tab === 'bot' && isTelegram && project.channel && (
-          <BotSettingsTab projectId={id} channelId={project.channel.id} channelType={project.channel.type} />
+        {tab === 'channels' && (
+          <ConnectionsBoard projectId={id} project={project} initialDialog={channelsFocus} onOpenFunnel={() => handleTabChange('funnel')} />
         )}
-        {tab === 'personal' && isTelegram && project.channel && <PersonalAccountConnect channelId={project.channel.id} />}
+        {tab === 'funnel' && <FunnelTab projectId={id} onOpenConnections={() => handleTabChange('channels')} />}
         {tab === 'pixels' && <PixelsTab projectId={id} pixels={project.pixels} linkParamMap={project.linkParamMap} />}
         {tab === 'pixel-logs' && <PixelLogsTab projectId={id} pixels={project.pixels} />}
         {tab === 'events' && <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} channelType={project.channel?.type} />}

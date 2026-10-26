@@ -3,6 +3,8 @@ import { Module } from '@nestjs/common';
 import { EncryptionService } from '../../common/encryption.service';
 import { ClientsModule } from '../clients/clients.module';
 import { TrackingModule } from '../tracking/tracking.module';
+import { ChatStoreModule } from '../chat/chat-store.module';
+import { FunnelModule } from '../funnel/funnel.module';
 import { ChannelsController } from './channels.controller';
 import { ChannelsService } from './channels.service';
 import { ChannelMediaService } from './channel-media.service';
@@ -19,11 +21,15 @@ import { WebsiteProvider } from './providers/website.provider';
 import { JoinRequestApprovalProcessor } from './join-request-approval.processor';
 import { BotScenarioStepProcessor } from './bot-scenario-step.processor';
 import { TelegramPersonalHealthCron } from './telegram-personal-health.cron';
+import { ExtraBotsService } from './extra-bots.service';
+import { ExtraBotsController } from './extra-bots.controller';
 
 @Module({
   imports: [
     ClientsModule,
     TrackingModule,
+    ChatStoreModule,
+    FunnelModule,
     // Задержка одобрения заявки на вступление (Channel.tgJoinDelaySeconds) — см.
     // TelegramProvider.approveJoinRequestMaybeDelayed / JoinRequestApprovalProcessor.
     BullModule.registerQueue({ name: 'join-request-approval' }),
@@ -32,7 +38,7 @@ import { TelegramPersonalHealthCron } from './telegram-personal-health.cron';
     // BotScenarioEngineService/BotScenarioStepProcessor.
     BullModule.registerQueue({ name: 'bot-scenario-steps' }),
   ],
-  controllers: [ChannelsController, BotScenariosController, ScenarioStepMediaController],
+  controllers: [ChannelsController, BotScenariosController, ScenarioStepMediaController, ExtraBotsController],
   providers: [
     ChannelsService,
     ChannelMediaService,
@@ -48,12 +54,13 @@ import { TelegramPersonalHealthCron } from './telegram-personal-health.cron';
     JoinRequestApprovalProcessor,
     BotScenarioStepProcessor,
     TelegramPersonalHealthCron,
+    ExtraBotsService,
   ],
   // ChannelMediaService экспортирован дополнительно (запрос пользователя 2026-07-17,
   // "загружать медиа для рассылок") — PushesModule уже импортирует ChannelsModule (см.
   // pushes.module.ts), новой связи в графе модулей это не добавляет, поэтому переиспользуем
   // существующий MinIO-обёртку вместо третьей копии (см. комментарий в channel-media.service.ts
   // про уже существующее дублирование ради обхода циклов — здесь цикла нет, дублировать не за чем).
-  exports: [ChannelsService, TelegramProvider, TelegramPersonalService, WhatsAppProvider, InstagramProvider, ChannelMediaService, VideoProcessingService],
+  exports: [ChannelsService, TelegramProvider, TelegramPersonalService, WhatsAppProvider, InstagramProvider, ChannelMediaService, VideoProcessingService, ExtraBotsService],
 })
 export class ChannelsModule {}

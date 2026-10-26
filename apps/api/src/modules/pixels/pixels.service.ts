@@ -13,6 +13,7 @@ import { TikTokEventsService } from '../tracking/tiktok-events.service';
 import { PixelSendResult } from '../tracking/providers/pixel.provider.interface';
 import { buildPixelCurlCommand } from '../tracking/curl-command.util';
 import { withUniqueShortCode } from '../../common/short-code.util';
+import { resolvePixelOwnerId } from '../../common/buyer-scope.util';
 import { assertPixelIdMatchesPlatform } from './pixel-id-format.util';
 
 @Injectable()
@@ -60,6 +61,10 @@ export class PixelsService {
     });
     if (!pixel) throw new NotFoundException('Пиксель не найден');
     await this.getProjectsService().assertAccess(pixel.projectId, companyId, userId, role, requiredPermissions);
+    // Баер с видимостью «только свои пиксели» (2026-10-24) чужой пиксель не видит вовсе — 404, как
+    // будто его нет, а не 403 с намёком, что он существует.
+    const pixelOwnerId = await resolvePixelOwnerId(this.prisma, userId, role);
+    if (pixelOwnerId && pixel.createdById !== pixelOwnerId) throw new NotFoundException('Пиксель не найден');
     return pixel;
   }
 

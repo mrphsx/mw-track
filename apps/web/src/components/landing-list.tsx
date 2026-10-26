@@ -18,7 +18,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { ChevronDown, Copy, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud, Wand2, Layers } from 'lucide-react';
+import { ChevronDown, Copy, Download, Eye, Globe, LayoutGrid, LayoutTemplate, Link2, List, MoreHorizontal, Pencil, Plus, Shield, SplitSquareHorizontal, Trash2, Upload, UploadCloud, Wand2, Layers } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import {
@@ -29,6 +29,7 @@ import {
   TYPE_LABEL,
   TemplateInfo,
   attachmentUrl,
+  downloadLandingZip,
   hasChannelAvatar,
   primaryChannel,
 } from '@/lib/landings';
@@ -143,6 +144,13 @@ function LandingActionsMenu({
         {landing.type === 'CUSTOM' && onReupload && (
           <DropdownMenuItem onClick={onReupload}>
             <Upload className="w-4 h-4 mr-2" /> Перезалить ZIP
+          </DropdownMenuItem>
+        )}
+        {landing.type === 'CUSTOM' && (
+          <DropdownMenuItem
+            onClick={() => downloadLandingZip(landing).catch(() => window.alert('Не удалось скачать ZIP'))}
+          >
+            <Download className="w-4 h-4 mr-2" /> Скачать ZIP
           </DropdownMenuItem>
         )}
         {landing.type === 'EXTERNAL' && onManageExternal && (

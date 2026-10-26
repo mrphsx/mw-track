@@ -17,14 +17,17 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Sparkle,
   LogOut,
   BarChart3,
   BookOpen,
   Contact,
+  MessagesSquare,
   type LucideIcon,
 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
+import { canUseChats } from '@/lib/chat';
 import { useUiStore } from '@/store/ui.store';
 import { hasAnyPermission, Permission } from '@/lib/permissions';
 
@@ -38,6 +41,8 @@ interface NavItem {
   // даже для админа выключи") — журнал реквизитов не должен быть виден даже Admin/Super Admin/
   // Operator-admin, не только Buyer/Operator.
   ownerOnly?: boolean;
+  // Свой критерий видимости (2026-10-24: чаты — не по Permission, а по роли и User.chatAccess).
+  visibleFor?: (user: ReturnType<typeof useAuthStore.getState>['user']) => boolean;
 }
 import {
   DropdownMenu,
@@ -46,6 +51,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { BrandMark } from '@/components/brand-mark';
 
 // Тот же список пунктов, что у классического Sidebar — продублирован намеренно (своя
 // палитра/форма). "Голые" пути без префикса /dashboard/studio (запрос пользователя 2026-07-30:
@@ -57,6 +63,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 const navItems: NavItem[] = [
   { href: '/', label: 'Обзор', icon: LayoutDashboard },
   { href: '/projects', label: 'Проекты', icon: FolderOpen },
+  // Встроенный чат (запрос пользователя 2026-10-23) — та же гейтовка, что у клиентов.
+  { href: '/chats', label: 'Чаты', icon: MessagesSquare, visibleFor: canUseChats },
   { href: '/pushes-calendar', label: 'Рассылки', icon: Send, requiredPermission: 'PUSHES_VIEW' as const },
   { href: '/stories', label: 'Истории', icon: Camera, requiredPermission: 'CHANNEL_VIEW' as const },
   { href: '/landings', label: 'Лендинги', icon: LayoutTemplate, requiredPermission: 'LANDINGS_VIEW' as const },
@@ -74,6 +82,7 @@ const navItems: NavItem[] = [
 // (3-й пункт добавлен запросом пользователя 2026-08-14).
 const OPERATOR_NAV_ITEMS: NavItem[] = [
   { href: '/my-clients', label: 'Клиенты', icon: Users },
+  { href: '/chats', label: 'Чаты', icon: MessagesSquare, visibleFor: canUseChats },
   { href: '/my-stats', label: 'Моя статистика', icon: BarChart3 },
   { href: '/my-personal-broadcasts', label: 'Личный аккаунт', icon: Contact },
 ];
@@ -97,6 +106,14 @@ export function StudioSidebar() {
     user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'OPERATOR_ADMIN';
   const items = user?.role === 'OPERATOR' ? OPERATOR_NAV_ITEMS : navItems;
 
+  // Диалоги с непрочитанными сообщениями — бейдж у «Чаты».
+  const { data: unreadChats } = useQuery({
+    queryKey: ['chat-unread'],
+    queryFn: async () => (await api.get<{ count: number }>('/chat/unread-count')).data.count,
+    refetchInterval: 20_000,
+    enabled: canUseChats(user),
+  });
+
   return (
     <aside
       className={`relative border-r border-[#DCE1E8] dark:border-[#232B38] bg-[#E8ECF1] dark:bg-[#0B121B] flex flex-col h-screen shrink-0 transition-[width] duration-200 ${
@@ -118,7 +135,7 @@ export function StudioSidebar() {
       <div className="p-5">
         <div className={`flex items-center gap-2.5 ${collapsed ? 'justify-center' : ''}`}>
           <div className="w-9 h-9 bg-[#1F4E9C] dark:bg-[#7BA9EE] rounded-2xl flex items-center justify-center shrink-0">
-            <Sparkle className="w-4.5 h-4.5 text-white dark:text-[#0F1620]" />
+            <BrandMark className="w-6 h-6 text-white dark:text-[#0F1620]" dotFillClassName="fill-[#1F4E9C] dark:fill-[#7BA9EE]" />
           </div>
           {!collapsed && (
             <div className="min-w-0">
@@ -134,6 +151,7 @@ export function StudioSidebar() {
           .filter((item) => !item.ownerAdminOnly || isOwnerOrAdmin)
           .filter((item) => !item.ownerOnly || user?.role === 'OWNER')
           .filter((item) => !item.requiredPermission || hasAnyPermission(user, item.requiredPermission))
+          .filter((item) => !item.visibleFor || item.visibleFor(user))
           .map((item) => {
             const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
             const link = (
@@ -146,8 +164,18 @@ export function StudioSidebar() {
                     : 'text-[#5F6B7A] hover:bg-[#DCE1E8]/60 dark:text-[#92A0AF] dark:hover:bg-white/5'
                 }`}
               >
-                <item.icon className="w-4 h-4 shrink-0" />
+                <span className="relative shrink-0">
+                  <item.icon className="w-4 h-4" />
+                  {item.href === '/chats' && collapsed && !!unreadChats && (
+                    <span className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-red-500" />
+                  )}
+                </span>
                 {!collapsed && item.label}
+                {!collapsed && item.href === '/chats' && !!unreadChats && (
+                  <span className="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-semibold flex items-center justify-center">
+                    {unreadChats > 99 ? '99+' : unreadChats}
+                  </span>
+                )}
               </Link>
             );
             if (!collapsed) return link;
