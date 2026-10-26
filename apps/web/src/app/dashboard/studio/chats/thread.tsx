@@ -5,7 +5,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { isAxiosError } from 'axios';
 import { format, isToday, isYesterday } from 'date-fns';
 import { ru } from 'date-fns/locale';
-import { ArrowLeft, BookText, Clock, Languages, Loader2, PanelRight, Paperclip, Pencil, Reply, Search, SendHorizontal, Undo2, UserRound, X } from 'lucide-react';
+import { ArrowLeft, BookText, Clock, Languages, Loader2, PanelRight, Paperclip, Pencil, Reply, Search, SendHorizontal, Smile, Undo2, UserRound, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   chatResourceOf,
@@ -37,6 +37,7 @@ import { TrafficBadge } from './traffic-badge';
 import { MessageBubble, quoteText } from './message-bubble';
 import { OrganizeBar } from './organize-bar';
 import { TemplateKindBadge, TemplatePicker, matchTemplates, useChatTemplates } from './templates';
+import { EmojiPicker } from './emoji-picker';
 
 const MESSAGES_POLL_MS = 3000;
 // «#код» шаблона прямо перед курсором (буквы любого алфавита, цифры, «-», «_»).
@@ -583,6 +584,21 @@ function Composer({
   const [hash, setHash] = useState<{ query: string; start: number } | null>(null);
   const [hashIndex, setHashIndex] = useState(0);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  // Эмодзи — в место курсора (или вместо выделенного), курсор встаёт после него.
+  const insertEmoji = (emoji: string) => {
+    const el = textareaRef.current;
+    const start = el?.selectionStart ?? text.length;
+    const end = el?.selectionEnd ?? text.length;
+    const next = text.slice(0, start) + emoji + text.slice(end);
+    if (next.length > 4096) return;
+    setText(next);
+    setOriginal(null);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(start + emoji.length, start + emoji.length);
+    });
+  };
   const [scheduleAt, setScheduleAt] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -887,6 +903,20 @@ function Composer({
             <Paperclip className="w-5 h-5" />
           </button>
         </div>
+        {emojiOpen && <EmojiPicker onPick={insertEmoji} onClose={() => setEmojiOpen(false)} />}
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setEmojiOpen((v) => !v)}
+          className={cn(
+            'h-10 w-10 shrink-0 rounded-xl flex items-center justify-center transition-colors',
+            emojiOpen ? 'bg-[#1F4E9C]/10 text-[#1F4E9C] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]' : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:bg-[#F3F5F8] dark:hover:bg-white/5',
+          )}
+          aria-label="Эмодзи"
+          title="Эмодзи"
+        >
+          <Smile className="w-5 h-5" />
+        </button>
         <button
           type="button"
           onClick={() => {

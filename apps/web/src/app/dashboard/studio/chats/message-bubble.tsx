@@ -283,6 +283,23 @@ export function MessageBubble({
           )}
         </div>
       </div>
+      {message.text && !isAlbum && (
+        <button
+          type="button"
+          onClick={tr.toggle}
+          disabled={tr.loading}
+          title={tr.translation ? 'Показать оригинал' : `Перевести на ${langLabel(translateTo).toLowerCase()}`}
+          aria-label={tr.translation ? 'Показать оригинал' : 'Перевести'}
+          className={cn(
+            'shrink-0 mb-1 p-1 rounded-md transition-colors',
+            tr.translation
+              ? 'text-[#1F4E9C] bg-[#1F4E9C]/10 dark:text-[#7BA9EE] dark:bg-[#7BA9EE]/10'
+              : 'text-[#5F6B7A]/60 hover:text-[#1F4E9C] hover:bg-[#1F4E9C]/10 dark:text-[#92A0AF]/60 dark:hover:text-[#7BA9EE] dark:hover:bg-[#7BA9EE]/10',
+          )}
+        >
+          {tr.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />}
+        </button>
+      )}
       {message.canReply && (
         <div className="relative shrink-0 mb-1">
           <button
@@ -319,23 +336,6 @@ export function MessageBubble({
             </div>
           )}
         </div>
-      )}
-      {message.text && !isAlbum && (
-        <button
-          type="button"
-          onClick={tr.toggle}
-          disabled={tr.loading}
-          title={tr.translation ? 'Показать оригинал' : `Перевести на ${langLabel(translateTo).toLowerCase()}`}
-          aria-label={tr.translation ? 'Показать оригинал' : 'Перевести'}
-          className={cn(
-            'shrink-0 mb-1 p-1 rounded-md transition-colors',
-            tr.translation
-              ? 'text-[#1F4E9C] bg-[#1F4E9C]/10 dark:text-[#7BA9EE] dark:bg-[#7BA9EE]/10'
-              : 'text-[#5F6B7A]/60 hover:text-[#1F4E9C] hover:bg-[#1F4E9C]/10 dark:text-[#92A0AF]/60 dark:hover:text-[#7BA9EE] dark:hover:bg-[#7BA9EE]/10',
-          )}
-        >
-          {tr.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />}
-        </button>
       )}
       {message.canReply && onReply && (
         <button
