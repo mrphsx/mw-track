@@ -62,10 +62,11 @@ export default function StudioProjectsPage() {
         <div className={`${STUDIO_CARD} p-8 text-center text-sm text-[#5F6B7A] dark:text-[#92A0AF]`}>Пока нет ни одного проекта.</div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
         {projects?.map((project) => (
           <Link key={project.id} href={`/projects/${project.id}`}>
-            <div className={`${STUDIO_CARD} hover:shadow-md transition-shadow h-full p-5 space-y-3`}>
+            {/* На телефоне карточка плотнее (2026-10-26: «сделаем компактнее для телефонов»). */}
+            <div className={`${STUDIO_CARD} hover:shadow-md transition-shadow h-full p-3.5 sm:p-5 space-y-2 sm:space-y-3`}>
               <CityTime timezone={project.timezone} className="shrink-0" />
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -79,7 +80,7 @@ export default function StudioProjectsPage() {
                 </div>
                 <StudioPill hue={project.status === 'ACTIVE' ? 'sage' : 'slate'}>{STATUS_LABELS[project.status] || project.status}</StudioPill>
               </div>
-              <div className="flex gap-3 text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
+              <div className="flex gap-3 text-xs sm:text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
                 <span className="flex items-center gap-1" title="Клиентов / из них активных (бот не заблокирован)">
                   <Users className="w-3.5 h-3.5" /> {project._count.clients}
                   <span>/ {project.activeClientsCount}</span>

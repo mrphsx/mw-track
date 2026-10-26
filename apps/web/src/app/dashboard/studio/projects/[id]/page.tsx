@@ -305,7 +305,7 @@ export default function StudioProjectPage() {
           (justify-end), а не влево, чтобы не продолжать тот же левый стек. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* На телефоне — сетка по две кнопки одинаковой ширины вместо «лесенки» разной длины. */}
-        <div className="grid grid-cols-2 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap">
+        <div className="grid grid-cols-3 gap-1.5 w-full sm:w-auto sm:flex sm:flex-wrap sm:gap-2">
           {/* Ведут на Studio-версии этих страниц, где они уже готовы (запрос пользователя
               2026-07-30: "готовить все остальные страницы") — Настройки пока без Studio-
               варианта (1575-строчный файл с десятком вкладок, отложен), ведёт на классику. */}
@@ -314,7 +314,7 @@ export default function StudioProjectPage() {
           {project?.channel?.type !== 'WEBSITE' && (
             <Link
               href={`/projects/${id}/pushes`}
-              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
+              className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620] font-medium hover:opacity-90 transition-opacity"
             >
               <Send className="w-4 h-4" /> Рассылка
             </Link>
@@ -324,7 +324,7 @@ export default function StudioProjectPage() {
           {project?.channel?.tgPersonalConnected && canViewPersonalBroadcasts && (
             <Link
               href={`/projects/${id}/personal-broadcasts`}
-              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Contact className="w-4 h-4" /> Личный аккаунт
             </Link>
@@ -335,7 +335,7 @@ export default function StudioProjectPage() {
           {project?.channel?.tgPersonalConnected && user?.role === 'OWNER' && (
             <Link
               href={`/payment-details-log?projectId=${id}`}
-              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Contact className="w-4 h-4" /> Журнал реквизитов
             </Link>
@@ -347,14 +347,14 @@ export default function StudioProjectPage() {
             <button
               type="button"
               onClick={() => setShowWebsiteLink(true)}
-              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Link2 className="w-4 h-4" /> Получить ссылку
             </button>
           )}
           <Link
             href={`/projects/${id}/landings`}
-            className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <LayoutTemplate className="w-4 h-4" /> Лендинги
           </Link>
@@ -362,7 +362,7 @@ export default function StudioProjectPage() {
           {project?.channel?.type === 'TELEGRAM' && project.channel.tgMode === 'BOT_DIRECT' && (
             <Link
               href={`/projects/${id}/bot-links`}
-              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Link2 className="w-4 h-4" /> Ссылки на бота
             </Link>
@@ -371,14 +371,14 @@ export default function StudioProjectPage() {
           {project?.channel?.type !== 'WEBSITE' && (
             <Link
               href={`/projects/${id}/scenarios`}
-              className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+              className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
             >
               <Workflow className="w-4 h-4" /> Сценарии
             </Link>
           )}
           <Link
             href={`/projects/${id}/settings`}
-            className="inline-flex items-center justify-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
+            className="inline-flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 text-[11px] leading-tight text-center sm:text-sm px-1.5 sm:px-4 py-2 rounded-lg bg-white dark:bg-[#171F2B] dark:border dark:border-white/10 shadow-sm text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3] transition-colors"
           >
             <Settings className="w-4 h-4" /> Настройки
           </Link>
@@ -435,7 +435,7 @@ export default function StudioProjectPage() {
             </div>
           )}
           <StudioLinkButton icon={Download} onClick={exportStats}>
-            Скачать статистику
+            Скачать<span className="hidden sm:inline"> статистику</span>
           </StudioLinkButton>
         </div>
       </div>
@@ -449,7 +449,7 @@ export default function StudioProjectPage() {
             оставался пустой хвост. auto-fit-колонки растягивают пилюли на всю ширину без
             возврата прыжков — ширина колонки теперь зависит от контейнера, а не от содержимого
             пилюли, так что число внутри по-прежнему не меняет её размер. */}
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-1.5 sm:gap-2">
           {metrics.map((m) => {
             const { textClass, bgSoftClass } = STUDIO_HUES[m.hue];
             const active = m.key === featuredKey;
@@ -460,7 +460,7 @@ export default function StudioProjectPage() {
                 onClick={() => setFeaturedKey(m.key)}
                 // justify-between прижимает значение к правому краю, label обрезается в
                 // оставшемся месте.
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors justify-between ${
+                className={`flex items-center gap-2 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm transition-colors justify-between ${
                   m.danger
                     ? active
                       ? 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-400 font-medium'
