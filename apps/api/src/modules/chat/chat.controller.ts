@@ -924,6 +924,11 @@ export class ChatController {
     return this.chatService.translateDraft(dto.text, dto.lang, companyId, user);
   }
 
+  @Delete('messages/:id')
+  deleteMessage(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.chatService.deleteMessage(id, companyId, user);
+  }
+
   @Post('messages/:id/translate')
   translateMessage(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: TranslateMessageDto) {
     return this.chatService.translateMessage(id, dto.lang, companyId, user);

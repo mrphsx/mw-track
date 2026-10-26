@@ -780,6 +780,21 @@ export class TelegramPersonalService {
     }
   }
 
+  // Удалить сообщение переписки у обеих сторон (2026-10-26, удаление из чата CRM). В личном
+  // диалоге MTProto удаляет у собеседника без ограничения по времени (revoke).
+  async deleteChatMessage(channel: Channel, peerId: string, messageId: string): Promise<void> {
+    const client = await this.getLiveClient(channel);
+    if (!client) throw new Error('Личный аккаунт не подключён');
+    try {
+      const entity = await this.resolvePeer(client, peerId);
+      await client.deleteMessages(entity, [Number(messageId)], { revoke: true });
+    } catch (error) {
+      this.logger.warn(`deleteChatMessage ${channel.id}/${messageId}: ${(error as Error).message}`);
+      await this.handleDeadSession(channel, error);
+      throw error;
+    }
+  }
+
   // Файл из переписки лички — по id сообщения, скачивается заново из Telegram при просмотре.
   async downloadChatMedia(channel: Channel, peerId: string, messageId: string): Promise<{ buffer: Buffer; mimeType: string }> {
     const client = await this.getLiveClient(channel);

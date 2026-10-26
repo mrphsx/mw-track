@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { isAxiosError } from 'axios';
-import { AlertCircle, Bot, Download, FileText, Languages, Loader2 } from 'lucide-react';
-import { ChatMessage, ChatTranslation, langLabel, loadChatMedia, translateChatMessage } from '@/lib/chat';
+import { AlertCircle, Bot, Download, FileText, Languages, Loader2, Trash2 } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { ru } from 'date-fns/locale';
+import { ChatMessage, ChatTranslation, deleteChatMessage, langLabel, loadChatMedia, translateChatMessage } from '@/lib/chat';
 import { cn, downloadBlob } from '@/lib/utils';
 
 function useMediaUrl(messageId: string, enabled: boolean) {
@@ -147,7 +149,20 @@ export function MessageBubble({
   const isBot = message.senderType === 'BOT';
   const time = format(new Date(message.createdAt), 'HH:mm');
   const tr = useMessageTranslation(message, translateTo, translationEnabled);
-  const ownBubble = outgoing && !isBot && !message.error;
+  const deleted = !!message.deletedAt;
+  const ownBubble = outgoing && !isBot && !message.error && !deleted;
+  // Удаление из Telegram (2026-10-26): у клиента сообщение пропадает, в CRM остаётся
+  // на слабо-красном фоне с пометкой, кто и когда удалил.
+  const queryClient = useQueryClient();
+  const [deleteError, setDeleteError] = useState('');
+  const remove = useMutation({
+    mutationFn: () => deleteChatMessage(message.id),
+    onSuccess: () => {
+      setDeleteError('');
+      queryClient.invalidateQueries({ queryKey: ['chat-messages'] });
+    },
+    onError: (err) => setDeleteError((isAxiosError(err) && err.response?.data?.error?.message) || 'Не удалось удалить'),
+  });
 
   // Служебная запись (2026-10-25): «чат передан оператору…» — по центру ленты, как дата.
   if (message.senderType === 'SYSTEM') {
@@ -161,7 +176,7 @@ export function MessageBubble({
   }
 
   return (
-    <div className={cn('flex flex-col', outgoing ? 'items-end' : 'items-start')}>
+    <div className={cn('group/msg flex flex-col', outgoing ? 'items-end' : 'items-start')}>
       {showSender && outgoing && (
         <div className="text-[11px] font-medium text-[#5F6B7A] dark:text-[#92A0AF] mb-0.5 px-1 flex items-center gap-1">
           {isBot ? (
@@ -177,7 +192,9 @@ export function MessageBubble({
       <div
         className={cn(
           'relative min-w-0 rounded-2xl px-3 py-2 shadow-sm',
-          message.error
+          deleted
+            ? 'bg-red-50/80 text-[#131A24] border border-red-200/80 dark:bg-red-950/25 dark:text-[#E9EDF3] dark:border-red-900/50'
+            : message.error
             ? 'bg-red-50 text-red-900 border border-red-200 dark:bg-red-950/40 dark:text-red-200 dark:border-red-900/60'
             : !outgoing
               ? 'bg-white text-[#131A24] rounded-bl-md dark:bg-[#1C2532] dark:text-[#E9EDF3]'
@@ -188,7 +205,7 @@ export function MessageBubble({
       >
         {message.mediaType && (
           <div className={cn(message.text ? 'mb-1.5' : '')}>
-            <MediaBlock message={message} outgoing={outgoing && !isBot && !message.error} />
+            <MediaBlock message={message} outgoing={ownBubble} />
           </div>
         )}
         {message.text && <div className="whitespace-pre-wrap break-words text-[14px] leading-snug">{tr.translation?.text ?? message.text}</div>}
@@ -218,7 +235,25 @@ export function MessageBubble({
           {tr.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />}
         </button>
       )}
+      {message.canDelete && (
+        <button
+          type="button"
+          onClick={() => confirm('Удалить это сообщение у клиента в Telegram? В CRM оно останется с пометкой, кто удалил.') && remove.mutate()}
+          disabled={remove.isPending}
+          title="Удалить из Telegram"
+          aria-label="Удалить из Telegram"
+          className="shrink-0 mb-1 p-1 rounded-md text-[#5F6B7A]/60 hover:text-red-600 hover:bg-red-500/10 dark:text-[#92A0AF]/60 dark:hover:text-red-400 opacity-0 group-hover/msg:opacity-100 focus:opacity-100 transition-opacity"
+        >
+          {remove.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+        </button>
+      )}
       </div>
+      {deleted && (
+        <div className="mt-1 px-1 text-[11px] text-red-600/90 dark:text-red-400/90 flex items-center gap-1">
+          <Trash2 className="w-3 h-3" /> Удалено из Telegram · {message.deletedByName || 'сотрудник'} · {format(new Date(message.deletedAt!), 'd MMM, HH:mm', { locale: ru })}
+        </div>
+      )}
+      {deleteError && <div className="mt-1 px-1 text-[11px] text-red-600 dark:text-red-400">{deleteError}</div>}
       {tr.error && <div className="mt-1 px-1 text-[11px] text-red-600 dark:text-red-400">{tr.error}</div>}
       {message.error && (
         <div className="mt-1 px-1 text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1">

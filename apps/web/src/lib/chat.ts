@@ -156,7 +156,15 @@ export interface ChatMessage {
   error: string | null;
   // Уже сделанные переводы: язык → текст и язык оригинала (2026-10-24).
   translations: Record<string, ChatTranslation> | null;
+  // Удалено из Telegram из CRM (2026-10-26): в CRM остаётся с пометкой, кто удалил.
+  deletedAt?: string | null;
+  deletedByName?: string | null;
+  canDelete?: boolean;
   createdAt: string;
+}
+
+export async function deleteChatMessage(id: string) {
+  await api.delete(`/chat/messages/${id}`);
 }
 
 export interface ChatTranslation {

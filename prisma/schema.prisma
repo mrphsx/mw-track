@@ -2754,6 +2754,10 @@ model ChatMessage {
   // Кэш переводов (2026-10-24): { "<язык>": { text, from } } — повторный перевод на тот же язык
   // не тратит лимит сервиса перевода.
   translations   Json?
+  // Удалено из Telegram из CRM (2026-10-26): у клиента сообщения больше нет, в CRM оно остаётся
+  // с пометкой, кто и когда удалил.
+  deletedAt      DateTime?
+  deletedById    String?
   createdAt      DateTime       @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id])

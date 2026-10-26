@@ -1625,6 +1625,18 @@ export class TelegramProvider implements ChannelProvider {
     return this.sendChatMessageWithBot(bot, peerId, payload);
   }
 
+  // Удалить сообщение переписки (2026-10-26). Bot API: в личке бот удаляет свои и входящие
+  // сообщения, но только моложе 48 часов.
+  async deleteChatMessage(channel: Channel, peerId: string, messageId: string): Promise<void> {
+    const bot = this.bots.get(channel.id);
+    if (!bot) throw new Error('Бот проекта не подключён');
+    await this.deleteChatMessageWithBot(bot, peerId, messageId);
+  }
+
+  async deleteChatMessageWithBot(bot: Bot, peerId: string, messageId: string): Promise<void> {
+    await bot.api.deleteMessage(peerId, Number(messageId));
+  }
+
   // Ядро отправки ответа из чата — общее для основного и дополнительных ботов (ExtraBotsService).
   async sendChatMessageWithBot(
     bot: Bot,

@@ -566,22 +566,67 @@ export class ChatService {
         mediaFileName: true,
         error: true,
         translations: true,
+        deletedAt: true,
+        deletedById: true,
+        externalId: true,
         createdAt: true,
       },
     });
     const page = rows.slice(0, MESSAGES_PAGE);
 
-    // Имена операторов — чтобы в чате было видно, кто из команды ответил.
-    const senderIds = [...new Set(page.map((m) => m.senderUserId).filter((v): v is string => !!v))];
+    // Имена операторов — чтобы в чате было видно, кто из команды ответил (и кто удалил).
+    const senderIds = [...new Set(page.flatMap((m) => [m.senderUserId, m.deletedById]).filter((v): v is string => !!v))];
     const senders = senderIds.length
       ? await this.prisma.user.findMany({ where: { id: { in: senderIds } }, select: { id: true, firstName: true, lastName: true, email: true } })
       : [];
     const senderName = new Map(senders.map((u) => [u.id, [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email]));
 
     return {
-      items: page.reverse().map((m) => ({ ...m, senderName: m.senderUserId ? senderName.get(m.senderUserId) ?? null : null })),
+      items: page.reverse().map(({ externalId, deletedById, ...m }) => ({
+        ...m,
+        senderName: m.senderUserId ? senderName.get(m.senderUserId) ?? null : null,
+        deletedByName: deletedById ? senderName.get(deletedById) ?? 'сотрудник' : null,
+        // Удалить из Telegram можно только то, что реально дошло (есть id сообщения в Telegram).
+        canDelete: !!externalId && !m.deletedAt && m.senderType !== 'SYSTEM',
+      })),
       hasMore: rows.length > MESSAGES_PAGE,
     };
+  }
+
+  // Удалить сообщение из Telegram (2026-10-26: «удалится только с Телеграма, в CRM останется со
+  // слабо-красным фоном и пометкой, кто удалил»). Кто может отвечать в диалоге — тот и удаляет.
+  // Бот удаляет только сообщения моложе 48 часов (ограничение Bot API), личка — любые.
+  async deleteMessage(messageId: string, companyId: string, user: AuthUser) {
+    const message = await this.prisma.chatMessage.findUnique({ where: { id: messageId } });
+    if (!message) throw new NotFoundException('Сообщение не найдено');
+    const conversation = await this.loadConversation(message.conversationId, companyId, user, true);
+    if (message.deletedAt) throw new BadRequestException('Сообщение уже удалено');
+    if (message.senderType === 'SYSTEM' || !message.externalId) throw new BadRequestException('Это сообщение не отправлялось в Telegram — удалять нечего');
+    const channel = await this.prisma.channel.findUnique({ where: { id: conversation.channelId } });
+    if (!channel) throw new NotFoundException('Канал не найден');
+    try {
+      if (conversation.source === 'PERSONAL') {
+        await this.telegramPersonal.deleteChatMessage(channel, conversation.peerId, message.externalId);
+      } else if (conversation.botKey) {
+        const bot = this.extraBots.getBot(conversation.botKey);
+        if (!bot) throw new Error('Этот бот сейчас не подключён');
+        await this.telegram.deleteChatMessageWithBot(bot, conversation.peerId, message.externalId);
+      } else {
+        await this.telegram.deleteChatMessage(channel, conversation.peerId, message.externalId);
+      }
+    } catch (error) {
+      const text = (error as Error).message || '';
+      // Bot API: старше 48 часов или уже удалено самим клиентом.
+      if (error instanceof GrammyError && /can't be deleted|message to delete not found/i.test(error.description)) {
+        throw new BadRequestException(
+          /not found/i.test(error.description)
+            ? 'В Telegram этого сообщения уже нет (возможно, его удалил клиент)'
+            : 'Telegram не даёт боту удалить сообщение старше 48 часов',
+        );
+      }
+      throw new BadRequestException(`Не удалось удалить: ${text}`);
+    }
+    return this.prisma.chatMessage.update({ where: { id: messageId }, data: { deletedAt: new Date(), deletedById: user.userId }, select: { id: true, deletedAt: true } });
   }
 
   // ---- перевод (2026-10-24) ----
