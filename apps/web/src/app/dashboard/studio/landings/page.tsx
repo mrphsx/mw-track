@@ -115,9 +115,10 @@ export default function StudioAllLandingsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Все лендинги</h1>
+      {/* На телефоне — заголовок отдельной строкой, переключатель и кнопки вместе во второй
+          (2026-10-26: «кнопки этажами, очень плохо смотрится на телефоне»). */}
+      <div className="flex items-center flex-wrap gap-3">
+          <h1 className="w-full sm:w-auto text-2xl sm:text-3xl font-bold text-[#131A24] dark:text-[#E9EDF3] tracking-tight">Все лендинги</h1>
           {/* Переключатель сгруппирован с заголовком на фиксированной левой стороне, чтобы не
               "прыгать" при смене состава кнопок справа (запрос пользователя 2026-08-20: "кнопка
               переключения... прыгает когда меняешь"). */}
@@ -142,10 +143,9 @@ export default function StudioAllLandingsPage() {
                   : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
               }`}
             >
-              Группы (A/B/n)
+              Группы<span className="hidden sm:inline"> (A/B/n)</span>
             </button>
           </div>
-        </div>
         <div className="flex items-center gap-3 flex-wrap justify-end ml-auto">
           {viewMode === 'groups' && hasAnyPermission(user, 'AB_TESTS_CREATE') && (
             <StudioLinkButton
