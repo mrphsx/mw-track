@@ -54,6 +54,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { BrandMark } from '@/components/brand-mark';
+import { TelegramLoginDialog } from '@/components/telegram-login-dialog';
 
 const THEME_OPTIONS = [
   { value: 'light', label: 'Светлая', icon: Sun },
@@ -125,6 +126,8 @@ const OPERATOR_NAV_ITEMS: NavItem[] = [
 const ADMIN_PLATFORM_URL = process.env.NEXT_PUBLIC_ADMIN_URL || 'http://localhost:3002';
 
 export function Sidebar() {
+  // «Вход через Telegram» (2026-10-26) — привязка своих Telegram-аккаунтов для мини-аппа CRM.
+  const [telegramOpen, setTelegramOpen] = useState(false);
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
   const { sidebarCollapsed, toggleSidebar } = useUiStore();
@@ -247,6 +250,7 @@ export function Sidebar() {
                 }
               />
             )}
+            <DropdownMenuItem onClick={() => setTelegramOpen(true)}>Вход через Telegram</DropdownMenuItem>
             <DropdownMenuItem onClick={logout} className="text-destructive">
               <LogOut className="w-4 h-4 mr-2" />
               Выйти
@@ -254,6 +258,7 @@ export function Sidebar() {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+    {telegramOpen && <TelegramLoginDialog onClose={() => setTelegramOpen(false)} />}
     </aside>
   );
 }

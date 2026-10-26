@@ -242,6 +242,17 @@ export class AuthService {
     });
   }
 
+  // Вход без пароля, когда личность уже подтверждена иначе (мини-апп Telegram, 2026-10-26) — те же
+  // проверки, что у обычного входа: активный сотрудник, компания не заблокирована.
+  async loginAsUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { company: true } });
+    if (!user || user.deletedAt) throw new UnauthorizedException('Профиль не найден');
+    if (!user.isActive) throw new ForbiddenException('Аккаунт заблокирован');
+    if (user.company.isSuspended) throw new ForbiddenException('Компания заблокирована администратором платформы');
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    return this.issueTokens(user);
+  }
+
   private async issueTokens(user: User & { company?: Company | null }) {
     const payload: JwtPayload = {
       sub: user.id,

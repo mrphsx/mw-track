@@ -6,11 +6,14 @@ import { AuthService } from './auth.service';
 import { AuthCron } from './auth.cron';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { RefreshStrategy } from './strategies/refresh.strategy';
+import { EncryptionService } from '../../common/encryption.service';
+import { TelegramLoginController } from './telegram/telegram-login.controller';
+import { TelegramLoginService } from './telegram/telegram-login.service';
 
 @Module({
   imports: [PassportModule, JwtModule.register({})],
-  controllers: [AuthController],
-  providers: [AuthService, AuthCron, JwtStrategy, RefreshStrategy],
+  controllers: [AuthController, TelegramLoginController],
+  providers: [AuthService, AuthCron, JwtStrategy, RefreshStrategy, TelegramLoginService, EncryptionService],
   exports: [AuthService],
 })
 export class AuthModule {}

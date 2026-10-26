@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { randomBytes, timingSafeEqual } from 'crypto';
@@ -13,7 +13,9 @@ import {
   fetchChatProfile,
   notifierApi,
   sendNotifierMessage,
+  setMiniAppMenuButton,
 } from './notification-telegram';
+import { bindByLinkToken, findOrBindAccount } from '../auth/telegram/telegram-accounts.util';
 import {
   escapeTelegramHtml,
   extractBotIdFromToken,
@@ -40,7 +42,7 @@ const PROFILE_STALE_MS = 12 * 60 * 60 * 1000;
 const PROFILE_REFRESH_BATCH = 200;
 
 @Injectable()
-export class NotificationsService {
+export class NotificationsService implements OnModuleInit {
   private readonly logger = new Logger(NotificationsService.name);
 
   constructor(
@@ -49,6 +51,26 @@ export class NotificationsService {
     private encryption: EncryptionService,
     private evaluator: NotificationsEvaluator,
   ) {}
+
+  // Кнопка мини-аппа CRM у всех подключённых ботов оповещений (2026-10-26) — в фоне, после старта.
+  onModuleInit() {
+    setTimeout(() => void this.ensureMiniAppButtons(), 20_000);
+  }
+
+  miniAppUrl(botRowId: string): string {
+    return `${this.config.get<string>('APP_URL')}/tg?b=${botRowId}`;
+  }
+
+  private async ensureMiniAppButtons() {
+    const bots = await this.prisma.notificationBot.findMany({ where: { isActive: true } });
+    for (const bot of bots) {
+      try {
+        await setMiniAppMenuButton(this.encryption.decrypt(bot.tokenEncrypted), this.miniAppUrl(bot.id));
+      } catch (error) {
+        this.logger.warn(`Кнопка мини-аппа для бота оповещений ${bot.id} не установлена: ${describeTelegramError(error)}`);
+      }
+    }
+  }
 
   async getSettings(companyId: string) {
     const bot = await this.prisma.notificationBot.findUnique({
@@ -164,6 +186,12 @@ export class NotificationsService {
       await this.prisma.notificationBot.delete({ where: { id: row.id } });
       this.logger.warn(`setWebhook для бота оповещений не прошёл: ${describeTelegramError(error)}`);
       throw new BadRequestException(`Telegram не принял адрес вебхука: ${describeTelegramError(error)}`);
+    }
+
+    try {
+      await setMiniAppMenuButton(token, this.miniAppUrl(row.id));
+    } catch (error) {
+      this.logger.warn(`Кнопка мини-аппа не установлена: ${describeTelegramError(error)}`);
     }
 
     // Состояние прошлых алертов (если бот переподключают) сбрасываем: пусть текущие проблемы
@@ -313,9 +341,26 @@ export class NotificationsService {
       }
 
       if (!/^\/start\b/i.test(text)) {
-        await reply('Этот бот присылает служебные оповещения MWTRACK.\n/start — подписаться\n/stop — отписаться');
+        await reply('Этот бот присылает служебные оповещения MWTRACK.\n/start — подписаться\n/stop — отписаться\nКнопка «Открыть CRM» внизу — вход в CRM прямо в Telegram.');
         return;
       }
+
+      // Вход в CRM из Telegram (2026-10-26): /start link_<код> — привязка по ссылке из профиля CRM.
+      const who = fromId
+        ? { tgUserId: fromId, username: incomingProfile.username ? normalizeTelegramUsername(incomingProfile.username) : null, firstName: incomingProfile.firstName }
+        : null;
+      const linkMatch = text.match(/^\/start\s+link_([A-Za-z0-9_-]+)/i);
+      if (linkMatch && who) {
+        const res = await bindByLinkToken(this.prisma, bot.companyId, linkMatch[1], who);
+        await reply(
+          res.ok
+            ? '✅ <b>Telegram привязан к вашему профилю CRM.</b>\nНажмите кнопку «Открыть CRM» внизу — вход без пароля.'
+            : `❌ ${escapeTelegramHtml(res.reason)}`,
+        );
+        return;
+      }
+      // Привязка по @тегу, добавленному в профиле, закрепляется при первом /start.
+      const loginAccount = who ? await findOrBindAccount(this.prisma, bot.companyId, who) : null;
 
       // 1) Уже знакомый по id — это он, даже если с тех пор сменил или убрал юзернейм.
       // 2) Иначе — строка, которую владелец вписал по юзернейму и которая ещё ни к кому не
@@ -324,6 +369,10 @@ export class NotificationsService {
       let recipient = known;
       if (!recipient) {
         const username = incomingProfile.username ? normalizeTelegramUsername(incomingProfile.username) : null;
+        if (!username && loginAccount) {
+          await reply('✅ Ваш Telegram привязан к профилю CRM. Нажмите кнопку «Открыть CRM» внизу — вход без пароля.');
+          return;
+        }
         if (!username) {
           await reply(
             'У вашего аккаунта нет юзернейма. Задайте его в настройках Telegram, передайте владельцу компании ' +
@@ -335,6 +384,10 @@ export class NotificationsService {
           where: { notificationBotId: bot.id, username, tgUserId: null },
         });
         if (!pending) {
+          if (loginAccount) {
+            await reply('✅ Ваш Telegram привязан к профилю CRM. Нажмите кнопку «Открыть CRM» внизу — вход без пароля.');
+            return;
+          }
           await reply(
             `@${escapeTelegramHtml(username)} нет в списке получателей. Попросите владельца компании добавить вас ` +
               'в MWTRACK: Настройки → Оповещения, затем снова нажмите /start.',

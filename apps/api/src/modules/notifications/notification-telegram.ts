@@ -3,6 +3,11 @@ import { Api, GrammyError } from 'grammy';
 // Тонкая обёртка над Bot API для бота оповещений. Намеренно без grammY Bot и без карты живых
 // инстансов, как у TelegramProvider: этот бот только отвечает на /start и шлёт уведомления,
 // ему не нужны middleware, сессии и обработчики апдейтов — только четыре метода API.
+// Кнопка «Открыть CRM» у поля ввода бота — открывает мини-апп CRM (2026-10-26). Идемпотентно.
+export async function setMiniAppMenuButton(token: string, url: string): Promise<void> {
+  await notifierApi(token).setChatMenuButton({ menu_button: { type: 'web_app', text: 'Открыть CRM', web_app: { url } } });
+}
+
 export function notifierApi(token: string): Api {
   return new Api(token);
 }

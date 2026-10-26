@@ -53,6 +53,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { BrandMark } from '@/components/brand-mark';
+import { TelegramLoginDialog } from '@/components/telegram-login-dialog';
 
 // Тот же список пунктов, что у классического Sidebar — продублирован намеренно (своя
 // палитра/форма). "Голые" пути без префикса /dashboard/studio (запрос пользователя 2026-07-30:
@@ -95,6 +96,8 @@ const OPERATOR_NAV_ITEMS: NavItem[] = [
 // mobileOpen — на телефоне (уже md) меню выезжает поверх страницы по кнопке-бургеру в шапке
 // (2026-10-26: «меню слева не помещается на телефоне»); на десктопе — как раньше, сбоку.
 export function StudioSidebar({ mobileOpen = false, onMobileClose }: { mobileOpen?: boolean; onMobileClose?: () => void }) {
+  // «Вход через Telegram» (2026-10-26) — привязка своих Telegram-аккаунтов для мини-аппа CRM.
+  const [telegramOpen, setTelegramOpen] = useState(false);
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
   const { sidebarCollapsed, toggleSidebar } = useUiStore();
@@ -228,6 +231,7 @@ export function StudioSidebar({ mobileOpen = false, onMobileClose }: { mobileOpe
           <DropdownMenuContent align="start" className="w-48">
             {/* Тема перенесена в шапку как Switch (запрос пользователя 2026-07-29) — здесь
                 больше не дублируется. */}
+            <DropdownMenuItem onClick={() => setTelegramOpen(true)}>Вход через Telegram</DropdownMenuItem>
             <DropdownMenuItem onClick={logout} className="text-destructive">
               <LogOut className="w-4 h-4 mr-2" />
               Выйти
@@ -235,6 +239,7 @@ export function StudioSidebar({ mobileOpen = false, onMobileClose }: { mobileOpe
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+    {telegramOpen && <TelegramLoginDialog onClose={() => setTelegramOpen(false)} />}
     </aside>
     </>
   );

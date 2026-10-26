@@ -94,6 +94,7 @@ interface AuthState {
   user: User | null;
   hydrated: boolean;
   login: (email: string, password: string) => Promise<void>;
+  loginWithTelegram: (botId: string, initData: string) => Promise<void>;
   register: (payload: RegisterPayload) => Promise<void>;
   acceptInvite: (token: string, payload: AcceptInvitePayload) => Promise<void>;
   logout: () => void;
@@ -112,6 +113,13 @@ export const useAuthStore = create<AuthState>()(
 
       login: async (email, password) => {
         const { data } = await axios.post(`${API_BASE_URL}/auth/login`, { email, password });
+        set({ accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user });
+        setSharedRefreshCookie(data.refreshToken);
+      },
+
+      // Вход из мини-аппа Telegram (2026-10-26) — та же полноценная сессия, что после пароля.
+      loginWithTelegram: async (botId, initData) => {
+        const { data } = await axios.post(`${API_BASE_URL}/auth/telegram/miniapp`, { botId, initData });
         set({ accessToken: data.accessToken, refreshToken: data.refreshToken, user: data.user });
         setSharedRefreshCookie(data.refreshToken);
       },

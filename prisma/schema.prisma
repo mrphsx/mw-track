@@ -224,16 +224,17 @@ model User {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  company         Company           @relation(fields: [companyId], references: [id])
-  projectAccess   ProjectAccess[]
-  refreshTokens   RefreshToken[]
-  permissions     UserPermission[]
-  adminActions    AdminActionLog[]
-  createdLandings Landing[]         @relation("LandingCreatedBy")
-  createdPixels   TrackingPixel[]   @relation("PixelCreatedBy")
-  sentNotices     AdminNotice[]     @relation("AdminNoticeCreatedBy")
-  noticeReads     AdminNoticeRead[]
-  domainAccess    DomainAccess[]
+  company          Company               @relation(fields: [companyId], references: [id])
+  projectAccess    ProjectAccess[]
+  refreshTokens    RefreshToken[]
+  permissions      UserPermission[]
+  adminActions     AdminActionLog[]
+  createdLandings  Landing[]             @relation("LandingCreatedBy")
+  createdPixels    TrackingPixel[]       @relation("PixelCreatedBy")
+  sentNotices      AdminNotice[]         @relation("AdminNoticeCreatedBy")
+  noticeReads      AdminNoticeRead[]
+  domainAccess     DomainAccess[]
+  telegramAccounts UserTelegramAccount[]
 
   @@index([companyId])
 }
@@ -2851,5 +2852,32 @@ model ChatResourceAccess {
   createdAt   DateTime @default(now())
 
   @@unique([projectId, resource, userId])
+  @@index([userId])
+}
+
+// Вход в CRM из мини-аппа Telegram (2026-10-26): какие Telegram-аккаунты открывают профиль
+// сотрудника. Мини-апп живёт в боте оповещений компании (NotificationBot), поэтому привязка — в
+// пределах компании: один Telegram-аккаунт — не больше одного сотрудника компании, а у сотрудника
+// может быть несколько аккаунтов (2–3 владельца на одном профиле). Два способа привязки:
+// по @тегу (username, tgUserId проставится при первом /start или открытии мини-аппа) и по
+// одноразовой ссылке на бота (linkToken, человек сам подтверждает, что аккаунт его).
+model UserTelegramAccount {
+  id                 String    @id @default(cuid())
+  companyId          String
+  userId             String
+  tgUserId           String?
+  // Без @, в нижнем регистре.
+  username           String?
+  tgFirstName        String?
+  linkToken          String?   @unique
+  linkTokenExpiresAt DateTime?
+  linkedAt           DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, tgUserId])
+  @@index([companyId, username])
   @@index([userId])
 }
