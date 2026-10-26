@@ -676,50 +676,52 @@ function ProjectChat({
           }
           toolbar={
             <div className="space-y-2">
-            {/* Вкладки и этапы переносятся по строкам — всё видно сразу, без горизонтальной
-                прокрутки (2026-10-26: «надо зажимать Ctrl и скролить, неудобно»). */}
-            <div className="flex flex-wrap gap-1">
-              {CHAT_TABS.map((t) => {
-                const n = counts?.[t.value];
-                return (
-                  <button
-                    key={t.value}
-                    type="button"
-                    title={t.hint}
-                    onClick={() => setTab(t.value)}
-                    className={cn(
-                      'inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium transition-colors',
-                      tab === t.value
-                        ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
-                        : 'bg-[#F3F5F8] dark:bg-[#0F1620] text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]',
-                    )}
-                  >
-                    {t.label}
-                    {n !== undefined && n > 0 && <span className={cn('tabular-nums', tab === t.value ? 'opacity-80' : 'opacity-70')}>{n > 999 ? '999+' : n}</span>}
-                  </button>
-                );
-              })}
+            {/* Вкладка и этап — два списка в одну строку (2026-10-26: кнопки прокручивались вбок, а
+                в несколько строк занимали слишком много места). Счётчики — внутри списка. */}
+            <div className="flex items-center gap-1.5">
+              <select
+                value={tab}
+                onChange={(e) => setTab(e.target.value as ChatTab)}
+                className={cn(
+                  'h-7 min-w-0 flex-1 truncate rounded-lg px-2 text-xs font-medium outline-none',
+                  tab !== 'all'
+                    ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                    : 'bg-[#F3F5F8] dark:bg-[#0F1620] text-[#131A24] dark:text-[#E9EDF3]',
+                )}
+                aria-label="Вкладка"
+              >
+                {CHAT_TABS.map((t) => {
+                  const n = counts?.[t.value];
+                  return (
+                    <option key={t.value} value={t.value} title={t.hint}>
+                      {t.label}
+                      {n !== undefined && n > 0 ? ` (${n > 999 ? '999+' : n})` : ''}
+                    </option>
+                  );
+                })}
+              </select>
+              {stages.length > 0 && (
+                <select
+                  value={stage}
+                  onChange={(e) => setStage(e.target.value)}
+                  className={cn(
+                    'h-7 min-w-0 flex-1 truncate rounded-lg px-2 text-xs font-medium outline-none',
+                    stage
+                      ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                      : 'bg-[#F3F5F8] dark:bg-[#0F1620] text-[#131A24] dark:text-[#E9EDF3]',
+                  )}
+                  aria-label="Этап"
+                >
+                  <option value="">Все этапы</option>
+                  {stages.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.name}
+                    </option>
+                  ))}
+                  <option value="none">Без этапа</option>
+                </select>
+              )}
             </div>
-            {stages.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {[{ id: '', name: 'Все этапы', color: '' }, ...stages, { id: 'none', name: 'Без этапа', color: '' }].map((st) => (
-                  <button
-                    key={st.id || 'all'}
-                    type="button"
-                    onClick={() => setStage(st.id)}
-                    className={cn(
-                      'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium border transition-colors',
-                      stage === st.id
-                        ? 'border-[#1F4E9C] bg-[#1F4E9C]/10 text-[#1F4E9C] dark:border-[#7BA9EE] dark:bg-[#7BA9EE]/10 dark:text-[#7BA9EE]'
-                        : 'border-[#DCE1E8] dark:border-white/10 text-[#5F6B7A] dark:text-[#92A0AF]',
-                    )}
-                  >
-                    {st.color && <span className="w-2 h-2 rounded-full" style={{ backgroundColor: st.color }} />}
-                    {st.name}
-                  </button>
-                ))}
-              </div>
-            )}
             <div className="flex items-center gap-1.5">
               <select
                 value={assignee}
