@@ -1,3 +1,5 @@
+import { formatUserName } from '../../common/user-name.util';
+import { describePushError } from './push-error.util';
 import { InjectQueue } from '@nestjs/bull';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -141,17 +143,68 @@ export class PushesService {
   // всегда вместе с pending — 'pending' и 'history' поэтому два РАЗНЫХ запроса (разные query key
   // на фронте), не единый список с последующей фильтрацией на клиенте, иначе страница тянула бы
   // всю историю компании при каждом визите, что этот запрос явно просит избежать.
+  // Фильтры списка рассылок (2026-10-26: «фильтр обширный — кто создал, дата, проект, статус»).
+  // Дата — день рассылки: отправлена → sentAt, иначе запланирована → scheduledAt, иначе createdAt.
   async findAllForCompany(
     projectIds: string[],
-    scope: 'pending' | 'history',
-  ): Promise<(Push & { project: { id: string; name: string } })[]> {
+    scope: 'pending' | 'history' | 'all',
+    f: { projectId?: string; createdById?: string; status?: PushStatus[]; from?: Date; to?: Date; q?: string } = {},
+  ) {
     if (projectIds.length === 0) return [];
-    const statuses: PushStatus[] = scope === 'pending' ? [PushStatus.DRAFT, PushStatus.SCHEDULED] : [PushStatus.SENDING, PushStatus.SENT, PushStatus.FAILED];
-    return this.prisma.push.findMany({
-      where: { projectId: { in: projectIds }, status: { in: statuses } },
-      include: { project: { select: { id: true, name: true } } },
+    const scopeStatuses: PushStatus[] =
+      scope === 'pending' ? [PushStatus.DRAFT, PushStatus.SCHEDULED] : scope === 'history' ? [PushStatus.SENDING, PushStatus.SENT, PushStatus.FAILED] : Object.values(PushStatus);
+    const statuses = f.status?.length ? scopeStatuses.filter((s) => f.status!.includes(s)) : scopeStatuses;
+    const range = f.from || f.to ? { ...(f.from ? { gte: f.from } : {}), ...(f.to ? { lt: f.to } : {}) } : null;
+    const where: Prisma.PushWhereInput = {
+      projectId: f.projectId ? (projectIds.includes(f.projectId) ? f.projectId : '__none__') : { in: projectIds },
+      status: { in: statuses },
+      ...(f.createdById === 'none' ? { createdById: null } : f.createdById ? { createdById: f.createdById } : {}),
+      ...(f.q ? { name: { contains: f.q, mode: 'insensitive' } } : {}),
+      ...(range
+        ? { OR: [{ sentAt: range }, { sentAt: null, scheduledAt: range }, { sentAt: null, scheduledAt: null, createdAt: range }] }
+        : {}),
+    };
+    const rows = await this.prisma.push.findMany({
+      where,
+      include: {
+        project: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+      },
       orderBy: { createdAt: 'desc' },
+      take: 1000,
     });
+    return rows.map(({ createdBy, ...p }) => ({ ...p, createdBy: createdBy ? { id: createdBy.id, name: formatUserName(createdBy) || createdBy.email } : null }));
+  }
+
+  // Кто создавал рассылки в доступных проектах — варианты фильтра «Создал».
+  async creators(projectIds: string[]) {
+    if (!projectIds.length) return [];
+    const rows = await this.prisma.push.groupBy({ by: ['createdById'], where: { projectId: { in: projectIds }, createdById: { not: null } } });
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: rows.map((r) => r.createdById!) } },
+      select: { id: true, firstName: true, lastName: true, email: true, deletedAt: true },
+    });
+    return users
+      .map((u) => ({ id: u.id, name: (formatUserName(u) || u.email) + (u.deletedAt ? ' (удалён)' : '') }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // Ошибки отправки, сведённые к понятным причинам, — сколько получателей под каждую попало.
+  async errorSummary(id: string, projectId: string) {
+    await this.findOne(id, projectId);
+    const [byError, byStatus] = await Promise.all([
+      this.prisma.pushLog.groupBy({ by: ['error'], where: { pushId: id, status: 'failed' }, _count: { _all: true } }),
+      this.prisma.pushLog.groupBy({ by: ['status'], where: { pushId: id }, _count: { _all: true } }),
+    ]);
+    const merged = new Map<string, number>();
+    for (const r of byError) {
+      const label = describePushError(r.error);
+      merged.set(label, (merged.get(label) ?? 0) + r._count._all);
+    }
+    return {
+      statuses: Object.fromEntries(byStatus.map((r) => [r.status, r._count._all])),
+      errors: [...merged.entries()].map(([error, count]) => ({ error, count })).sort((a, b) => b.count - a.count),
+    };
   }
 
   // Мульти-проектное создание (запрос пользователя 2026-08-04) — Push.projectId обязательное
@@ -168,10 +221,11 @@ export class PushesService {
     dto: CreatePushDto,
     sendNow: boolean | undefined,
     companyId: string,
+    createdById?: string,
   ): Promise<{ projectId: string; push: Push; sendError?: string }[]> {
     const results: { projectId: string; push: Push; sendError?: string }[] = [];
     for (const projectId of projectIds) {
-      const push = await this.create(projectId, dto);
+      const push = await this.create(projectId, dto, createdById);
       let sendError: string | undefined;
       if (sendNow) {
         const company = await this.prisma.company.findUniqueOrThrow({ where: { id: companyId } });
@@ -206,7 +260,7 @@ export class PushesService {
     }
   }
 
-  async create(projectId: string, dto: CreatePushDto): Promise<Push> {
+  async create(projectId: string, dto: CreatePushDto, createdById?: string): Promise<Push> {
     this.assertValidMedia(dto.messageMedia);
     this.assertSendableText(dto.messageText, dto.messageMedia);
     const { audienceTotal, audienceReachable } = await this.previewAudience(projectId, dto.filter);
@@ -221,6 +275,7 @@ export class PushesService {
         filter: dto.filter as unknown as Prisma.InputJsonValue,
         audienceTotal,
         audienceReachable,
+        createdById: createdById ?? null,
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
         status: dto.scheduledAt ? PushStatus.SCHEDULED : PushStatus.DRAFT,
       },
@@ -237,7 +292,7 @@ export class PushesService {
   // прогона, не шаблона). Через тот же create(), что и обычное создание — не отдельный insert —
   // чтобы аудитория пересчиталась заново (состав клиентов мог измениться с момента исходной
   // рассылки), а не скопировалась как устаревший снимок.
-  async duplicate(id: string, projectId: string): Promise<Push> {
+  async duplicate(id: string, projectId: string, createdById?: string): Promise<Push> {
     const push = await this.findOne(id, projectId);
     return this.create(projectId, {
       name: `${push.name} (копия)`,
@@ -245,7 +300,16 @@ export class PushesService {
       messageMedia: push.messageMedia as unknown as CreatePushDto['messageMedia'],
       buttons: push.buttons as unknown as CreatePushDto['buttons'],
       filter: push.filter as unknown as PushFilterDto,
-    });
+    }, createdById);
+  }
+
+  // Для окна просмотра рассылки — с именем создателя (2026-10-26).
+  async findOneWithCreator(id: string, projectId: string) {
+    const push = await this.findOne(id, projectId);
+    const u = push.createdById
+      ? await this.prisma.user.findUnique({ where: { id: push.createdById }, select: { id: true, firstName: true, lastName: true, email: true } })
+      : null;
+    return { ...push, createdBy: u ? { id: u.id, name: formatUserName(u) || u.email } : null };
   }
 
   async findOne(id: string, projectId: string): Promise<Push> {

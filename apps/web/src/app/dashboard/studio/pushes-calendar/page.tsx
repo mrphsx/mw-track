@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -25,7 +25,29 @@ interface PushRow {
   sentAt: string | null;
   createdAt: string;
   project: { id: string; name: string };
+  createdBy: { id: string; name: string } | null;
 }
+
+const STATUS_LABEL: Record<string, string> = {
+  DRAFT: 'Черновик',
+  SCHEDULED: 'Запланирована',
+  SENDING: 'Отправляется',
+  SENT: 'Отправлена',
+  FAILED: 'Отменена / ошибка',
+};
+
+// Фильтры списка (2026-10-26: «фильтр обширный — кто создал, дата, проект, статус и т.д.»).
+interface ListFilters {
+  q: string;
+  projectId: string;
+  createdBy: string;
+  status: string;
+  from: string;
+  to: string;
+}
+const EMPTY_FILTERS: ListFilters = { q: '', projectId: '', createdBy: '', status: '', from: '', to: '' };
+const FILTER_FIELD =
+  'h-9 rounded-lg bg-white dark:bg-[#171F2B] border border-[#DCE1E8] dark:border-white/10 px-2.5 text-sm text-[#131A24] dark:text-[#E9EDF3] outline-none';
 
 const STATUS_HUE: Record<string, 'amber' | 'sage' | 'slate' | 'plum' | 'teal'> = {
   DRAFT: 'slate',
@@ -66,17 +88,46 @@ export default function StudioPushesCalendarPage() {
   // Два таба (запрос пользователя 2026-08-04: "показывай только те что в ожидании... сделай и
   // таб для тех что уже были, подгружай только когда нажимают") — pending загружается сразу,
   // history — отдельный запрос с enabled: listTab==='history', первый клик и запускает загрузку.
-  const [listTab, setListTab] = useState<'pending' | 'history'>('pending');
-  const { data: pendingPushes } = useQuery({
-    queryKey: ['pushes-global-all', 'pending'],
-    queryFn: async () => (await api.get<PushRow[]>('/pushes', { params: { scope: 'pending' } })).data,
+  const [listTab, setListTab] = useState<'pending' | 'history' | 'all'>('pending');
+  const [filters, setFilters] = useState<ListFilters>(EMPTY_FILTERS);
+  const [q, setQ] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setFilters((f) => (f.q === q.trim() ? f : { ...f, q: q.trim() })), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+  const setFilter = (patch: Partial<ListFilters>) => setFilters((f) => ({ ...f, ...patch }));
+  const activeFilters = Object.entries(filters).filter(([, v]) => v).length;
+  const { data: allPushes, isFetching: listLoading } = useQuery({
+    queryKey: ['pushes-global-all', listTab, filters],
+    queryFn: async () =>
+      (
+        await api.get<PushRow[]>('/pushes', {
+          params: {
+            scope: listTab,
+            q: filters.q || undefined,
+            projectId: filters.projectId || undefined,
+            createdBy: filters.createdBy || undefined,
+            status: filters.status || undefined,
+            from: filters.from || undefined,
+            to: filters.to || undefined,
+          },
+        })
+      ).data,
   });
-  const { data: historyPushes, isFetching: historyLoading } = useQuery({
-    queryKey: ['pushes-global-all', 'history'],
-    queryFn: async () => (await api.get<PushRow[]>('/pushes', { params: { scope: 'history' } })).data,
-    enabled: listTab === 'history',
+  const { data: projectOptions } = useQuery({
+    queryKey: ['projects'],
+    queryFn: async () => (await api.get<{ id: string; name: string }[]>('/projects')).data,
   });
-  const allPushes = listTab === 'pending' ? pendingPushes : historyPushes;
+  const { data: creatorOptions } = useQuery({
+    queryKey: ['pushes-creators'],
+    queryFn: async () => (await api.get<{ id: string; name: string }[]>('/pushes/creators')).data,
+  });
+  const statusOptions = listTab === 'pending' ? ['DRAFT', 'SCHEDULED'] : listTab === 'history' ? ['SENDING', 'SENT', 'FAILED'] : Object.keys(STATUS_LABEL);
+  // Сменили вкладку — статус из другой вкладки сбрасываем, иначе список был бы пустым.
+  useEffect(() => {
+    if (filters.status && !statusOptions.includes(filters.status)) setFilter({ status: '' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listTab]);
 
   // Действия прямо на этой странице (запрос пользователя 2026-08-05) — см. полный комментарий в
   // classic-версии (apps/web/src/app/(dashboard)/pushes-calendar/page.tsx).
@@ -149,6 +200,78 @@ export default function StudioPushesCalendarPage() {
         >
           Отправлено
         </button>
+        <button
+          type="button"
+          onClick={() => setListTab('all')}
+          className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            listTab === 'all'
+              ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+              : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+          }`}
+        >
+          Все
+        </button>
+      </div>
+
+      <div className={`${STUDIO_CARD} p-3 flex flex-wrap items-end gap-2`}>
+        <label className="flex flex-col gap-1 min-w-[180px] flex-1">
+          <span className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">Поиск по названию</span>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Название рассылки…" className={FILTER_FIELD} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">Проект</span>
+          <select value={filters.projectId} onChange={(e) => setFilter({ projectId: e.target.value })} className={`${FILTER_FIELD} max-w-[220px]`}>
+            <option value="">Все проекты</option>
+            {projectOptions?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">Создал</span>
+          <select value={filters.createdBy} onChange={(e) => setFilter({ createdBy: e.target.value })} className={`${FILTER_FIELD} max-w-[220px]`}>
+            <option value="">Все</option>
+            {creatorOptions?.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
+            <option value="none">Неизвестно (старые)</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">Статус</span>
+          <select value={filters.status} onChange={(e) => setFilter({ status: e.target.value })} className={FILTER_FIELD}>
+            <option value="">Любой</option>
+            {statusOptions.map((st) => (
+              <option key={st} value={st}>
+                {STATUS_LABEL[st]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">Дата рассылки</span>
+          <span className="flex items-center gap-1.5">
+            <input type="date" value={filters.from} onChange={(e) => setFilter({ from: e.target.value })} className={FILTER_FIELD} />
+            <span className="text-[#5F6B7A]">—</span>
+            <input type="date" value={filters.to} onChange={(e) => setFilter({ to: e.target.value })} className={FILTER_FIELD} />
+          </span>
+        </label>
+        {activeFilters > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              setFilters(EMPTY_FILTERS);
+              setQ('');
+            }}
+            className="h-9 px-3 text-sm text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline"
+          >
+            Сбросить
+          </button>
+        )}
       </div>
 
       <div className={`${STUDIO_CARD} overflow-x-auto`}>
@@ -158,6 +281,7 @@ export default function StudioPushesCalendarPage() {
               <th className="px-5 py-3 font-medium">Статус</th>
               <th className="px-5 py-3 font-medium">Название</th>
               <th className="px-5 py-3 font-medium">Проект</th>
+              <th className="px-5 py-3 font-medium">Создал</th>
               <th className="px-5 py-3 font-medium">Дата</th>
               <th className="px-5 py-3 font-medium text-right">Аудитория</th>
               <th className="px-5 py-3 font-medium text-right">Отправлено</th>
@@ -166,9 +290,9 @@ export default function StudioPushesCalendarPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-[#DCE1E8] dark:divide-white/10">
-            {listTab === 'history' && historyLoading && (
+            {listLoading && !allPushes && (
               <tr>
-                <td colSpan={8} className="px-5 py-8 text-center text-[#5F6B7A] dark:text-[#92A0AF]">
+                <td colSpan={9} className="px-5 py-8 text-center text-[#5F6B7A] dark:text-[#92A0AF]">
                   Загрузка...
                 </td>
               </tr>
@@ -180,7 +304,7 @@ export default function StudioPushesCalendarPage() {
                 onClick={() => setPreviewPush({ projectId: push.project.id, pushId: push.id })}
               >
                 <td className="px-5 py-3">
-                  <StudioPill hue={STATUS_HUE[push.status] ?? 'slate'}>{push.status}</StudioPill>
+                  <StudioPill hue={STATUS_HUE[push.status] ?? 'slate'}>{STATUS_LABEL[push.status] ?? push.status}</StudioPill>
                 </td>
                 <td className="px-5 py-3 font-medium text-[#131A24] dark:text-[#E9EDF3]">{push.name}</td>
                 <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
@@ -188,6 +312,7 @@ export default function StudioPushesCalendarPage() {
                     {push.project.name}
                   </Link>
                 </td>
+                <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF] whitespace-nowrap">{push.createdBy?.name ?? '—'}</td>
                 <td className="px-5 py-3 text-[#5F6B7A] dark:text-[#92A0AF] whitespace-nowrap">
                   {push.sentAt
                     ? format(new Date(push.sentAt), 'd MMM HH:mm')
@@ -237,8 +362,8 @@ export default function StudioPushesCalendarPage() {
             ))}
             {allPushes?.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-5 py-8 text-center text-[#5F6B7A] dark:text-[#92A0AF]">
-                  Рассылок пока нет.
+                <td colSpan={9} className="px-5 py-8 text-center text-[#5F6B7A] dark:text-[#92A0AF]">
+                  {activeFilters ? 'По фильтрам ничего не найдено.' : 'Рассылок пока нет.'}
                 </td>
               </tr>
             )}

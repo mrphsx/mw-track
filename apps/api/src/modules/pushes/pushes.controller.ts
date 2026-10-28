@@ -19,7 +19,7 @@ export class PushesController {
   @Post()
   async create(@Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: CreatePushDto) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_CREATE]);
-    return this.pushesService.create(projectId, dto);
+    return this.pushesService.create(projectId, dto, user.userId);
   }
 
   @Get()
@@ -70,7 +70,7 @@ export class PushesController {
   @Get(':id')
   async findOne(@Param('id') id: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_VIEW]);
-    return this.pushesService.findOne(id, projectId);
+    return this.pushesService.findOneWithCreator(id, projectId);
   }
 
   @Patch(':id')
@@ -90,7 +90,7 @@ export class PushesController {
   @Post(':id/duplicate')
   async duplicate(@Param('id') id: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_CREATE]);
-    return this.pushesService.duplicate(id, projectId);
+    return this.pushesService.duplicate(id, projectId, user.userId);
   }
 
   @Post(':id/recalculate-audience')
@@ -123,6 +123,13 @@ export class PushesController {
   ) {
     await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_VIEW]);
     return this.pushesService.findLogs(id, projectId, page ? parseInt(page, 10) : 1, limit ? parseInt(limit, 10) : 50);
+  }
+
+  // Ошибки отправки, сведённые к понятным причинам (2026-10-26).
+  @Get(':id/error-summary')
+  async errorSummary(@Param('id') id: string, @Param('projectId') projectId: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    await this.projectsService.assertAccess(projectId, companyId, user.userId, user.role, [Permission.PUSHES_VIEW]);
+    return this.pushesService.errorSummary(id, projectId);
   }
 
   @Delete(':id')

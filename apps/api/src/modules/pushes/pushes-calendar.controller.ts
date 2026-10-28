@@ -1,5 +1,5 @@
 import { Body, Controller, ForbiddenException, Get, Post, Query } from '@nestjs/common';
-import { Permission } from '@prisma/client';
+import { Permission, PushStatus } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ProjectsService } from '../projects/projects.service';
@@ -40,9 +40,40 @@ export class PushesCalendarController {
   // контроллере нет одиночного GET по id (он остаётся только в PushesController, проектном).
   // scope=pending (дефолт) / history — см. комментарий у PushesService.findAllForCompany.
   @Get()
-  async findAllForCompany(@Company() companyId: string, @CurrentUser() user: AuthUser, @Query('scope') scope?: string) {
+  async findAllForCompany(
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('scope') scope?: string,
+    @Query('projectId') projectId?: string,
+    @Query('createdBy') createdBy?: string,
+    @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('q') q?: string,
+  ) {
     const projectIds = await this.projectsService.getAccessibleProjectIds(companyId, user.userId, user.role, Permission.PUSHES_VIEW);
-    return this.pushesService.findAllForCompany(projectIds, scope === 'history' ? 'history' : 'pending');
+    const day = (v?: string, shift = 0) => {
+      if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+      const d = new Date(`${v}T00:00:00.000Z`);
+      d.setUTCDate(d.getUTCDate() + shift);
+      return d;
+    };
+    const statuses = (status ?? '').split(',').filter((s): s is PushStatus => (Object.values(PushStatus) as string[]).includes(s));
+    return this.pushesService.findAllForCompany(projectIds, scope === 'history' ? 'history' : scope === 'all' ? 'all' : 'pending', {
+      projectId: projectId || undefined,
+      createdById: createdBy || undefined,
+      status: statuses,
+      from: day(from),
+      to: day(to, 1),
+      q: q?.trim().slice(0, 100) || undefined,
+    });
+  }
+
+  // Варианты фильтра «Создал» (2026-10-26).
+  @Get('creators')
+  async creators(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    const projectIds = await this.projectsService.getAccessibleProjectIds(companyId, user.userId, user.role, Permission.PUSHES_VIEW);
+    return this.pushesService.creators(projectIds);
   }
 
   // Предпросмотр аудитории без создания черновика (запрос пользователя 2026-08-04, единая
@@ -64,6 +95,6 @@ export class PushesCalendarController {
     const allowedIds = await this.projectsService.getAccessibleProjectIds(companyId, user.userId, user.role, Permission.PUSHES_CREATE);
     const invalid = dto.projectIds.filter((id) => !allowedIds.includes(id));
     if (invalid.length) throw new ForbiddenException('Нет доступа к выбранным проектам');
-    return this.pushesService.createForProjects(dto.projectIds, dto, dto.sendNow, companyId);
+    return this.pushesService.createForProjects(dto.projectIds, dto, dto.sendNow, companyId, user.userId);
   }
 }

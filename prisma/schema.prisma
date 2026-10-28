@@ -235,6 +235,7 @@ model User {
   noticeReads      AdminNoticeRead[]
   domainAccess     DomainAccess[]
   telegramAccounts UserTelegramAccount[]
+  pushesCreated    Push[]                @relation("PushCreatedBy")
 
   @@index([companyId])
 }
@@ -1639,12 +1640,17 @@ model Push {
   deliveredCount Int       @default(0)
   failedCount    Int       @default(0)
 
+  // Кто создал рассылку (2026-10-26). У рассылок до этой даты неизвестно — null.
+  createdById String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  project Project   @relation(fields: [projectId], references: [id])
-  logs    PushLog[]
+  project   Project   @relation(fields: [projectId], references: [id])
+  createdBy User?     @relation("PushCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  logs      PushLog[]
 
+  @@index([createdById])
   @@index([projectId])
   // Скан крона отложенных рассылок (status='SCHEDULED' AND scheduledAt<=now(), запрос
   // пользователя 2026-07-18) — без индекса на реальном объёме был бы full scan таблицы.

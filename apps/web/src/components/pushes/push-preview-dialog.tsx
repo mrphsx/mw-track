@@ -5,7 +5,6 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { TelegramMessagePreview, TelegramMessageMediaItem } from '@/components/messages/telegram-message-preview';
 
 interface PushDetail {
@@ -22,13 +21,14 @@ interface PushDetail {
   scheduledAt: string | null;
   sentAt: string | null;
   createdAt: string;
+  createdBy?: { id: string; name: string } | null;
 }
 
-interface PushLogItem {
-  id: string;
-  status: string;
-  error: string | null;
-  client: { id: string; tgUsername: string | null; tgFirstName: string | null } | null;
+// Сводка по получателям (2026-10-26: «в списке ошибок — просто ошибка и сколько людей под неё
+// попали»): статусы и ошибки, сведённые сервером к понятным причинам.
+interface ErrorSummary {
+  statuses: Record<string, number>;
+  errors: { error: string; count: number }[];
 }
 
 const STATUS_VARIANT: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
@@ -67,12 +67,14 @@ export function PushPreviewDialog({ projectId, pushId, onClose }: { projectId: s
     staleTime: 0,
     gcTime: 0,
   });
-  const { data: logs } = useQuery({
-    queryKey: ['pushes', projectId, pushId, 'logs'],
-    queryFn: async () => (await api.get<{ items: PushLogItem[]; total: number }>(`/projects/${projectId}/pushes/${pushId}/logs`)).data,
+  const { data: summary } = useQuery({
+    queryKey: ['pushes', projectId, pushId, 'error-summary'],
+    queryFn: async () => (await api.get<ErrorSummary>(`/projects/${projectId}/pushes/${pushId}/error-summary`)).data,
     staleTime: 0,
     gcTime: 0,
   });
+  const totalLogged = summary ? Object.values(summary.statuses).reduce((a, b) => a + b, 0) : 0;
+  const pending = summary ? (summary.statuses.pending ?? 0) + (summary.statuses.sending ?? 0) : 0;
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -113,40 +115,37 @@ export function PushPreviewDialog({ projectId, pushId, onClose }: { projectId: s
                 <div className="font-medium">{format(new Date(push.sentAt || push.scheduledAt || push.createdAt), 'd MMM yyyy, HH:mm')}</div>
               </div>
             </div>
+            <div className="text-sm">
+              <span className="text-muted-foreground">Создал: </span>
+              <span className="font-medium">{push.createdBy?.name ?? 'неизвестно (создана до 26.10.2026)'}</span>
+              <span className="text-muted-foreground"> · {format(new Date(push.createdAt), 'd MMM yyyy, HH:mm')}</span>
+            </div>
           </div>
         )}
 
         <div>
-          <div className="text-sm font-medium mb-2">Логи отправки</div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Получатель</TableHead>
-                <TableHead>Статус</TableHead>
-                <TableHead>Ошибка</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {logs?.items.map((log) => (
-                <TableRow key={log.id}>
-                  <TableCell className="whitespace-nowrap">
-                    {log.client?.tgUsername ? `@${log.client.tgUsername}` : log.client?.tgFirstName || log.client?.id || '—'}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={log.status === 'sent' ? 'default' : log.status === 'failed' ? 'destructive' : 'secondary'}>{log.status}</Badge>
-                  </TableCell>
-                  <TableCell className="text-sm text-red-500 max-w-md break-words">{log.error || '—'}</TableCell>
-                </TableRow>
-              ))}
-              {logs && logs.items.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    Логов пока нет
-                  </TableCell>
-                </TableRow>
+          <div className="text-sm font-medium mb-2">Ошибки отправки</div>
+          {!summary ? (
+            <p className="text-sm text-muted-foreground">Загрузка…</p>
+          ) : totalLogged === 0 ? (
+            <p className="text-sm text-muted-foreground">Рассылка ещё не отправлялась.</p>
+          ) : (
+            <div className="space-y-2">
+              {pending > 0 && <p className="text-xs text-muted-foreground">Ещё отправляется: {pending}</p>}
+              {summary.errors.length === 0 ? (
+                <p className="text-sm text-emerald-600 dark:text-emerald-400">Ошибок нет — всё доставлено.</p>
+              ) : (
+                <div className="divide-y rounded-lg border">
+                  {summary.errors.map((e) => (
+                    <div key={e.error} className="flex items-center gap-3 px-3 py-2 text-sm">
+                      <span className="min-w-0 flex-1 break-words">{e.error}</span>
+                      <span className="shrink-0 font-mono tabular-nums font-semibold text-red-500">{e.count.toLocaleString('ru-RU')}</span>
+                    </div>
+                  ))}
+                </div>
               )}
-            </TableBody>
-          </Table>
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>
