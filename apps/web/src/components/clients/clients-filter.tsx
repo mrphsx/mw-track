@@ -22,6 +22,8 @@ export interface ClientsFilterState {
   channelType?: string;
   hasPurchase?: string;
   hasDialogue?: string;
+  // Активация бота (2026-10-28): 'true' — активировал, 'false' — нет.
+  botActivated?: string;
   country?: string;
   minSpent?: string;
   landingId?: string;
@@ -48,7 +50,7 @@ export interface ClientsFilterState {
 // клиентов проекта (обоими деревьями) для чтения/записи query-параметров. minSpent тоже строка
 // здесь (как и в самом ClientsFilterState) — поле ввода на UI, парсится в число только на бэкенде.
 const STRING_FILTER_KEYS: (keyof ClientsFilterState)[] = [
-  'channelType', 'hasPurchase', 'hasDialogue', 'country', 'minSpent', 'landingId',
+  'channelType', 'hasPurchase', 'hasDialogue', 'botActivated', 'country', 'minSpent', 'landingId',
   'campaignName', 'adName', 'adsetName', 'siteSourceName',
   'utmSource', 'utmMedium', 'utmCampaign', 'utmContent', 'adSource',
 ];
@@ -105,6 +107,7 @@ interface ClientsFilterProps {
 const CHANNEL_LABEL: Record<string, string> = { all: 'Все', TELEGRAM: 'Telegram', WHATSAPP: 'WhatsApp', INSTAGRAM: 'Instagram', WEBSITE: 'Website' };
 const PURCHASE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с покупками', false: 'Только без покупок' };
 const DIALOGUE_LABEL: Record<string, string> = { all: 'Все', true: 'Только с диалогом', false: 'Только без диалога' };
+const BOT_ACTIVATED_LABEL: Record<string, string> = { all: 'Все', true: 'Активировали бота', false: 'Не активировали' };
 const AD_SOURCE_LABEL: Record<string, string> = { all: 'Все', FACEBOOK: 'Facebook', TIKTOK: 'TikTok' };
 
 // Сколько фильтров реально выставлено — панель фильтров разворачивается сама, если пришли из
@@ -204,6 +207,20 @@ export function ClientsFilter({ projectId, value, onChange, containerClassName }
                 <SelectItem value="all">Все</SelectItem>
                 <SelectItem value="true">Только с диалогом</SelectItem>
                 <SelectItem value="false">Только без диалога</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">Активация бота</Label>
+            <Select value={value.botActivated ?? 'all'} onValueChange={(v) => update({ botActivated: !v || v === 'all' ? undefined : v })}>
+              <SelectTrigger className="w-full">
+                <SelectValue>{(v: string) => BOT_ACTIVATED_LABEL[v] ?? v}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все</SelectItem>
+                <SelectItem value="true">Активировали бота</SelectItem>
+                <SelectItem value="false">Не активировали</SelectItem>
               </SelectContent>
             </Select>
           </div>

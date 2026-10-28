@@ -59,6 +59,12 @@ export class ClientFiltersDto {
   @IsBoolean()
   isBotActive?: boolean;
 
+  // Активировал ли бота (Client.botActivatedAt задан — нажал «Старт»/писал боту), 2026-10-28.
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  botActivated?: boolean;
+
   @IsOptional()
   @Transform(toBoolean)
   @IsBoolean()

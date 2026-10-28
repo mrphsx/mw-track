@@ -1025,6 +1025,7 @@ export class ClientsService {
     if (filters.channelType?.length) where.channelType = { in: filters.channelType };
     if (typeof filters.hasPurchase === 'boolean') where.hasPurchase = filters.hasPurchase;
     if (typeof filters.hasDialogue === 'boolean') where.firstDialogueAt = filters.hasDialogue ? { not: null } : null;
+    if (typeof filters.botActivated === 'boolean') where.botActivatedAt = filters.botActivated ? { not: null } : null;
     if (typeof filters.isBotActive === 'boolean') where.isBotActive = filters.isBotActive;
     if (typeof filters.isSubscribed === 'boolean') where.isSubscribed = filters.isSubscribed;
     if (filters.country?.length) where.country = { in: filters.country };

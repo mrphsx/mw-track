@@ -105,6 +105,7 @@ export default function StudioMyClientsPage() {
     channelType: filters.channelType,
     hasPurchase: filters.hasPurchase,
     hasDialogue: filters.hasDialogue,
+    botActivated: filters.botActivated,
     country: filters.country,
     minSpent: filters.minSpent,
     landingId: filters.landingId,
