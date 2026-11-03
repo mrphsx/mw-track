@@ -26,8 +26,23 @@ export class TelegramPersonalHealthCron {
     private personal: TelegramPersonalService,
   ) {}
 
-  @Cron('*/30 * * * *')
+  // Каждые 5 минут (было 30) — после обрыва сети 2026-11-02 личные аккаунты молчали почти сутки;
+  // теперь проверка сама и переподключает (см. checkSessionHealth), так что простой ≤ 5 минут.
+  // running — защита от наложения тиков, если какой-то прогон всё-таки затянется.
+  private running = false;
+
+  @Cron('*/5 * * * *')
   async checkAllPersonalSessions(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      await this.checkAll();
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async checkAll(): Promise<void> {
     const channels = await this.prisma.channel.findMany({ where: { tgSessionEncrypted: { not: null } } });
 
     for (const channel of channels) {

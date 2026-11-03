@@ -72,6 +72,8 @@ type DialogEntry = { tgUserId: string; firstName?: string; lastName?: string; us
 // процесса — тот же паттерн, что TelegramProvider.bots для ботов, сериализовать живой сокет
 // в БД/Redis нельзя. При рестарте процесса onModuleInit в ChannelsService должен заново
 // поднять слушатели для уже подключённых каналов (см. startListening).
+const HEALTH_TIMEOUT_MS = 20_000;
+
 @Injectable()
 export class TelegramPersonalService {
   private readonly logger = new Logger(TelegramPersonalService.name);
@@ -270,17 +272,55 @@ export class TelegramPersonalService {
   // вызов, что уже используется здесь один раз в finalizeConnection сразу после входа, это
   // самый дешёвый авторизованный MTProto-запрос (никого не перечисляет, не грузит медиа) — им же
   // здесь и пингуем. Вызывается из TelegramPersonalHealthCron.
+  //
+  // Обрыв сети (инцидент 2026-11-02 17:47 UTC — у сервера на ~15 секунд пропала сеть): GramJS
+  // делает connectionRetries попыток переподключиться и сдаётся, клиент остаётся отключённым
+  // навсегда, а любой invoke() на нём (включая getMe) не падает, а молча висит в очереди. Все
+  // личные аккаунты перестали получать сообщения почти на сутки, а эта проверка висела на первом
+  // же канале и ничего не писала в лог. Поэтому: отключённый клиент или getMe дольше
+  // HEALTH_TIMEOUT_MS = обрыв соединения (не мёртвая сессия) — выбрасываем клиента из памяти и
+  // поднимаем заново через startListening. Сессию при этом не трогаем: LogOut/disconnect() только
+  // для настоящего отзыва сессии Telegram.
   async checkSessionHealth(channel: Channel): Promise<boolean> {
     try {
+      const existing = this.liveClients.get(channel.id);
+      if (existing && !existing.connected) {
+        await this.reconnectLiveClient(channel, 'клиент отключён');
+      }
       const client = await this.getLiveClient(channel);
       if (!client) return false;
-      await client.getMe();
+      await this.withTimeout(client.getMe(), HEALTH_TIMEOUT_MS);
       return true;
     } catch (error) {
       this.logger.warn(`checkSessionHealth failed for channel ${channel.id}: ${(error as Error).message}`);
-      await this.handleDeadSession(channel, error);
+      if (this.isDeadSessionError(error)) {
+        await this.handleDeadSession(channel, error);
+      } else {
+        await this.reconnectLiveClient(channel, (error as Error).message).catch((e) =>
+          this.logger.warn(`Reconnect failed for channel ${channel.id}: ${(e as Error).message}`),
+        );
+      }
       return false;
     }
+  }
+
+  private async reconnectLiveClient(channel: Channel, reason: string): Promise<void> {
+    this.logger.warn(`Переподключаем личный аккаунт канала ${channel.id}: ${reason}`);
+    const stale = this.liveClients.get(channel.id);
+    this.liveClients.delete(channel.id);
+    if (stale) {
+      // destroy() на клиенте с оборванной сетью тоже может зависнуть — не ждём его дольше таймаута.
+      await this.withTimeout(stale.destroy(), HEALTH_TIMEOUT_MS).catch(() => undefined);
+    }
+    await this.withTimeout(this.startListening(channel), HEALTH_TIMEOUT_MS * 2);
+  }
+
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: NodeJS.Timeout;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`TIMEOUT ${ms}ms`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   // Публикация Telegram Story через личный аккаунт (запрос пользователя 2026-07-21, модуль
