@@ -580,6 +580,11 @@ model Channel {
   // Пришедшие по ссылке на бота (BotLink) считаются лидами независимо от флага.
   tgDirectTraffic Boolean @default(false)
 
+  // Бот на внешней платформе (2026-11-05): CRM к боту не подключена — токена нет, вебхук держит
+  // чужой сервис. Лендинг всё равно ведёт на @tgBotUsername с кодом визита, а лидов и события
+  // присылает внешний сервис через API (/api/v1/ext/events).
+  tgBotExternal Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1308,8 +1313,11 @@ model Client {
   visitorId String?
 
   // Контактные данные (если собрали через форму)
-  email String?
-  phone String?
+
+  // ID лида во внешней системе, приславшей его по API (2026-11-05) — когда нет Telegram ID.
+  externalId String?
+  email      String?
+  phone      String?
 
   // Трекинг
   fbclid      String?
@@ -1448,6 +1456,7 @@ model Client {
   @@index([fbclid])
   @@index([visitorId])
   @@index([botLinkId])
+  @@index([projectId, externalId])
 }
 
 // ============================================================
@@ -2922,4 +2931,21 @@ model PushRecurrence {
 
   @@index([companyId])
   @@index([isActive, nextRunAt])
+}
+
+// Журнал запросов единого API событий (2026-11-05): что прислал внешний сервис, чем закончилось.
+// eventId — ключ идемпотентности от отправителя: повтор того же события не обрабатывается дважды.
+model ExternalApiLog {
+  id        String   @id @default(cuid())
+  projectId String
+  eventId   String?
+  type      String
+  ok        Boolean
+  error     String?
+  clientId  String?
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, eventId])
+  @@index([projectId, createdAt])
 }

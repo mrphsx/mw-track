@@ -24,6 +24,8 @@ const LINK = 'text-xs font-medium text-[#1F4E9C] dark:text-[#7BA9EE] hover:under
 
 export interface PrimaryBotSettings {
   tgBotToken: string | null;
+  // Бот на внешней платформе (2026-11-05): без токена, только @username.
+  tgBotExternal?: boolean;
   tgBotUsername: string | null;
   tgBotFirstName: string | null;
   tgMode: string | null;

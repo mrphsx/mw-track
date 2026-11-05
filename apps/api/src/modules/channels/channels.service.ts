@@ -26,6 +26,9 @@ function isTransientTelegramError(error: unknown): boolean {
   return TRANSIENT_ERROR_PATTERN.test((error as Error)?.message ?? '');
 }
 
+// Сколько ждать восстановления одного канала при старте, прежде чем идти дальше (2026-11-05).
+const REHYDRATE_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class ChannelsService implements OnModuleInit {
   private readonly logger = new Logger(ChannelsService.name);
@@ -76,11 +79,18 @@ export class ChannelsService implements OnModuleInit {
         );
         continue;
       }
-      try {
-        await this.getProvider(channel.type).initialize(channel);
-      } catch (error) {
-        this.logger.warn(`Failed to rehydrate ${channel.type} channel ${channel.id}: ${(error as Error).message}`);
-      }
+      // Не дольше REHYDRATE_TIMEOUT_MS на канал (2026-11-05): один медленный ответ Telegram
+      // (504 на getChatMember шёл ~2 минуты) задерживал запуск всего API — лендинги и вебхуки
+      // всё это время получали 502. По таймауту запуск идёт дальше, а инициализация этого
+      // канала доделывается в фоне (бот зарегистрируется, как только Telegram ответит).
+      const init = this.getProvider(channel.type)
+        .initialize(channel)
+        .catch((error) => this.logger.warn(`Failed to rehydrate ${channel.type} channel ${channel.id}: ${(error as Error).message}`));
+      const timedOut = await Promise.race([
+        init.then(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), REHYDRATE_TIMEOUT_MS)),
+      ]);
+      if (timedOut) this.logger.warn(`Channel ${channel.id}: Telegram отвечает медленно — инициализация продолжается в фоне`);
     }
 
     // Личный аккаунт (MTProto, запрос пользователя 2026-07-04) — отдельная реконнект-петля, не
@@ -96,11 +106,15 @@ export class ChannelsService implements OnModuleInit {
       where: { type: 'TELEGRAM', isActive: true, tgSessionEncrypted: { not: null } },
     });
     for (const channel of personalChannels) {
-      try {
-        await this.telegramPersonalService.startListening(channel);
-      } catch (error) {
-        this.logger.warn(`Failed to rehydrate personal Telegram session for channel ${channel.id}: ${(error as Error).message}`);
-      }
+      // Тот же предел ожидания, что у ботов выше: медленное подключение аккаунта не держит запуск.
+      const start = this.telegramPersonalService
+        .startListening(channel)
+        .catch((error) => this.logger.warn(`Failed to rehydrate personal Telegram session for channel ${channel.id}: ${(error as Error).message}`));
+      const timedOut = await Promise.race([
+        start.then(() => false),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(true), REHYDRATE_TIMEOUT_MS)),
+      ]);
+      if (timedOut) this.logger.warn(`Channel ${channel.id}: личный аккаунт подключается медленно — продолжается в фоне`);
     }
   }
 
@@ -363,7 +377,10 @@ export class ChannelsService implements OnModuleInit {
     if (channel.tgMode === mode) return channel;
 
     const data: Partial<Channel> = { tgMode: mode };
-    if (mode === 'BOT_DIRECT' && !channel.tgBotToken) throw new BadRequestException('У проекта нет бота');
+    if (mode === 'BOT_DIRECT' && !channel.tgBotToken && !(channel.tgBotExternal && channel.tgBotUsername)) throw new BadRequestException('У проекта нет бота');
+    if (mode === 'PRIVATE_CHANNEL_REQUEST' && !channel.tgBotToken) {
+      throw new BadRequestException('Для заявок в канал нужен бот, подключённый к CRM: он одобряет заявки');
+    }
     if (mode === 'PUBLIC_CHANNEL_DIRECT' && !channel.tgChannelUsername) {
       throw new BadRequestException('Укажите публичный @username канала в настройках канала');
     }
@@ -398,6 +415,57 @@ export class ChannelsService implements OnModuleInit {
     await this.findOne(id, companyId);
     const updated = await this.prisma.channel.update({ where: { id }, data: dto });
     return this.tryInitialize(updated);
+  }
+
+  // Бот на внешней платформе (2026-11-05): CRM не подключается к боту, только знает его @username —
+  // на него ведёт лендинг с кодом визита, а события приходят по API. Если бот был подключён —
+  // отключаем: забываем экземпляр и снимаем вебхук, но ТОЛЬКО если он указывает на нас: бот могли
+  // уже перенести на внешнюю платформу, и её вебхук трогать нельзя.
+  async useExternalBot(id: string, companyId: string, rawUsername: string): Promise<Channel> {
+    const channel = await this.findOne(id, companyId);
+    if (channel.type !== 'TELEGRAM') throw new BadRequestException('Только для Telegram-проекта');
+    const username = rawUsername.trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//i, '');
+    if (!/^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(username) || !/bot$/i.test(username)) {
+      throw new BadRequestException('Укажите @username бота — он заканчивается на «bot»');
+    }
+    if (channel.tgMode === 'PRIVATE_CHANNEL_REQUEST') {
+      throw new BadRequestException('Сейчас вход — заявка в канал: её одобряет подключённый бот. Сначала смените вход на «Бот».');
+    }
+    if (channel.tgBotToken) {
+      try {
+        const api = new Api(channel.tgBotToken);
+        const info = await api.getWebhookInfo();
+        const ours = process.env.API_URL ?? '';
+        if (info.url && ours && info.url.startsWith(ours)) await api.deleteWebhook();
+      } catch (error) {
+        this.logger.warn(`useExternalBot: вебхук бота канала ${id} не снят: ${(error as Error).message}`);
+      }
+      this.telegramProvider.forgetBot(id);
+    }
+    const updated = await this.prisma.channel.update({
+      where: { id },
+      data: { tgBotExternal: true, tgBotToken: null, tgBotUsername: username, isActive: true, lastError: null },
+    });
+    this.funnelConfig.invalidate(channel.projectId);
+    return updated;
+  }
+
+  // Подключить бота к CRM по токену (в том числе бывшего внешнего).
+  async connectBot(id: string, companyId: string, token: string): Promise<Channel> {
+    const channel = await this.findOne(id, companyId);
+    if (channel.type !== 'TELEGRAM') throw new BadRequestException('Только для Telegram-проекта');
+    const prev = { tgBotToken: channel.tgBotToken, tgBotExternal: channel.tgBotExternal, tgBotUsername: channel.tgBotUsername };
+    const updated = await this.prisma.channel.update({ where: { id }, data: { tgBotToken: token.trim(), tgBotExternal: false } });
+    try {
+      await this.telegramProvider.initialize(updated);
+    } catch (error) {
+      // Не подключился — возвращаем как было, чтобы лендинг продолжал вести на прежнего бота.
+      await this.prisma.channel.update({ where: { id }, data: prev });
+      if (prev.tgBotToken) await this.telegramProvider.initialize({ ...updated, ...prev }).catch(() => undefined);
+      throw new BadRequestException(`Бот не подключён: ${(error as Error).message}`);
+    }
+    this.funnelConfig.invalidate(channel.projectId);
+    return this.prisma.channel.update({ where: { id }, data: { isActive: true, lastError: null } });
   }
 
   // Без hard delete и без отдельной deletedAt-колонки на Channel (которой нет в схеме):
@@ -459,6 +527,10 @@ export class ChannelsService implements OnModuleInit {
     // TelegramProvider.initialize()); "здоровье" этого режима — просто наличие username.
     if (channel.tgMode === 'PERSONAL_DM') {
       return { healthy: !!channel.tgPersonalUsername, message: channel.tgPersonalUsername ? undefined : 'Не указан username' };
+    }
+    // Бот на внешней платформе — CRM к нему не подключена, проверять нечего.
+    if (channel.tgBotExternal && !channel.tgBotToken) {
+      return { healthy: !!channel.tgBotUsername, message: channel.tgBotUsername ? undefined : 'Не указан @username бота' };
     }
 
     const bot = this.telegramProvider.getBot(channel.id);

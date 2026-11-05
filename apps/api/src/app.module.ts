@@ -15,6 +15,7 @@ import { AutomationsModule } from './modules/automations/automations.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { ChannelsModule } from './modules/channels/channels.module';
 import { ChatModule } from './modules/chat/chat.module';
+import { ExtApiModule } from './modules/ext-api/ext-api.module';
 import { BotLinksModule } from './modules/bot-links/bot-links.module';
 import { ClientsModule } from './modules/clients/clients.module';
 import { DomainsModule } from './modules/domains/domains.module';
@@ -70,6 +71,7 @@ import { RedisModule } from './redis/redis.module';
     AdminModule,
     ChatModule,
     BotLinksModule,
+    ExtApiModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

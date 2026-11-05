@@ -22,7 +22,7 @@ import { STUDIO_CARD, StudioLinkButton } from './ui';
 interface ProjectSummary {
   id: string;
   name: string;
-  channel: { id: string; type: string; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null } | null;
+  channel: { id: string; type: string; tgAvatarFileId: string | null; websiteFaviconUrl?: string | null; tgBotExternal?: boolean } | null;
 }
 
 type SendMode = 'now' | 'scheduled';
@@ -109,7 +109,7 @@ export function StudioPushComposer({
   // WEBSITE-проекты исключены (запрос пользователя 2026-09-03) — зеркалит классический
   // композер, см. его комментарий: getChannelUserId всегда null для WEBSITE-клиентов.
   const allowedProjects = useMemo(
-    () => (allProjects ?? []).filter((p) => p.channel?.type !== 'WEBSITE' && hasPermission(user, p.id, 'PUSHES_CREATE')),
+    () => (allProjects ?? []).filter((p) => p.channel?.type !== 'WEBSITE' && !p.channel?.tgBotExternal && hasPermission(user, p.id, 'PUSHES_CREATE')),
     [allProjects, user],
   );
   const projects = useMemo(

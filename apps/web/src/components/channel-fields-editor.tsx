@@ -62,6 +62,10 @@ export interface ChannelFormState {
   // Трафик напрямую в бота (2026-10-23, см. Channel.tgDirectTraffic). Необязательное: формы,
   // которые его не заполняют (classic), не отправляют поле вовсе и не сбрасывают флаг.
   directTraffic?: boolean;
+  // Бот на внешней платформе (2026-11-05): без токена, только @username — CRM к боту не
+  // подключается, лиды и события приходят по API. Только при создании в Studio.
+  botExternal?: boolean;
+  botUsername?: string;
 }
 
 // tgMode по умолчанию — приватный канал с заявкой (запрос пользователя 2026-08-18: "пусть
@@ -90,7 +94,9 @@ export const EMPTY_CHANNEL_FORM: ChannelFormState = {
 export function channelFormToPayload(f: ChannelFormState) {
   return {
     tgMode: f.type === 'TELEGRAM' ? f.tgMode : undefined,
-    tgBotToken: f.type === 'TELEGRAM' && f.tgMode !== 'PERSONAL_DM' ? f.botToken : undefined,
+    tgBotToken: f.type === 'TELEGRAM' && f.tgMode !== 'PERSONAL_DM' && !(f.tgMode === 'BOT_DIRECT' && f.botExternal) ? f.botToken : undefined,
+    tgBotExternal: f.type === 'TELEGRAM' && f.tgMode === 'BOT_DIRECT' && f.botExternal ? true : undefined,
+    tgBotUsername: f.type === 'TELEGRAM' && f.tgMode === 'BOT_DIRECT' && f.botExternal ? f.botUsername?.trim().replace(/^@/, '') : undefined,
     tgChannelId: f.type === 'TELEGRAM' && f.tgMode !== 'PERSONAL_DM' ? f.channelId || undefined : undefined,
     tgChannelUsername: f.type === 'TELEGRAM' && f.tgMode !== 'PERSONAL_DM' ? f.channelUsername || undefined : undefined,
     tgPersonalUsername: f.type === 'TELEGRAM' && f.tgMode === 'PERSONAL_DM' ? f.personalUsername : undefined,
@@ -152,7 +158,9 @@ export function channelFormCanSubmit(f: ChannelFormState): boolean {
     f.type === 'TELEGRAM'
       ? f.tgMode === 'PERSONAL_DM'
         ? f.personalUsername
-        : f.botToken && (f.tgMode === 'BOT_DIRECT' || f.channelId) && (f.tgMode !== 'PUBLIC_CHANNEL_DIRECT' || f.channelUsername)
+        : f.tgMode === 'BOT_DIRECT' && f.botExternal
+          ? /^@?[A-Za-z][A-Za-z0-9_]{3,31}$/.test(f.botUsername?.trim() ?? '') && /bot$/i.test(f.botUsername?.trim() ?? '')
+          : f.botToken && (f.tgMode === 'BOT_DIRECT' || f.channelId) && (f.tgMode !== 'PUBLIC_CHANNEL_DIRECT' || f.channelUsername)
       : f.type === 'WHATSAPP'
         ? f.wa360Token
         : f.type === 'WEBSITE'
@@ -294,8 +302,26 @@ export function ChannelFieldsEditor({
                 placeholder="@myusername"
               />
             </div>
+          ) : value.tgMode === 'BOT_DIRECT' && value.botExternal && studio && !lockMode ? (
+            <>
+              <BotConnectChoice value={value} set={set} />
+              <div className="space-y-1.5">
+                <Label htmlFor="channel-bot-username">@username бота</Label>
+                <Input
+                  id="channel-bot-username"
+                  value={value.botUsername ?? ''}
+                  onChange={(e) => set('botUsername', e.target.value)}
+                  placeholder="@my_ai_bot"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Лендинг поведёт на этого бота с кодом визита. Лиды и события (старт, сообщения, покупки) присылает ваш сервис по API — ключ и
+                  примеры во вкладке «API» настроек проекта.
+                </p>
+              </div>
+            </>
           ) : (
             <>
+              {value.tgMode === 'BOT_DIRECT' && studio && !lockMode && <BotConnectChoice value={value} set={set} />}
               <p className="text-xs text-muted-foreground">
                 Создайте бота через @BotFather
                 {value.tgMode !== 'BOT_DIRECT' && ', добавьте его администратором в ваш канал'}, вставьте токен ниже.
@@ -394,5 +420,37 @@ export function ChannelFieldsEditor({
         </>
       )}
     </>
+  );
+}
+
+// Подключать бота к CRM или нет (2026-11-05): бот может работать на внешней платформе (например,
+// с ИИ) — тогда CRM не подключается к нему, а события получает по API.
+function BotConnectChoice({
+  value,
+  set,
+}: {
+  value: ChannelFormState;
+  set: <K extends keyof ChannelFormState>(key: K, v: ChannelFormState[K]) => void;
+}) {
+  const options: [boolean, string, string][] = [
+    [false, 'Подключить бота к CRM', 'по токену: сценарии, рассылки, чат'],
+    [true, 'Бот на внешней платформе', 'без токена — события придут по API'],
+  ];
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {options.map(([ext, title, hint]) => (
+        <button
+          key={String(ext)}
+          type="button"
+          onClick={() => set('botExternal', ext)}
+          className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+            !!value.botExternal === ext ? 'border-primary bg-primary/5' : 'border-input hover:bg-muted'
+          }`}
+        >
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs text-muted-foreground">{hint}</div>
+        </button>
+      ))}
+    </div>
   );
 }

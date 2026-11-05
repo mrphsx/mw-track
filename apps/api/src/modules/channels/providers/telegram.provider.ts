@@ -195,6 +195,11 @@ export class TelegramProvider implements ChannelProvider {
     private funnelConfig: FunnelConfigService,
   ) {}
 
+  // Бот отключён от CRM (2026-11-05, «бот на внешней платформе»): забываем его экземпляр.
+  forgetBot(channelId: string): void {
+    this.bots.delete(channelId);
+  }
+
   getBot(channelId: string): Bot | undefined {
     return this.bots.get(channelId);
   }
@@ -213,6 +218,14 @@ export class TelegramProvider implements ChannelProvider {
       // Вход через личку не выключает бота проекта (2026-10-24, вход выбирается в «Подключениях»):
       // если бот есть, он продолжает работать — рассылки, сценарии, чат. Без токена — как раньше.
       if (!channel.tgBotToken) return;
+    }
+
+    // Бот на внешней платформе (2026-11-05): CRM к нему не подключается — токена и вебхука нет,
+    // лендинг ведёт на @username, лиды и события приходят по API. Нужен только сам @username.
+    if (channel.tgBotExternal && !channel.tgBotToken) {
+      if (!channel.tgBotUsername) throw new Error('Укажите @username бота — на него поведёт лендинг');
+      if (mode === 'PRIVATE_CHANNEL_REQUEST') throw new Error('Для заявок в канал нужен бот, подключённый к CRM: он одобряет заявки');
+      return;
     }
 
     if (!channel.tgBotToken) throw new Error('Bot token required');

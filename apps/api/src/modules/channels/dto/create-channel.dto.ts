@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Matches, Max, Min } from 'class-validator';
 import { ChannelType, TelegramMode } from '@prisma/client';
 
 export class CreateChannelDto {
@@ -17,6 +17,17 @@ export class CreateChannelDto {
   @IsOptional()
   @IsString()
   tgBotToken?: string;
+
+  // Бот на внешней платформе (2026-11-05): без токена — только @username, на него ведёт лендинг.
+  @IsOptional()
+  @IsBoolean()
+  tgBotExternal?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^@?[A-Za-z][A-Za-z0-9_]{3,31}$/, { message: 'Укажите @username бота' })
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().replace(/^@/, '') : value))
+  tgBotUsername?: string;
 
   @IsOptional()
   @IsString()

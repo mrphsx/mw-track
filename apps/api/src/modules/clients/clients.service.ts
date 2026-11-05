@@ -42,6 +42,8 @@ export interface FindOrCreateClientInput {
   // Анонимный визитор чистого веб-сайта (ChannelType.WEBSITE, запрос пользователя 2026-09-03) —
   // см. Client.visitorId в schema.prisma. 4-я и последняя ветка приоритета в buildIdentityWhere.
   visitorId?: string;
+  // ID лида во внешней системе (единый API событий, 2026-11-05).
+  externalId?: string;
   email?: string;
   phone?: string;
   ipAddress?: string;
@@ -211,6 +213,7 @@ export class ClientsService {
         igUserId: data.igUserId,
         igUsername: data.igUsername,
         visitorId: data.visitorId,
+        externalId: data.externalId,
         email: data.email,
         phone: data.phone,
         ipAddress: data.ipAddress,
@@ -585,6 +588,11 @@ export class ClientsService {
   // проверяется — защита от подделанного clientId (чужого проекта/callback_data).
   // Возвращает true, если диалог записан впервые (и событие ушло в пиксели), false — если он уже
   // был зарегистрирован раньше: бот менеджера показывает это в ответе.
+  // Диалог по событию из единого API (2026-11-05) — для лидов без Telegram, тем же правилом.
+  async recordApiDialogue(projectId: string, client: Client): Promise<void> {
+    await this.applyDialogueUpdate(projectId, client, undefined, 'BOT_DIRECT');
+  }
+
   async recordManualDialogue(clientId: string, projectId: string, source: 'MANAGER_CONFIRM' | 'CRM_BUTTON'): Promise<boolean> {
     const client = await this.prisma.client.findFirst({ where: { id: clientId, projectId, deletedAt: null } });
     if (!client) throw new NotFoundException('Клиент не найден');
@@ -1207,7 +1215,7 @@ export class ClientsService {
   // фильтровал deletedAt: null — расхождение между двумя путями поиска и было причиной.
   private buildIdentityWhere(
     projectId: string,
-    data: Pick<FindOrCreateClientInput, 'tgUserId' | 'waPhone' | 'igUserId' | 'visitorId'>,
+    data: Pick<FindOrCreateClientInput, 'tgUserId' | 'waPhone' | 'igUserId' | 'visitorId' | 'externalId' | 'phone' | 'email'>,
   ) {
     if (data.tgUserId) return { projectId, tgUserId: data.tgUserId, deletedAt: null };
     if (data.waPhone) return { projectId, waPhone: data.waPhone, deletedAt: null };
@@ -1216,6 +1224,10 @@ export class ClientsService {
     // все существующие вызывающие (Telegram/WhatsApp/Instagram провайдеры) всегда передают одно
     // из полей выше, поэтому эта ветка для них никогда не проверяется.
     if (data.visitorId) return { projectId, visitorId: data.visitorId, deletedAt: null };
+    // Лиды из единого API без мессенджера (2026-11-05): внешний ID, иначе телефон, иначе email.
+    if (data.externalId) return { projectId, externalId: data.externalId, deletedAt: null };
+    if (data.phone) return { projectId, phone: data.phone, deletedAt: null };
+    if (data.email) return { projectId, email: data.email, deletedAt: null };
     throw new Error('findOrCreate requires at least one channel identity (tgUserId/waPhone/igUserId/visitorId)');
   }
 }

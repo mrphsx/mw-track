@@ -19,6 +19,9 @@ import {
   UserCog,
   Users,
   Workflow,
+  Plug,
+  Unplug,
+  Code2,
   type LucideIcon,
 } from 'lucide-react';
 import { api } from '@/lib/api';
@@ -126,6 +129,8 @@ export function ConnectionsBoard({
     | { kind: 'extra'; bot: ExtraBot }
     | { kind: 'extra-managers'; bot: ExtraBot }
     | { kind: 'operators'; resource: string }
+    | { kind: 'bot-external' }
+    | { kind: 'bot-connect' }
     | null
   >(initialDialog ? { kind: initialDialog } : null);
   const queryClient = useQueryClient();
@@ -149,6 +154,8 @@ export function ConnectionsBoard({
 
   const entry = (channel.tgMode ?? 'BOT_DIRECT') as EntryMode;
   const hasBot = !!bot?.tgBotToken;
+  // Бот на внешней платформе (2026-11-05): CRM к нему не подключена — знает только @username.
+  const externalBot = !hasBot && !!bot?.tgBotExternal && !!bot?.tgBotUsername;
   const managers = bot?.tgManagerUsernames ?? [];
   const personalConnected = !!channel.tgPersonalConnected;
   const EntryIcon = ENTRY_ICON[entry];
@@ -217,11 +224,13 @@ export function ConnectionsBoard({
         {/* Основной бот */}
         <Tile
           icon={Bot}
-          title={hasBot ? (bot?.tgBotUsername ? `@${bot.tgBotUsername}` : 'Бот') : 'Бота нет'}
-          subtitle="Основной бот"
+          title={hasBot || externalBot ? (bot?.tgBotUsername ? `@${bot.tgBotUsername}` : 'Бот') : 'Бота нет'}
+          subtitle={externalBot ? 'Основной бот · внешняя платформа' : 'Основной бот'}
           isEntry={entry === 'BOT_DIRECT'}
           status={
-            !hasBot
+            externalBot
+              ? { tone: 'ok', text: 'Без подключения' }
+              : !hasBot
               ? { tone: 'off', text: 'Не подключён' }
               : !channel.isActive
                 ? { tone: 'error', text: 'Отключён' }
@@ -238,7 +247,9 @@ export function ConnectionsBoard({
                   { icon: MessagesSquare, label: 'Чат' },
                   ...(managers.length ? [{ icon: UserCog, label: `Менеджеры · ${managers.length}` }] : []),
                 ]
-              : []
+              : externalBot
+                ? [...(entry === 'BOT_DIRECT' ? [{ icon: Target, label: 'Вход', strong: true }] : []), { icon: Plug, label: 'События по API' }]
+                : []
           }
           error={!channel.isActive && channel.lastError ? channel.lastError : undefined}
         >
@@ -262,6 +273,41 @@ export function ConnectionsBoard({
               {canAssignOperators && (
                 <StudioLinkButton size="sm" icon={MessagesSquare} onClick={() => setDialog({ kind: 'operators', resource: 'BOT' })}>
                   Операторы
+                </StudioLinkButton>
+              )}
+              {canManage && entry !== 'PRIVATE_CHANNEL_REQUEST' && (
+                <StudioLinkButton size="sm" icon={Unplug} onClick={() => setDialog({ kind: 'bot-external' })}>
+                  Отключить от CRM
+                </StudioLinkButton>
+              )}
+            </>
+          )}
+          {externalBot && canManage && (
+            <>
+              {entry !== 'BOT_DIRECT' && (
+                <StudioLinkButton size="sm" icon={Target} onClick={() => setDialog({ kind: 'entry', mode: 'BOT_DIRECT' })}>
+                  Сделать входом
+                </StudioLinkButton>
+              )}
+              <StudioLinkButton size="sm" icon={Plug} onClick={() => setDialog({ kind: 'bot-connect' })}>
+                Подключить к CRM
+              </StudioLinkButton>
+              <StudioLinkButton size="sm" icon={Settings2} onClick={() => setDialog({ kind: 'bot-external' })}>
+                Изменить бота
+              </StudioLinkButton>
+              <StudioLinkButton size="sm" icon={Code2} href={`/projects/${projectId}/settings?tab=api`}>
+                API
+              </StudioLinkButton>
+            </>
+          )}
+          {!hasBot && !externalBot && canManage && (
+            <>
+              <StudioLinkButton size="sm" icon={Plug} onClick={() => setDialog({ kind: 'bot-connect' })}>
+                Подключить по токену
+              </StudioLinkButton>
+              {entry !== 'PRIVATE_CHANNEL_REQUEST' && (
+                <StudioLinkButton size="sm" icon={Unplug} onClick={() => setDialog({ kind: 'bot-external' })}>
+                  Бот на внешней платформе
                 </StudioLinkButton>
               )}
             </>
@@ -409,6 +455,16 @@ export function ConnectionsBoard({
       {dialog?.kind === 'operators' && (
         <ChatOperatorsDialog projectId={projectId} initialResource={dialog.resource} onClose={() => setDialog(null)} />
       )}
+      {dialog?.kind === 'bot-external' && (
+        <ExternalBotDialog
+          projectId={projectId}
+          channelId={channel.id}
+          connected={hasBot}
+          currentUsername={bot?.tgBotUsername ?? ''}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === 'bot-connect' && <ConnectBotDialog projectId={projectId} channelId={channel.id} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'entry' && (
         <EntryDialog projectId={projectId} channelId={channel.id} mode={dialog.mode} current={entry} onClose={() => setDialog(null)} />
       )}
@@ -596,3 +652,123 @@ function Tile({
   );
 }
 
+// Бот на внешней платформе (2026-11-05): CRM не подключается к боту — лендинг ведёт на его
+// @username с кодом визита, а лидов и события присылает внешний сервис по API. Для подключённого
+// бота это «Отключить от CRM»: сценарии, рассылки и чат через него перестают работать.
+function ExternalBotDialog({
+  projectId,
+  channelId,
+  connected,
+  currentUsername,
+  onClose,
+}: {
+  projectId: string;
+  channelId: string;
+  connected: boolean;
+  currentUsername: string;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [username, setUsername] = useState(currentUsername ? `@${currentUsername}` : '');
+  const [error, setError] = useState('');
+  const save = useMutation({
+    mutationFn: () => api.post(`/channels/${channelId}/bot/external`, { username }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['channel', channelId] });
+      queryClient.invalidateQueries({ queryKey: ['project-funnel', projectId] });
+      onClose();
+    },
+    onError: (err) => setError(errorMessage(err, 'Не удалось сохранить')),
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{connected ? 'Отключить бота от CRM' : 'Бот на внешней платформе'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className={MUTED}>
+            Бот работает на другой платформе (например, с ИИ). CRM к нему не подключается: лендинг ведёт на бота с кодом визита, а лидов и
+            события (старт, сообщения, покупки) ваш сервис присылает по API — ключ и примеры во вкладке «API событий».
+          </p>
+          {connected && (
+            <ul className={`list-disc pl-5 space-y-1 ${MUTED}`}>
+              <li>Сценарии, приветствие, рассылки, менеджеры и чат через этого бота перестанут работать.</li>
+              <li>История переписки, клиенты и статистика останутся.</li>
+              <li>Вебхук снимаем, только если он указывает на нас: если бот уже перенесён на другую платформу, её подключение не трогаем.</li>
+              <li>Подключить обратно можно в любой момент по токену.</li>
+            </ul>
+          )}
+          <label className="block space-y-1">
+            <span className={`text-xs ${MUTED}`}>@username бота</span>
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="@my_ai_bot"
+              className="h-9 w-full rounded-lg border border-[#DCE1E8] dark:border-white/10 bg-transparent px-2.5 text-sm outline-none"
+            />
+          </label>
+          {error && (
+            <div className="flex items-start gap-1.5 text-red-600 dark:text-red-400">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> {error}
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <StudioLinkButton onClick={onClose}>Отмена</StudioLinkButton>
+            <StudioLinkButton variant="primary" disabled={!username.trim() || save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Сохраняем…' : connected ? 'Отключить от CRM' : 'Сохранить'}
+            </StudioLinkButton>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConnectBotDialog({ projectId, channelId, onClose }: { projectId: string; channelId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [token, setToken] = useState('');
+  const [error, setError] = useState('');
+  const save = useMutation({
+    mutationFn: () => api.post(`/channels/${channelId}/bot/connect`, { token }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['channel', channelId] });
+      onClose();
+    },
+    onError: (err) => setError(errorMessage(err, 'Не удалось подключить')),
+  });
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Подключить бота к CRM</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className={MUTED}>
+            Вставьте токен бота из @BotFather. CRM подключится к боту: заработают сценарии, рассылки, чат и учёт без API. Если бот сейчас
+            работает на другой платформе, она перестанет получать сообщения — в Telegram у бота может быть только одно подключение.
+          </p>
+          <input
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="123456:ABC-…"
+            className="h-9 w-full rounded-lg border border-[#DCE1E8] dark:border-white/10 bg-transparent px-2.5 text-sm font-mono outline-none"
+          />
+          {error && (
+            <div className="flex items-start gap-1.5 text-red-600 dark:text-red-400">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> {error}
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <StudioLinkButton onClick={onClose}>Отмена</StudioLinkButton>
+            <StudioLinkButton variant="primary" disabled={!token.trim() || save.isPending} onClick={() => save.mutate()}>
+              {save.isPending ? 'Подключаем…' : 'Подключить'}
+            </StudioLinkButton>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -1,3 +1,4 @@
+import { IsString, MaxLength } from 'class-validator';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Res } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { Response } from 'express';
@@ -16,6 +17,14 @@ import { ConnectPersonalCodeDto, ConnectPersonalPasswordDto, ConnectPersonalPhon
 
 // Нет POST / (создание канала как отдельного действия) — под 1:1 канал создаётся только
 // вместе с проектом, см. ProjectsController/ProjectsService.create().
+class ExternalBotDto {
+  @IsString() @MaxLength(64) username!: string;
+}
+
+class ConnectBotDto {
+  @IsString() @MaxLength(100) token!: string;
+}
+
 @Controller('channels')
 export class ChannelsController {
   constructor(
@@ -105,6 +114,19 @@ export class ChannelsController {
   // Повторная попытка initialize() без пересоздания канала — частый случай: бот добавлен
   // до того, как пользователь сделал его админом канала, чинить нужно только в Telegram,
   // не пересобирать форму с токеном заново.
+  // Бот на внешней платформе / подключить бота к CRM (2026-11-05).
+  @Post(':id/bot/external')
+  async useExternalBot(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: ExternalBotDto) {
+    await this.assertAccess(id, companyId, user, [Permission.CHANNEL_MANAGE]);
+    return this.channelsService.useExternalBot(id, companyId, dto.username);
+  }
+
+  @Post(':id/bot/connect')
+  async connectBot(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: ConnectBotDto) {
+    await this.assertAccess(id, companyId, user, [Permission.CHANNEL_MANAGE]);
+    return this.channelsService.connectBot(id, companyId, dto.token);
+  }
+
   @Post(':id/reactivate')
   async reactivate(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.CHANNEL_MANAGE]);

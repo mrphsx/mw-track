@@ -1,5 +1,6 @@
 'use client';
 
+import { ExtApiTab } from './ext-api-tab';
 import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -67,6 +68,7 @@ export default function StudioProjectSettingsPage() {
     { value: 'pixel-logs', label: 'Логи' },
     { value: 'events', label: 'События' },
     { value: 'integration', label: 'Интеграция' },
+    { value: 'api', label: 'API событий' },
     { value: 'operators', label: 'Операторы', hidden: !canManageOperators },
     { value: 'danger', label: 'Опасная зона' },
   ];
@@ -103,6 +105,7 @@ export default function StudioProjectSettingsPage() {
         {tab === 'pixels' && <PixelsTab projectId={id} pixels={project.pixels} linkParamMap={project.linkParamMap} />}
         {tab === 'pixel-logs' && <PixelLogsTab projectId={id} pixels={project.pixels} />}
         {tab === 'events' && <EventsTab projectId={id} disabledTrackingEvents={project.disabledTrackingEvents} channelType={project.channel?.type} />}
+        {tab === 'api' && <ExtApiTab projectId={id} />}
         {tab === 'integration' && <IntegrationTab projectId={id} allowedDomains={project.allowedDomains} channelType={project.channel?.type} />}
         {tab === 'operators' && canManageOperators && <OperatorsTab projectId={id} />}
         {tab === 'danger' && <DangerTab projectId={id} onArchived={() => router.push('/')} />}

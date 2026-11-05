@@ -288,6 +288,11 @@ export class PushesService {
   }
 
   async create(projectId: string, dto: CreatePushDto, createdById?: string, recurrenceId?: string): Promise<Push> {
+    // Бот на внешней платформе (2026-11-05) — CRM не может писать от его имени.
+    const ch = await this.prisma.channel.findUnique({ where: { projectId }, select: { type: true, tgBotExternal: true, tgBotToken: true } });
+    if (ch?.type === 'TELEGRAM' && ch.tgBotExternal && !ch.tgBotToken) {
+      throw new BadRequestException('Бот проекта не подключён к CRM (работает на внешней платформе) — рассылки через него невозможны');
+    }
     this.assertValidMedia(dto.messageMedia);
     this.assertSendableText(dto.messageText, dto.messageMedia);
     const { audienceTotal, audienceReachable } = await this.previewAudience(projectId, dto.filter);
