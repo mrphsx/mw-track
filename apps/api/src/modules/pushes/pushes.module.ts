@@ -9,6 +9,7 @@ import { PushMediaController } from './push-media.controller';
 import { PushesService } from './pushes.service';
 import { PushesProcessor } from './pushes.processor';
 import { PushesCron } from './pushes.cron';
+import { PushRecurrenceService } from './push-recurrence.service';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { PushesCron } from './pushes.cron';
     ChannelsModule,
   ],
   controllers: [PushesController, PushesCalendarController, PushMediaController],
-  providers: [PushesService, PushesProcessor, PushesCron],
+  providers: [PushesService, PushesProcessor, PushesCron, PushRecurrenceService],
   exports: [PushesService],
 })
 export class PushesModule {}

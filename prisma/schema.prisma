@@ -1641,16 +1641,20 @@ model Push {
   failedCount    Int       @default(0)
 
   // Кто создал рассылку (2026-10-26). У рассылок до этой даты неизвестно — null.
-  createdById String?
+  createdById  String?
+  // Отправка регулярной рассылки (2026-11-05): из какой серии по расписанию создан этот пуш.
+  recurrenceId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  project   Project   @relation(fields: [projectId], references: [id])
-  createdBy User?     @relation("PushCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  logs      PushLog[]
+  project    Project         @relation(fields: [projectId], references: [id])
+  createdBy  User?           @relation("PushCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  logs       PushLog[]
+  recurrence PushRecurrence? @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
 
   @@index([createdById])
+  @@index([recurrenceId])
   @@index([projectId])
   // Скан крона отложенных рассылок (status='SCHEDULED' AND scheduledAt<=now(), запрос
   // пользователя 2026-07-18) — без индекса на реальном объёме был бы full scan таблицы.
@@ -2886,4 +2890,36 @@ model UserTelegramAccount {
   @@unique([companyId, tgUserId])
   @@index([companyId, username])
   @@index([userId])
+}
+
+// Регулярная рассылка по расписанию (2026-11-05: «рассылка каждый понедельник или вторник в
+// какое-то время — выбор дней недели галочками и времени под каждый день»). Одна серия на много
+// проектов сразу (проектов может быть очень много — включается/выключается одним переключателем).
+// В момент срабатывания по каждому проекту создаётся обычный Push (recurrenceId → сюда) и уходит
+// тем же PushesService.send, что и разовые.
+model PushRecurrence {
+  id           String    @id @default(cuid())
+  companyId    String
+  createdById  String?
+  name         String
+  messageText  String
+  messageMedia Json?
+  buttons      Json?
+  filter       Json
+  projectIds   String[]
+  // [{ day: 1..7 (1 — понедельник, 7 — воскресенье), time: "HH:mm" }] — время в timezone.
+  days         Json
+  timezone     String
+  isActive     Boolean   @default(true)
+  nextRunAt    DateTime?
+  lastRunAt    DateTime?
+  lastRunError String?
+  runCount     Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  pushes Push[]
+
+  @@index([companyId])
+  @@index([isActive, nextRunAt])
 }

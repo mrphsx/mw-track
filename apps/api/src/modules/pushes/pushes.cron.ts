@@ -4,6 +4,7 @@ import { PushStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { checkSubscriptionLimit } from '../../common/guards/subscription.util';
 import { PushesService } from './pushes.service';
+import { PushRecurrenceService } from './push-recurrence.service';
 
 // Порог, после которого просроченный (заблокированный лимитом подписки) SCHEDULED-пуш
 // окончательно помечается FAILED, а не продолжает молча ждать следующего тика — дневной лимит
@@ -38,7 +39,14 @@ export class PushesCron {
   constructor(
     private prisma: PrismaService,
     private pushesService: PushesService,
+    private recurrence: PushRecurrenceService,
   ) {}
+
+  // Регулярные рассылки по расписанию (2026-11-05).
+  @Cron('*/1 * * * *')
+  async fireRecurringPushes() {
+    await this.recurrence.tick();
+  }
 
   @Cron('0 0 * * *') // раз в сутки
   async resetDailyPushLimits() {

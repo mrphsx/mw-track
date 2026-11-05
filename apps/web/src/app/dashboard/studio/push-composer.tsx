@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { validateTelegramMessage } from '@/lib/telegram-html-validate';
 import { useRouter } from 'next/navigation';
+import { isAxiosError } from 'axios';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
@@ -25,6 +26,19 @@ interface ProjectSummary {
 }
 
 type SendMode = 'now' | 'scheduled';
+
+// Регулярная рассылка (2026-11-05): дни недели галочками, у каждого своё время.
+const WEEKDAYS = [
+  { day: 1, label: 'Понедельник' },
+  { day: 2, label: 'Вторник' },
+  { day: 3, label: 'Среда' },
+  { day: 4, label: 'Четверг' },
+  { day: 5, label: 'Пятница' },
+  { day: 6, label: 'Суббота' },
+  { day: 7, label: 'Воскресенье' },
+];
+type WeekPlan = Record<number, { on: boolean; time: string }>;
+const EMPTY_WEEK: WeekPlan = Object.fromEntries(WEEKDAYS.map((w) => [w.day, { on: false, time: '10:00' }]));
 
 // Та же логика, что и classic-версия (apps/web/src/components/pushes/push-composer.tsx) — см. её
 // для полного комментария о единой странице создания рассылки, авто-выборе первого проекта и
@@ -131,6 +145,11 @@ export function StudioPushComposer({
   const [dateStr, setDateStr] = useState('');
   const [timeStr, setTimeStr] = useState('');
   const [timezone, setTimezone] = useState(getBrowserTimezone());
+  const [repeat, setRepeat] = useState(false);
+  const [week, setWeek] = useState<WeekPlan>(EMPTY_WEEK);
+  const weekDays = WEEKDAYS.filter((w) => week[w.day].on).map((w) => ({ day: w.day, time: week[w.day].time }));
+  // Поиск по проектам — их может быть очень много (2026-11-05).
+  const [projectQuery, setProjectQuery] = useState('');
 
   // Предзаполнение формы существующим пушем (запрос пользователя 2026-08-05) — см. полный
   // комментарий в classic-версии.
@@ -224,13 +243,31 @@ export function StudioPushComposer({
     scheduledAt: sendMode === 'now' ? null : dateStr && timeStr ? zonedTimeToUtcIso(dateStr, timeStr, timezone) : undefined,
   });
 
+  const buildRecurringPayload = () => {
+    const base = buildPayload();
+    return {
+      projectIds: base.projectIds,
+      name: base.name,
+      messageText: base.messageText,
+      messageMedia: base.messageMedia,
+      buttons: base.buttons,
+      filter: base.filter,
+      days: weekDays,
+      timezone,
+    };
+  };
+
   const submit = useMutation({
     mutationFn: async () =>
       isEditMode
         ? (await api.patch(`/projects/${editProjectId}/pushes/${pushId}`, buildEditPayload())).data
-        : (await api.post('/pushes', buildPayload())).data,
+        : repeat
+          ? (await api.post('/pushes/recurring', buildRecurringPayload())).data
+          : (await api.post('/pushes', buildPayload())).data,
     onSuccess: () => {
-      if (isEditMode) {
+      if (repeat && !isEditMode) {
+        router.push('/pushes-calendar?tab=recurring');
+      } else if (isEditMode) {
         router.push(`/projects/${editProjectId}/pushes`);
       } else if (selectedIds.length === 1 && initialProjectIds.length === 1) {
         router.push(`/projects/${selectedIds[0]}/pushes`);
@@ -246,7 +283,7 @@ export function StudioPushComposer({
     content.messageText.trim() &&
     !validateTelegramMessage(content.messageText, content.media.length > 0 && content.media[0].type !== 'video_note') &&
     !isUploading &&
-    (sendMode === 'now' || (dateStr && timeStr));
+    (repeat ? weekDays.length > 0 : sendMode === 'now' || (dateStr && timeStr));
 
   const contentProjectId = selectedIds[0] ?? projects[0]?.id;
 
@@ -276,8 +313,32 @@ export function StudioPushComposer({
                     <span className="font-medium text-[#131A24] dark:text-[#E9EDF3]">{projects[0]?.name}</span>
                   </div>
                 ) : (
+                <>
+                {projects.length > 6 && (
+                  <div className="flex items-center gap-2 px-4 pb-2">
+                    <Input value={projectQuery} onChange={(e) => setProjectQuery(e.target.value)} placeholder="Найти проект…" className="h-8 flex-1 rounded-lg" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const visible = projects.filter((p) => p.name.toLowerCase().includes(projectQuery.trim().toLowerCase())).map((p) => p.id);
+                        const allOn = visible.every((id) => selectedIds.includes(id));
+                        setSelectedIds((prev) => (allOn ? prev.filter((id) => !visible.includes(id)) : Array.from(new Set([...prev, ...visible]))));
+                      }}
+                      className="shrink-0 text-xs font-medium text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline"
+                    >
+                      {projects
+                        .filter((p) => p.name.toLowerCase().includes(projectQuery.trim().toLowerCase()))
+                        .every((p) => selectedIds.includes(p.id))
+                        ? 'Снять все'
+                        : 'Выбрать все'}
+                    </button>
+                    <span className="shrink-0 text-xs text-[#5F6B7A] dark:text-[#92A0AF] tabular-nums">
+                      {selectedIds.length}/{projects.length}
+                    </span>
+                  </div>
+                )}
                 <div className="max-h-64 overflow-y-auto divide-y divide-[#DCE1E8] dark:divide-white/10">
-                  {projects.map((p) => {
+                  {projects.filter((p) => p.name.toLowerCase().includes(projectQuery.trim().toLowerCase())).map((p) => {
                     const stat = audienceByProject.get(p.id);
                     return (
                       <label
@@ -294,10 +355,68 @@ export function StudioPushComposer({
                     );
                   })}
                 </div>
+                </>
                 )}
               </div>
 
               <div className={`${STUDIO_CARD} p-4 space-y-4`}>
+                {!isEditMode && (
+                  <div className="inline-flex rounded-lg bg-[#F3F5F8] dark:bg-[#0F1620] p-1 gap-0.5">
+                    {[
+                      [false, 'Разово'],
+                      [true, 'Регулярно по дням недели'],
+                    ].map(([val, label]) => (
+                      <button
+                        key={String(val)}
+                        type="button"
+                        onClick={() => setRepeat(val as boolean)}
+                        className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+                          repeat === val
+                            ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+                            : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+                        }`}
+                      >
+                        {label as string}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {repeat && !isEditMode ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-[#5F6B7A] dark:text-[#92A0AF]">
+                      Отметьте дни и время — рассылка будет уходить каждую неделю в эти дни по всем выбранным проектам. Выключить её можно в любой
+                      момент в «Рассылки → По расписанию».
+                    </p>
+                    <div className="divide-y divide-[#DCE1E8] dark:divide-white/10 rounded-lg border border-[#DCE1E8] dark:border-white/10">
+                      {WEEKDAYS.map((w) => (
+                        <label key={w.day} className="flex items-center gap-3 px-3 py-2 cursor-pointer">
+                          <Checkbox
+                            checked={week[w.day].on}
+                            onCheckedChange={(v) => setWeek((prev) => ({ ...prev, [w.day]: { ...prev[w.day], on: !!v } }))}
+                          />
+                          <span className={`flex-1 text-sm ${week[w.day].on ? 'font-medium text-[#131A24] dark:text-[#E9EDF3]' : 'text-[#5F6B7A] dark:text-[#92A0AF]'}`}>
+                            {w.label}
+                          </span>
+                          <Input
+                            type="time"
+                            value={week[w.day].time}
+                            disabled={!week[w.day].on}
+                            onChange={(e) => setWeek((prev) => ({ ...prev, [w.day]: { on: true, time: e.target.value || prev[w.day].time } }))}
+                            className="w-28 h-8 rounded-lg"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <TimezoneInput
+                      value={timezone}
+                      onChange={setTimezone}
+                      id="studio-push-repeat-timezone"
+                      label="Часовой пояс"
+                      hint="Время дней выше считается в этом поясе."
+                    />
+                  </div>
+                ) : (
+                <>
                 <div className="flex items-center justify-between flex-wrap gap-3">
                   <h2 className="text-sm font-semibold text-[#131A24] dark:text-[#E9EDF3]">Расписание</h2>
                   {/* Чекбокс рядом вместо переключателя-таба (баг-репорт пользователя 2026-08-05:
@@ -335,6 +454,8 @@ export function StudioPushComposer({
                     hint="По умолчанию — ваш текущий пояс. Дата/время выше считаются в нём."
                   />
                 </div>
+                </>
+                )}
               </div>
             </div>
 
@@ -352,11 +473,22 @@ export function StudioPushComposer({
           </div>
 
           {submit.isError && (
-            <p className="text-sm text-red-600 dark:text-red-400">{isEditMode ? 'Не удалось сохранить изменения' : 'Не удалось создать рассылку'}</p>
+            <p className="text-sm text-red-600 dark:text-red-400">
+              {(isAxiosError(submit.error) && submit.error.response?.data?.error?.message) ||
+                (isEditMode ? 'Не удалось сохранить изменения' : 'Не удалось создать рассылку')}
+            </p>
           )}
 
           <StudioLinkButton variant="primary" disabled={!canSubmit || submit.isPending} onClick={() => submit.mutate()}>
-            {isEditMode ? (submit.isPending ? 'Сохраняем...' : 'Сохранить изменения') : submit.isPending ? 'Создаём...' : 'Создать рассылку'}
+            {isEditMode
+              ? submit.isPending
+                ? 'Сохраняем...'
+                : 'Сохранить изменения'
+              : submit.isPending
+                ? 'Создаём...'
+                : repeat
+                  ? `Запустить по расписанию${selectedIds.length > 1 ? ` (${selectedIds.length} проектов)` : ''}`
+                  : 'Создать рассылку'}
           </StudioLinkButton>
         </>
       )}

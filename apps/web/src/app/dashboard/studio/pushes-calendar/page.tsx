@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { Plus, Send, Pencil, Copy } from 'lucide-react';
+import { Plus, Send, Pencil, Copy, Repeat } from 'lucide-react';
+import { RecurringPushesPanel, RecurringRow } from './recurring-panel';
 import { api } from '@/lib/api';
 import { CalendarGrid } from '@/components/pushes/calendar-grid';
 import { DayScheduleList, DayScheduleItem } from '@/components/pushes/day-schedule-list';
@@ -26,6 +27,7 @@ interface PushRow {
   createdAt: string;
   project: { id: string; name: string };
   createdBy: { id: string; name: string } | null;
+  recurrence: { id: string; name: string; isActive: boolean } | null;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -63,7 +65,16 @@ const STATUS_HUE: Record<string, 'amber' | 'sage' | 'slate' | 'plum' | 'teal'> =
 // (GET /pushes) и синяя кнопка создания на единую страницу /pushes/new. Таблица переоформлена
 // по образцу Studio-версии списка пушей проекта (STUDIO_CARD/StudioPill), см.
 // .../studio/projects/[id]/pushes/page.tsx.
+// useSearchParams требует Suspense при сборке (?tab=recurring).
 export default function StudioPushesCalendarPage() {
+  return (
+    <Suspense>
+      <PushesCalendarInner />
+    </Suspense>
+  );
+}
+
+function PushesCalendarInner() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
@@ -88,7 +99,9 @@ export default function StudioPushesCalendarPage() {
   // Два таба (запрос пользователя 2026-08-04: "показывай только те что в ожидании... сделай и
   // таб для тех что уже были, подгружай только когда нажимают") — pending загружается сразу,
   // history — отдельный запрос с enabled: listTab==='history', первый клик и запускает загрузку.
-  const [listTab, setListTab] = useState<'pending' | 'history' | 'all'>('pending');
+  // ?tab=recurring — сразу на «По расписанию» (после создания регулярной рассылки).
+  const searchParams = useSearchParams();
+  const [listTab, setListTab] = useState<'pending' | 'history' | 'all' | 'recurring'>(searchParams.get('tab') === 'recurring' ? 'recurring' : 'pending');
   const [filters, setFilters] = useState<ListFilters>(EMPTY_FILTERS);
   const [q, setQ] = useState('');
   useEffect(() => {
@@ -98,12 +111,13 @@ export default function StudioPushesCalendarPage() {
   const setFilter = (patch: Partial<ListFilters>) => setFilters((f) => ({ ...f, ...patch }));
   const activeFilters = Object.entries(filters).filter(([, v]) => v).length;
   const { data: allPushes, isFetching: listLoading } = useQuery({
+    enabled: listTab !== 'recurring',
     queryKey: ['pushes-global-all', listTab, filters],
     queryFn: async () =>
       (
         await api.get<PushRow[]>('/pushes', {
           params: {
-            scope: listTab,
+            scope: listTab === 'recurring' ? 'all' : listTab,
             q: filters.q || undefined,
             projectId: filters.projectId || undefined,
             createdBy: filters.createdBy || undefined,
@@ -114,6 +128,21 @@ export default function StudioPushesCalendarPage() {
         })
       ).data,
   });
+  const filterParams = {
+    scope: listTab === 'recurring' ? 'all' : listTab,
+    q: filters.q || undefined,
+    projectId: filters.projectId || undefined,
+    createdBy: filters.createdBy || undefined,
+    status: filters.status || undefined,
+    from: filters.from || undefined,
+    to: filters.to || undefined,
+  };
+  // Сколько всего во вкладке и сколько по фильтрам (2026-11-05).
+  const { data: listCounts } = useQuery({
+    enabled: listTab !== 'recurring',
+    queryKey: ['pushes-global-count', listTab, filters],
+    queryFn: async () => (await api.get<{ total: number; filtered: number }>('/pushes/count', { params: filterParams })).data,
+  });
   const { data: projectOptions } = useQuery({
     queryKey: ['projects'],
     queryFn: async () => (await api.get<{ id: string; name: string }[]>('/projects')).data,
@@ -122,6 +151,11 @@ export default function StudioPushesCalendarPage() {
     queryKey: ['pushes-creators'],
     queryFn: async () => (await api.get<{ id: string; name: string }[]>('/pushes/creators')).data,
   });
+  const { data: recurringList } = useQuery({
+    queryKey: ['pushes-recurring'],
+    queryFn: async () => (await api.get<RecurringRow[]>('/pushes/recurring')).data,
+  });
+  const recurringActive = (recurringList ?? []).filter((r) => r.isActive).length;
   const statusOptions = listTab === 'pending' ? ['DRAFT', 'SCHEDULED'] : listTab === 'history' ? ['SENDING', 'SENT', 'FAILED'] : Object.keys(STATUS_LABEL);
   // Сменили вкладку — статус из другой вкладки сбрасываем, иначе список был бы пустым.
   useEffect(() => {
@@ -133,6 +167,7 @@ export default function StudioPushesCalendarPage() {
   // classic-версии (apps/web/src/app/(dashboard)/pushes-calendar/page.tsx).
   const invalidatePushLists = () => {
     queryClient.invalidateQueries({ queryKey: ['pushes-global-all'] });
+    queryClient.invalidateQueries({ queryKey: ['pushes-global-count'] });
     queryClient.invalidateQueries({ queryKey: ['pushes-global-scheduled-summary'] });
     queryClient.invalidateQueries({ queryKey: ['pushes-global-scheduled-day'] });
   };
@@ -211,7 +246,24 @@ export default function StudioPushesCalendarPage() {
         >
           Все
         </button>
+        <button
+          type="button"
+          onClick={() => setListTab('recurring')}
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            listTab === 'recurring'
+              ? 'bg-[#1F4E9C] text-white dark:bg-[#7BA9EE] dark:text-[#0F1620]'
+              : 'text-[#5F6B7A] dark:text-[#92A0AF] hover:text-[#131A24] dark:hover:text-[#E9EDF3]'
+          }`}
+        >
+          <Repeat className="w-3.5 h-3.5" /> По расписанию
+          {!!recurringActive && <span className="tabular-nums opacity-80">{recurringActive}</span>}
+        </button>
       </div>
+
+      {listTab === 'recurring' ? (
+        <RecurringPushesPanel />
+      ) : (
+      <>
 
       <div className={`${STUDIO_CARD} p-3 flex flex-wrap items-end gap-2`}>
         <label className="flex flex-col gap-1 min-w-[180px] flex-1">
@@ -274,6 +326,22 @@ export default function StudioPushesCalendarPage() {
         )}
       </div>
 
+      {listCounts && (
+        <div className="text-sm text-[#5F6B7A] dark:text-[#92A0AF]">
+          {activeFilters > 0 ? (
+            <>
+              Найдено по фильтрам: <b className="text-[#131A24] dark:text-[#E9EDF3] tabular-nums">{listCounts.filtered.toLocaleString('ru-RU')}</b> из{' '}
+              <span className="tabular-nums">{listCounts.total.toLocaleString('ru-RU')}</span>
+            </>
+          ) : (
+            <>
+              Всего рассылок: <b className="text-[#131A24] dark:text-[#E9EDF3] tabular-nums">{listCounts.total.toLocaleString('ru-RU')}</b>
+            </>
+          )}
+          {(activeFilters > 0 ? listCounts.filtered : listCounts.total) > 1000 && ' · в списке показаны последние 1000'}
+        </div>
+      )}
+
       <div className={`${STUDIO_CARD} overflow-x-auto`}>
         <table className="w-full text-sm">
           <thead>
@@ -306,7 +374,19 @@ export default function StudioPushesCalendarPage() {
                 <td className="px-5 py-3">
                   <StudioPill hue={STATUS_HUE[push.status] ?? 'slate'}>{STATUS_LABEL[push.status] ?? push.status}</StudioPill>
                 </td>
-                <td className="px-5 py-3 font-medium text-[#131A24] dark:text-[#E9EDF3]">{push.name}</td>
+                <td className="px-5 py-3 font-medium text-[#131A24] dark:text-[#E9EDF3]">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {push.name}
+                    {push.recurrence && (
+                      <span
+                        title={`Создана регулярной рассылкой «${push.recurrence.name}»${push.recurrence.isActive ? '' : ' (сейчас выключена)'}`}
+                        className="inline-flex items-center gap-1 rounded-md bg-[#1F7A6C]/10 dark:bg-[#6FCBBA]/15 px-1.5 py-0.5 text-[11px] font-medium text-[#1F7A6C] dark:text-[#6FCBBA]"
+                      >
+                        <Repeat className="w-3 h-3" /> по расписанию
+                      </span>
+                    )}
+                  </div>
+                </td>
                 <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
                   <Link href={`/projects/${push.project.id}/pushes`} className="text-[#1F4E9C] dark:text-[#7BA9EE] hover:underline">
                     {push.project.name}
@@ -370,6 +450,9 @@ export default function StudioPushesCalendarPage() {
           </tbody>
         </table>
       </div>
+
+      </>
+      )}
 
       {previewPush && (
         <PushPreviewDialog key={previewPush.pushId} projectId={previewPush.projectId} pushId={previewPush.pushId} onClose={() => setPreviewPush(null)} />

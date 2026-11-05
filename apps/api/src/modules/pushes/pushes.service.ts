@@ -151,6 +151,36 @@ export class PushesService {
     f: { projectId?: string; createdById?: string; status?: PushStatus[]; from?: Date; to?: Date; q?: string } = {},
   ) {
     if (projectIds.length === 0) return [];
+    const rows = await this.prisma.push.findMany({
+      where: this.companyPushWhere(projectIds, scope, f),
+      include: {
+        project: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+        recurrence: { select: { id: true, name: true, isActive: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+    });
+    return rows.map(({ createdBy, ...p }) => ({ ...p, createdBy: createdBy ? { id: createdBy.id, name: formatUserName(createdBy) || createdBy.email } : null }));
+  }
+
+  // Сколько рассылок по фильтрам и всего во вкладке (2026-11-05: «видно число всех рассылок, с
+  // фильтром — общее количество по выбранным фильтрам»). Список отдаёт максимум 1000 строк, число —
+  // точное.
+  async countForCompany(projectIds: string[], scope: 'pending' | 'history' | 'all', f: Parameters<PushesService['companyPushWhere']>[2]) {
+    if (projectIds.length === 0) return { total: 0, filtered: 0 };
+    const [total, filtered] = await Promise.all([
+      this.prisma.push.count({ where: this.companyPushWhere(projectIds, scope, {}) }),
+      this.prisma.push.count({ where: this.companyPushWhere(projectIds, scope, f) }),
+    ]);
+    return { total, filtered };
+  }
+
+  private companyPushWhere(
+    projectIds: string[],
+    scope: 'pending' | 'history' | 'all',
+    f: { projectId?: string; createdById?: string; status?: PushStatus[]; from?: Date; to?: Date; q?: string },
+  ): Prisma.PushWhereInput {
     const scopeStatuses: PushStatus[] =
       scope === 'pending' ? [PushStatus.DRAFT, PushStatus.SCHEDULED] : scope === 'history' ? [PushStatus.SENDING, PushStatus.SENT, PushStatus.FAILED] : Object.values(PushStatus);
     const statuses = f.status?.length ? scopeStatuses.filter((s) => f.status!.includes(s)) : scopeStatuses;
@@ -164,16 +194,7 @@ export class PushesService {
         ? { OR: [{ sentAt: range }, { sentAt: null, scheduledAt: range }, { sentAt: null, scheduledAt: null, createdAt: range }] }
         : {}),
     };
-    const rows = await this.prisma.push.findMany({
-      where,
-      include: {
-        project: { select: { id: true, name: true } },
-        createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 1000,
-    });
-    return rows.map(({ createdBy, ...p }) => ({ ...p, createdBy: createdBy ? { id: createdBy.id, name: formatUserName(createdBy) || createdBy.email } : null }));
+    return where;
   }
 
   // Кто создавал рассылки в доступных проектах — варианты фильтра «Создал».
@@ -260,7 +281,13 @@ export class PushesService {
     }
   }
 
-  async create(projectId: string, dto: CreatePushDto, createdById?: string): Promise<Push> {
+  // Проверка контента без создания — для регулярной рассылки до сохранения серии (2026-11-05).
+  validateContent(dto: Pick<CreatePushDto, 'messageText' | 'messageMedia'>) {
+    this.assertValidMedia(dto.messageMedia);
+    this.assertSendableText(dto.messageText, dto.messageMedia);
+  }
+
+  async create(projectId: string, dto: CreatePushDto, createdById?: string, recurrenceId?: string): Promise<Push> {
     this.assertValidMedia(dto.messageMedia);
     this.assertSendableText(dto.messageText, dto.messageMedia);
     const { audienceTotal, audienceReachable } = await this.previewAudience(projectId, dto.filter);
@@ -276,6 +303,7 @@ export class PushesService {
         audienceTotal,
         audienceReachable,
         createdById: createdById ?? null,
+        recurrenceId: recurrenceId ?? null,
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : null,
         status: dto.scheduledAt ? PushStatus.SCHEDULED : PushStatus.DRAFT,
       },

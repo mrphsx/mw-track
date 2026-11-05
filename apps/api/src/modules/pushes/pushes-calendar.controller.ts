@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { Permission, PushStatus } from '@prisma/client';
 import { Company } from '../../common/decorators/company.decorator';
 import { AuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -6,6 +6,8 @@ import { ProjectsService } from '../projects/projects.service';
 import { PushesService } from './pushes.service';
 import { CreateMultiPushDto } from './dto/create-multi-push.dto';
 import { PreviewAudienceDto } from './dto/preview-audience.dto';
+import { CreateRecurringPushDto, UpdateRecurringPushDto } from './dto/create-recurring-push.dto';
+import { PushRecurrenceService } from './push-recurrence.service';
 
 // Календарь рассылок по всей компании сразу (запрос пользователя 2026-07-19, "так же можно и
 // глобальный календарь такой под все проекты") — без @Roles(), видимость сама ограничена
@@ -21,7 +23,29 @@ export class PushesCalendarController {
   constructor(
     private pushesService: PushesService,
     private projectsService: ProjectsService,
+    private recurrence: PushRecurrenceService,
   ) {}
+
+  // Регулярные рассылки по расписанию (2026-11-05).
+  @Get('recurring')
+  listRecurring(@Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.recurrence.list(companyId, user);
+  }
+
+  @Post('recurring')
+  createRecurring(@Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: CreateRecurringPushDto) {
+    return this.recurrence.create(companyId, user, dto);
+  }
+
+  @Patch('recurring/:id')
+  updateRecurring(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser, @Body() dto: UpdateRecurringPushDto) {
+    return this.recurrence.update(id, companyId, user, dto);
+  }
+
+  @Delete('recurring/:id')
+  removeRecurring(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
+    return this.recurrence.remove(id, companyId, user);
+  }
 
   @Get('scheduled-summary')
   async scheduledSummary(@Company() companyId: string, @CurrentUser() user: AuthUser, @Query('month') month: string) {
@@ -39,6 +63,37 @@ export class PushesCalendarController {
   // пользователя 2026-08-04). Объявлен раньше несуществующего здесь ':id' незачем — в этом
   // контроллере нет одиночного GET по id (он остаётся только в PushesController, проектном).
   // scope=pending (дефолт) / history — см. комментарий у PushesService.findAllForCompany.
+  // Число рассылок во вкладке и по фильтрам (2026-11-05).
+  @Get('count')
+  async countForCompany(
+    @Company() companyId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('scope') scope?: string,
+    @Query('projectId') projectId?: string,
+    @Query('createdBy') createdBy?: string,
+    @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('q') q?: string,
+  ) {
+    const projectIds = await this.projectsService.getAccessibleProjectIds(companyId, user.userId, user.role, Permission.PUSHES_VIEW);
+    const day = (v?: string, shift = 0) => {
+      if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+      const d = new Date(`${v}T00:00:00.000Z`);
+      d.setUTCDate(d.getUTCDate() + shift);
+      return d;
+    };
+    const statuses = (status ?? '').split(',').filter((s): s is PushStatus => (Object.values(PushStatus) as string[]).includes(s));
+    return this.pushesService.countForCompany(projectIds, scope === 'history' ? 'history' : scope === 'all' ? 'all' : 'pending', {
+      projectId: projectId || undefined,
+      createdById: createdBy || undefined,
+      status: statuses,
+      from: day(from),
+      to: day(to, 1),
+      q: q?.trim().slice(0, 100) || undefined,
+    });
+  }
+
   @Get()
   async findAllForCompany(
     @Company() companyId: string,
