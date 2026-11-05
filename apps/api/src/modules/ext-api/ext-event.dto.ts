@@ -27,6 +27,7 @@ export class ExtAttributionDto {
   @IsOptional() @IsString() @MaxLength(200) utm_medium?: string;
   @IsOptional() @IsString() @MaxLength(300) utm_campaign?: string;
   @IsOptional() @IsString() @MaxLength(300) utm_content?: string;
+  @IsOptional() @IsString() @MaxLength(300) utm_term?: string;
   @IsOptional() @IsString() @MaxLength(100) campaign_id?: string;
   @IsOptional() @IsString() @MaxLength(300) campaign_name?: string;
   @IsOptional() @IsString() @MaxLength(100) adset_id?: string;

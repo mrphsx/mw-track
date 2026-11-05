@@ -21,7 +21,10 @@ interface Attribution {
   userAgent?: string;
   countryCode?: string;
   utmSource?: string;
+  utmMedium?: string;
   utmCampaign?: string;
+  utmContent?: string;
+  utmTerm?: string;
   pixelId?: string;
   adId?: string;
   adName?: string;
@@ -212,7 +215,10 @@ export class ExtApiService {
         userAgent: a.user_agent,
         countryCode: a.country_code?.toUpperCase(),
         utmSource: a.utm_source,
+        utmMedium: a.utm_medium,
         utmCampaign: a.utm_campaign,
+        utmContent: a.utm_content,
+        utmTerm: a.utm_term,
         pixelId: (await resolvePixelShortCode(this.prisma, a.pixel)) ?? undefined,
         adId: a.ad_id,
         adName: a.ad_name,
@@ -313,6 +319,10 @@ export class ExtApiService {
       buyerRef: attribution?.buyerId ?? fresh.buyerId ?? undefined,
       landingId: fresh.landingId ?? attribution?.landingId,
       abTestGroupId: fresh.abTestGroupId ?? undefined,
+      // Телефон/email из API — для сопоставления в FB (em/ph) и TikTok (хэшируются при отправке),
+      // так же, как PurchasesService уже делает для Purchase.
+      email: fresh.email ?? undefined,
+      phone: fresh.phone ?? undefined,
       source: 'SERVER',
     });
     return true;
