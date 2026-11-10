@@ -8,7 +8,7 @@ import { AuthUser, CurrentUser } from '../../common/decorators/current-user.deco
 import { PermissionsService } from '../../common/permissions/permissions.service';
 import { ProjectsService } from '../projects/projects.service';
 import { LandingAction, LandingsService } from './landings.service';
-import { LandingRendererService } from './landing-renderer.service';
+import { LandingRendererService, addFlagSupport } from './landing-renderer.service';
 import { UpdateLandingDto } from './dto/update-landing.dto';
 import { UploadPrelandingHtmlDto } from './dto/upload-prelanding-html.dto';
 import { CreateCloakingRuleDto, ReorderCloakingRulesDto, UpdateCloakingRuleDto } from './dto/cloaking-rule.dto';
@@ -76,9 +76,9 @@ export class LandingsController {
   // (тот же рубеж, что и на создание).
   @Get('templates/:id/preview')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  templatePreview(@Param('id') id: string, @Company() companyId: string) {
+  async templatePreview(@Param('id') id: string, @Company() companyId: string) {
     this.landingsService.assertTemplateAllowed(id, companyId);
-    return this.rendererService.renderTemplateGalleryPreview(id);
+    return addFlagSupport(await this.rendererService.renderTemplateGalleryPreview(id));
   }
 
   // Живое превью конструктора (2026-10-20) — несохранённый конфиг из редактора. Объявлено раньше
@@ -86,8 +86,8 @@ export class LandingsController {
   // проверки проекта; достаточно быть сотрудником компании.
   @Post('builder/preview')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  builderPreview(@Body() dto: BuilderPreviewDto) {
-    return this.rendererService.renderBuilderPreview(dto);
+  async builderPreview(@Body() dto: BuilderPreviewDto) {
+    return addFlagSupport(await this.rendererService.renderBuilderPreview(dto));
   }
 
   // Картинки визуального редактора Puck (2026-10-21) — общая папка компании, адрес вставляется в
@@ -179,7 +179,7 @@ export class LandingsController {
   @Header('Content-Type', 'text/html; charset=utf-8')
   async preview(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
-    return this.rendererService.renderPreviewHtml(id, companyId);
+    return addFlagSupport(await this.rendererService.renderPreviewHtml(id, companyId));
   }
 
   // Отдаёт один файл CUSTOM-лендинга (картинку/css/js) с той же проверкой доступа, что и сам
@@ -272,7 +272,7 @@ export class LandingsController {
   @Header('Content-Type', 'text/html; charset=utf-8')
   async previewCloakingPrelanding(@Param('id') id: string, @Company() companyId: string, @CurrentUser() user: AuthUser) {
     await this.assertAccess(id, companyId, user, [Permission.LANDINGS_VIEW]);
-    return this.landingsService.renderCloakingPrelandingPreviewHtml(id, companyId);
+    return addFlagSupport(await this.landingsService.renderCloakingPrelandingPreviewHtml(id, companyId));
   }
 
   @Get(':id/cloaking/prelanding/preview-asset/*')

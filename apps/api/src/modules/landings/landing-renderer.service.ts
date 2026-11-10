@@ -120,6 +120,13 @@ type ProjectWithLandingData = Project & {
 // country-flag-emoji-polyfill): подключает шрифт с флагами с mw-track.com и добавляет его первым
 // в font-family элементов. На телефонах (основной трафик) ничего не делает и ничего не качает.
 const FLAG_EMOJI_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
+// Тот же скрипт для превью внутри CRM (галерея шаблонов, конструктор, «глаз», белая страница) —
+// они собираются без injectTrackingScripts и открываются как отдельный документ.
+export function addFlagSupport(html: string): string {
+  if (!FLAG_EMOJI_RE.test(html)) return html;
+  const script = flagPolyfillScript();
+  return html.includes('</head>') ? html.replace('</head>', `${script}\n</head>`) : script + html;
+}
 function flagPolyfillScript(): string {
   const fontUrl = `${(process.env.APP_URL || 'https://mw-track.com').replace(/\/$/, '')}/fonts/TwemojiCountryFlags.woff2`;
   return `
