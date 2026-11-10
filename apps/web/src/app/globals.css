@@ -264,3 +264,19 @@ select optgroup {
   background-color: #171f2b;
   color: #e9edf3;
 }
+
+/* Флаги стран (2026-11-10: «везде показывает DKB 🇩🇪 вот так de, а не сам флаг»). В Windows нет
+   флагов-эмодзи — браузер рисует буквы региональных индикаторов. Шрифт только с флагами
+   (Twemoji Country Flags из country-flag-emoji-polyfill, MIT; графика Twemoji — CC-BY 4.0)
+   ограничен unicode-range, поэтому скачивается (77 КБ) лишь когда на странице есть флаг, и не
+   трогает остальной текст. Вне @layer — чтобы перебить утилиту font-sans на body. */
+@font-face {
+  font-family: 'Twemoji Country Flags';
+  unicode-range: U+1F1E6-1F1FF, U+1F3F4, U+E0062-E0063, U+E0065, U+E0067, U+E006C, U+E006E, U+E0073-E0074, U+E0077, U+E007F;
+  src: url('/fonts/TwemojiCountryFlags.woff2') format('woff2');
+  font-display: swap;
+}
+body,
+.font-sans {
+  font-family: 'Twemoji Country Flags', var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}

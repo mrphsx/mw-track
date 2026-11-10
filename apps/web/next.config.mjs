@@ -5,6 +5,11 @@ const nextConfig = {
   // .next, живой сервер отдавал страницы со ссылками на уже удалённые CSS/JS — у открытых вкладок
   // пропадали стили (400/404). Сервер (`next start`) всегда работает из .next.
   distDir: process.env.NEXT_BUILD_DIR || '.next',
+  // Шрифт флагов подгружают и лендинги на доменах клиентов (LandingRendererService) — шрифтам
+  // с чужого домена нужен CORS.
+  async headers() {
+    return [{ source: '/fonts/:path*', headers: [{ key: 'Access-Control-Allow-Origin', value: '*' }, { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' }] }];
+  },
 };
 
 export default nextConfig;

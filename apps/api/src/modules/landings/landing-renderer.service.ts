@@ -114,6 +114,35 @@ type ProjectWithLandingData = Project & {
   pixels: TrackingPixel[]; // проект не привязан к платформе — пикселей любых платформ может быть несколько
 };
 
+// Флаги стран на лендингах (2026-11-10: «везде показывает DKB 🇩🇪 вот так de»). В Windows нет
+// флагов-эмодзи, браузер рисует буквы. Скрипт добавляется, только если в лендинге есть флаг, и
+// работает только там, где флаги не поддерживаются (проверка через canvas, как в
+// country-flag-emoji-polyfill): подключает шрифт с флагами с mw-track.com и добавляет его первым
+// в font-family элементов. На телефонах (основной трафик) ничего не делает и ничего не качает.
+const FLAG_EMOJI_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
+function flagPolyfillScript(): string {
+  const fontUrl = `${(process.env.APP_URL || 'https://mw-track.com').replace(/\/$/, '')}/fonts/TwemojiCountryFlags.woff2`;
+  return `
+<script>
+(function(){try{
+var S='"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+var c=document.createElement('canvas');c.width=c.height=1;var x=c.getContext('2d');if(!x)return;
+x.textBaseline='top';x.font='100px '+S;x.scale(.01,.01);
+function p(t,f){x.clearRect(0,0,100,100);x.fillStyle=f;x.fillText(t,0,0);return x.getImageData(0,0,1,1).data.join(',')}
+function ok(t){var a=p(t,'#fff'),b=p(t,'#000');return a===b&&b.indexOf('0,0,0,')!==0}
+if(!ok('\\uD83D\\uDE0A')||ok('\\uD83C\\uDDE8\\uD83C\\uDDED'))return;
+var F='MW Country Flags';
+var st=document.createElement('style');
+st.textContent='@font-face{font-family:"'+F+'";unicode-range:U+1F1E6-1F1FF,U+1F3F4,U+E0062-E007F;src:url("${fontUrl}") format("woff2");font-display:swap}';
+document.head.appendChild(st);
+function apply(){var all=[document.body].concat([].slice.call(document.body.querySelectorAll('*')));
+for(var i=0;i<all.length;i++){var el=all[i];if(el.namespaceURI!=='http://www.w3.org/1999/xhtml')continue;
+var ff=getComputedStyle(el).fontFamily;if(ff.indexOf(F)===-1)el.style.fontFamily='"'+F+'",'+ff;}}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',apply);else apply();
+}catch(e){}})();
+</script>`;
+}
+
 @Injectable()
 export class LandingRendererService {
   private readonly logger = new Logger(LandingRendererService.name);
@@ -905,7 +934,7 @@ export class LandingRendererService {
     // ничего менять не нужно (см. apps/sdk/src/browser.ts).
     const tiktokHintDeferAttr = landing.tiktokBrowserHint && deferAutoRedirect ? `\n        data-tiktok-hint-defer="true"` : '';
 
-    const trackingScripts = `
+    let trackingScripts = `
 <script src="${trackScriptUrl}"
         data-project-id="${project.publicToken}"
         data-api-url="${process.env.API_URL}/api/v1"
@@ -953,6 +982,8 @@ ttq.page();}(window,document,'ttq');
 </script>`
     : ''
 }`;
+
+    if (FLAG_EMOJI_RE.test(html)) trackingScripts += flagPolyfillScript();
 
     if (html.includes('</head>')) {
       html = html.replace('</head>', `${trackingScripts}\n</head>`);
