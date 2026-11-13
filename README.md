@@ -152,6 +152,10 @@ docker compose -f docker-compose.prod.yml restart postgres redis minio
   (например `trafficcrm-admin`) и забыли `pm2 save` после — при следующем ребуте сервера он
   просто не появится, без единой ошибки в логах. Правило: **после любого `pm2 start`
   нового процесса — сразу `pm2 save`.**
+- **`pm2 save` хранит и переменные окружения** — на момент сохранения. 2026-11-13 PM2 поднял
+  все процессы из дампа от 2026-10-19, и API потерял `DEEPL_API_KEY`, добавленный в `.env.prod`
+  позже, — переводы в чатах молча отключились. Правило: **после изменения `.env.prod` —
+  `pm2 restart ecosystem.config.js --only <app> --update-env`, затем `pm2 save`.**
 - **PM2's `env_file` ненадёжен на этой версии PM2** — `ecosystem.config.js` сам парсит
   `.env.prod` через пакет `dotenv` и передаёт как `env: {...}` в конфиге каждого приложения
   (не полагается на встроенный `env_file`). Если правите `ecosystem.config.js` — не
